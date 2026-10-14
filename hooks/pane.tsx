@@ -228,7 +228,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
       )}
       <Box marginY={1}>
         <Text dimColor wrap="truncate-end">
-          {'─'.repeat(Math.max(10, width - 6))}
+          {'─'.repeat(Math.max(10, width - 12))}
         </Text>
       </Box>
       {entriesOf(rows).map(entry => drawCard(els, entry, ui, act, width, theme, now))}
@@ -267,16 +267,20 @@ function drawCard(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, t
   const { Box, Text, Button, Svg } = els
   const card = entry.kind === 'agent' ? agentCard(els, entry.row, theme, now, width - 12) : messagesCard(els, entry.rows)
   const isOpen = ui.expanded.includes(card.id)
+  // the text column gets an explicit width: border and padding take 4, the icon column 7 or 4, and a few cells of slack
+  // because the desktop's column count is approximate for its font; without a bound the surface never truncates or wraps
+  const iconCols = Svg ? 7 : 4
+  const textWidth = Math.max(16, width - 4 - iconCols - 4)
   return (
-    <Box key={`card-${card.id}`} borderStyle="round" borderColor={card.color} paddingX={1} flexDirection="row" marginBottom={1}>
-      <Box flexDirection="column" width={Svg ? 6 : 3} flexShrink={0} marginRight={1}>
+    <Box key={`card-${card.id}`} borderStyle="round" borderColor={card.color} paddingX={1} flexDirection="row" marginBottom={1} overflow="hidden">
+      <Box flexDirection="column" width={iconCols - 1} flexShrink={0} marginRight={1}>
         {Svg ? (
           <Svg source={icon(card.kind, card.color)} alt={card.kind} width={34} height={34} />
         ) : (
           <Text color={card.color}>{GLYPH[card.kind]}</Text>
         )}
       </Box>
-      <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" width={textWidth} flexShrink={0}>
         <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
           <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
           <Text bold color={card.color} wrap="truncate-end">
