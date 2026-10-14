@@ -1,11 +1,19 @@
 {
   "name": "task-loop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Orchestrated implementation loop: parallel worker subagents in git worktrees, squash merges into dev, an end-user QA subagent with a scored rubric, and a live timeline pane.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Nuno Mota"
   },
   "repository": "https://github.com/nunomota/claude-task-loop",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "prices": {
+      "type": "string",
+      "title": "Price overrides",
+      "description": "Price overrides as JSON: {\"<model id prefix>\": [input, output, cacheRead, cacheWrite]} in dollars per million tokens.",
+      "default": ""
+    }
+  }
 }

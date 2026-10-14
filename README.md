@@ -30,7 +30,7 @@ The skill then runs in phases:
 
 1. **Clarify.** It restates the task and asks about anything material, until nothing is open.
 2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, and notes the build and test commands.
-3. **Plan.** It calls `start`, splits the work into independent tasks (each with a brief, a model, a build command and the Conventional Commit title of its squash commit), and writes the QA rubric and harness.
+3. **Plan.** It calls `start` with the task heading and a short overview, splits the work into independent tasks (each with a brief, a model, a build command and the Conventional Commit title of its squash commit), and writes the QA rubric and harness.
 4. **Loop.** `dispatch` prepares one worktree and brief per task under `.workspaces/task/<iteration>-<id>` and spells out the `Agent` call that starts each worker; the orchestrator makes those calls itself, so the session's permission mode (auto mode included) judges them as its own actions, and the mod fills in the brief, model, worktree and background mode. The orchestrator then ends its turn and is woken by a `[task-loop]` prompt when every worker has ended or one goes stale. `merge` squash-merges the finished branches into `dev`. `qa` prepares the QA subagent's worktree of `dev` the same way; its report wakes the orchestrator with the verdict and overview. On `fix` the next `dispatch` starts a new iteration.
 5. **Finish.** `finish` fast-forwards `main` to `dev` (or makes one merge commit when the histories diverged) and removes the run's worktrees.
 
@@ -51,10 +51,11 @@ The orchestrator calls these; the skill says when.
 | Tool | What it does |
 | --- | --- |
 | `mcp__task-loop__start` | Records the repository (the session's, or `root`), creates `dev` and its worktree if missing, opens the pane. |
-| `mcp__task-loop__dispatch` | Prepares one worktree, branch and brief per task and returns the `Agent` calls that start the workers. A second dispatch after QA starts the next iteration. |
+| `mcp__task-loop__dispatch` | Takes an iteration title and overview plus the tasks; prepares one worktree, branch and brief per task and returns the `Agent` calls that start the workers. A second dispatch after QA starts the next iteration. |
 | `mcp__task-loop__merge` | Squash-merges every finished branch of the iteration into `dev`, one titled commit each; reports conflicts instead of resolving them. |
 | `mcp__task-loop__qa` | Prepares the QA worktree with a rubric and harness and returns the `Agent` call that starts it; the report is collected when the agent ends. |
-| `mcp__task-loop__status` | The timeline as text. |
+| `mcp__task-loop__status` | The timeline as text, with tokens and cost. |
+| `mcp__task-loop__phase` | Marks the orchestrator's phase (clarify, research, plan, implement, qa, release); the other tools set the later phases themselves. |
 | `mcp__task-loop__cancel` | Stops a running agent by id. |
 | `mcp__task-loop__finish` | Releases `dev` into `main` and closes the run (`abort: true` closes without releasing). |
 
@@ -62,11 +63,16 @@ The orchestrator calls these; the skill says when.
 
 ## The timeline
 
-Each iteration is a collapsible section; the previous one folds when a new iteration starts. Rows:
+The pane opens with a card: the task heading, a status strip (state, elapsed, agents, iterations, tokens, estimated cost) and the phase strip `clarify › research › plan › implement › qa › release`, which steps back to `implement` when a fix iteration starts. The task overview sits under the card in dim text, then a rule.
 
-- **Worker:** start time, a spinner while running or a glyph for finished, merged, failed, stale, timed out or cancelled, the task title, the model and the elapsed time.
-- **QA:** start time, the round, the counts of strong, acceptable and unacceptable items and the verdict, the elapsed time. Click to expand the overview and the items below strong; while QA runs it says the report is not ready.
-- **You:** every prompt you typed during the run, expandable to its full text. Subagent hand-backs and notifications are not rows.
+Below it, one card per iteration, collapsible, headed by the iteration's title with its counts on the right (`2/2 workers · QA fix needed · 61k tok · ~$0.28`) and its overview underneath. The previous card folds when a new iteration starts. Rows inside are one line each, all collapsible:
+
+- `⚒ <task title>` for a worker, `⚖ QA round n: <verdict>` for QA, `✎ User message` and `◆ Orchestrator` for what you typed and what the orchestrator answered during the run. The text color is the status: accent while running, green finished, red failed or timed out, yellow stale, dim waiting or cancelled, with the same mark on the right edge (`●` `✓` `✗` `…` `⏱` `○`).
+- Expanded, a worker shows start time, elapsed, model, steps, tool calls, tokens and cost, its branch and planned commit title, a feed of its tool calls and assistant text (the last 40 entries, captured from the engine's model steps), and its closing summary. QA adds the score line, the overview, every item below strong and its own feed. User and orchestrator rows show the full text.
+
+The band above the prompt is a two-line box: phase and iteration title, then worker counts, QA state and spend, with buttons for the timeline and to hide the band.
+
+Token counts include cache reads and writes, as the API bills them. The cost estimate uses Anthropic list prices per model (see `hooks/cost.ts`); override or extend the table with the plugin's `prices` option, a JSON object of `{"<model id prefix>": [input, output, cacheRead, cacheWrite]}` in dollars per million tokens.
 
 ## Layout
 
@@ -79,6 +85,7 @@ hooks/git.ts                     worktrees, squash merges, release
 hooks/report.ts                  QA rubric and report validation
 hooks/prompts.ts                 worker and QA system prompts, briefs
 hooks/pane.tsx                   the timeline pane and the band
+hooks/cost.ts                    price table, token and cost formatting
 hooks/io.ts                      the engine calls the helpers use
 types/index.d.ts                 the $.state contract
 skills/task-loop/SKILL.md        the /task-loop skill

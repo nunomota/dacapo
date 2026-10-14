@@ -1,8 +1,20 @@
 export type RunStatus = 'planning' | 'active' | 'done' | 'aborted'
 
+export type Phase = 'clarify' | 'research' | 'plan' | 'implement' | 'qa' | 'release'
+
+/** Token counts as the API reports them, summed over model steps. */
+export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+/** One thing an agent did, kept for the timeline: a tool call with a short argument, or a piece of assistant text. */
+export type Activity = { at: number; kind: 'tool' | 'text'; text: string }
+
+export type IterationInfo = { n: number; title: string; overview?: string; startedAt: number }
+
 export type Run = {
   id: string
   task: string
+  /** A short paragraph on the whole task, written by the orchestrator at start. */
+  overview?: string
   startedAt: number
   status: RunStatus
   /** The current implementation iteration, 1-based. */
@@ -15,6 +27,10 @@ export type Run = {
   runDir: string
   /** Absolute path of the worktree that has `devBranch` checked out. */
   devWorktree: string
+  phase: Phase
+  iterations: IterationInfo[]
+  /** The orchestrator's own model steps during the run. */
+  orchestrator: Usage & { steps: number; modelId?: string }
 }
 
 export type WorkerStatus =
@@ -56,6 +72,25 @@ export type UserRow = {
   text: string
 }
 
+/** What the orchestrator answered at the end of one of its turns during the run. */
+export type OrchestratorRow = {
+  kind: 'orchestrator'
+  id: string
+  iteration: number
+  at: number
+  text: string
+}
+
+export type AgentStats = {
+  usage: Usage
+  steps: number
+  toolCalls: number
+  /** The resolved model id of the agent's steps (`claude-sonnet-5-5`, ...). */
+  modelId?: string
+  /** The last entries, oldest first. */
+  activity: Activity[]
+}
+
 export type WorkerRow = {
   kind: 'worker'
   /** The subagent's agent id; `pending-...` until the orchestrator's Agent call started it. */
@@ -71,8 +106,9 @@ export type WorkerRow = {
   model: string
   commit: string
   status: WorkerStatus
-  /** The worker's closing answer, cut short, or the failure reason. */
+  /** The worker's closing answer, or the failure reason. */
   note?: string
+  stats: AgentStats
 }
 
 export type QaRow = {
@@ -93,14 +129,15 @@ export type QaRow = {
   items?: QaItem[]
   overview?: string
   note?: string
+  stats: AgentStats
 }
 
-export type Row = UserRow | WorkerRow | QaRow
+export type Row = UserRow | OrchestratorRow | WorkerRow | QaRow
 
 export type Ui = {
   /** Iteration numbers whose rows are folded away. */
   collapsed: number[]
-  /** Ids of user and QA rows whose body is shown. */
+  /** Ids of rows whose body is shown. */
   expanded: string[]
   /** The clock as of the last tick, for spinners and elapsed times. */
   tick: number

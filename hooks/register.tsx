@@ -1,10 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { QaRow, Row, Run, UserRow, WorkerRow } from '../types'
+import type { Activity, AgentStats, OrchestratorRow, Phase, QaRow, Row, Run, UserRow, WorkerRow } from '../types'
+import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as git from './git'
 import type { Io } from './io'
-import { drawBand, drawPane, elapsed, hhmm, scoreLine, statusWord, type Actions, type Els, type Snapshot } from './pane'
+import { PHASES, drawBand, drawPane, elapsed, hhmm, isAgentRow, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
 import { QA_SYSTEM, WORKER_SYSTEM, qaBrief, workerBrief } from './prompts'
 import { validateReport, validateRubric, type RubricItem } from './report'
 
@@ -31,6 +32,10 @@ type Args = Record<string, unknown>
 
 /** The engine as closures, made once in `session.start`; every helper below reaches the engine through it. */
 let io: Io
+/** Dollars per million tokens by model prefix, from the built-in table and the `prices` option. */
+let prices: Record<string, Price> = parsePrices(undefined)
+const freshStats = (): AgentStats => ({ usage: ZERO, steps: 0, toolCalls: 0, activity: [] })
+const setPhase = (phase: Phase) => io.setRun(run => (run ? { ...run, phase } : run))
 /** Prompts this module queued itself, so `prompt.submit` does not log them as the person's. */
 const ownPrompts = new Set<string>()
 /** Rubrics by QA row id, for validation; the run folder holds the copy that survives a reload. */
@@ -71,10 +76,10 @@ const pendingId = (kind: 'worker' | 'qa', iteration: number, key: string) => `pe
 const WORKTREE_LINE = /^\[task-loop worktree: (.+)\]$/m
 const ASK_LINE = /^\s*task-loop (worker|qa) (\S+)\s*$/
 
-const isAgent = (id: string) => (r: Row): r is WorkerRow | QaRow => r.kind !== 'user' && r.id === id
+const isAgent = (id: string) => (r: Row): r is WorkerRow | QaRow => isAgentRow(r) && r.id === id
 
 const patchRow = (id: string, fn: (row: WorkerRow | QaRow) => WorkerRow | QaRow) =>
-  io.setRows(rows => rows.map(r => (r.kind !== 'user' && r.id === id ? fn(r) : r)))
+  io.setRows(rows => rows.map(r => (isAgentRow(r) && r.id === id ? fn(r) : r)))
 const patchWorker = (id: string, fn: (row: WorkerRow) => WorkerRow) =>
   io.setRows(rows => rows.map(r => (r.kind === 'worker' && r.id === id ? fn(r) : r)))
 const patchQa = (id: string, fn: (row: QaRow) => QaRow) =>
@@ -116,6 +121,9 @@ async function openRun(task: string, devBranch: string, mainBranch: string, at?:
     mainBranch,
     runDir: `${root}/.workspaces/.task-loop/${id}`,
     devWorktree: '',
+    phase: 'clarify',
+    iterations: [],
+    orchestrator: { ...ZERO, steps: 0 },
   }
   await io.setRun(() => run)
   await io.setRows(() => [])
@@ -141,17 +149,50 @@ async function currentRun(): Promise<Run | null> {
   return run && (run.status === 'planning' || run.status === 'active') ? run : null
 }
 
+/** A short argument for a tool call's activity line: the file, command, pattern or prompt it names. */
+function shortArg(json: string): string {
+  if (!json.trim()) return ''
+  try {
+    const v = JSON.parse(json) as Record<string, unknown>
+    for (const key of ['file_path', 'notebook_path', 'command', 'pattern', 'path', 'url', 'query', 'prompt', 'description', 'task_id', 'text']) {
+      const got = v[key]
+      if (typeof got === 'string' && got.trim()) return got.split('\n')[0]!.trim().slice(0, 90)
+    }
+    return ''
+  } catch {
+    return ''
+  }
+}
+
+function grow(stats: AgentStats, usage: Partial<AgentStats['usage']> | null, toolCalls: number, entries: Activity[], modelId: string): AgentStats {
+  return {
+    usage: addUsage(stats.usage, usage ?? {}),
+    steps: stats.steps + 1,
+    toolCalls: stats.toolCalls + toolCalls,
+    modelId: modelId || stats.modelId,
+    activity: [...stats.activity, ...entries].slice(-40),
+  }
+}
+
 // ---------- status text for the orchestrator ----------
 
 function statusText(snap: Snapshot): string {
   const { run, rows, ui } = snap
   if (!run) return 'No task-loop run.'
   const lines = [`Run ${run.id}: ${run.status}, iteration ${run.iteration}, dev=${run.devBranch}, main=${run.mainBranch}`]
+  const total = spendText(spend(rows.filter(isAgentRow), prices, run.orchestrator))
+  lines[0] += `, phase ${run.phase}${total ? `, ${total}` : ''}`
+  if (run.overview) lines.push(`  ${run.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
   for (let n = 1; n <= run.iteration; n += 1) {
-    lines.push(`Iteration ${n}:`)
-    for (const row of rows.filter(r => r.iteration === n).sort((a, b) => a.at - b.at)) {
+    const info = run.iterations.find(i => i.n === n)
+    const mine = rows.filter(r => r.iteration === n).sort((a, b) => a.at - b.at)
+    const money = spendText(spend(mine.filter(isAgentRow), prices))
+    lines.push(`Iteration ${n}${info ? `: ${info.title}` : ''}${money ? ` (${money})` : ''}`)
+    if (info?.overview) lines.push(`  ${info.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
+    for (const row of mine) {
       const t = hhmm(row.at)
       if (row.kind === 'user') lines.push(`  ${t} user: ${row.text.replace(/\s+/g, ' ').slice(0, 120)}`)
+      else if (row.kind === 'orchestrator') lines.push(`  ${t} orchestrator: ${row.text.replace(/\s+/g, ' ').slice(0, 120)}`)
       else if (row.kind === 'worker') {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
         lines.push(`  ${t} worker ${row.taskId} [${row.id}] ${statusWord[row.status]} (${span}, ${row.model}, ${row.branch})${row.note ? `: ${row.note.slice(0, 200)}` : ''}`)
@@ -171,8 +212,14 @@ async function start(a: Args) {
   if (!task) return fail('start: "task" is required')
   const root = str(a.root).trim()
   if (root && !(await git.repoRoot(io, root))) return fail(`start: ${root} is not inside a git repository`)
+  const overview = str(a.overview).trim() || undefined
   let run = await currentRun()
   if (!run) run = await openRun(task, str(a.devBranch, 'dev'), str(a.mainBranch, 'main'), root || undefined)
+  if (overview || run.task !== task) {
+    const named: Run = { ...run, task, overview: overview ?? run.overview }
+    await io.setRun(() => named)
+    run = named
+  }
   else if (root && !run.devWorktree) {
     const top = (await git.repoRoot(io, root)) ?? root
     const moved: Run = { ...run, root: top, runDir: `${top}/.workspaces/.task-loop/${run.id}` }
@@ -189,6 +236,7 @@ async function start(a: Args) {
   } catch (error) {
     return fail(`start: ${String(error)}`)
   }
+  if (PHASES.indexOf(run.phase) < PHASES.indexOf('plan')) await setPhase('plan')
   void io.openPane()
   return ok(`Run ${run.id} ready. Repository ${run.root}; dev branch "${run.devBranch}" checked out at ${run.devWorktree}; run folder ${run.runDir}. Plan the work, then call ${tool('dispatch')}.`)
 }
@@ -200,6 +248,9 @@ async function dispatch(a: Args) {
   if (!run) return fail(`dispatch: no active run; call ${tool('start')} first`)
   const tasks = Array.isArray(a.tasks) ? (a.tasks as Args[]) : []
   if (tasks.length === 0) return fail('dispatch: "tasks" must hold at least one task')
+  const iterationTitle = str(a.title).trim()
+  if (!iterationTitle) return fail('dispatch: "title" (a few words naming this iteration) is required')
+  const overview = str(a.overview).trim()
   const ids = new Set<string>()
   for (const t of tasks) {
     const id = str(t.id)
@@ -221,13 +272,16 @@ async function dispatch(a: Args) {
 
   const rows = await io.getRows()
   const iteration = run.iteration
-  const hadWork = rows.some(r => r.kind !== 'user' && r.iteration === iteration)
-  const unfinished = rows.filter((r): r is WorkerRow | QaRow => r.kind !== 'user' && !isTerminal(r))
+  const hadWork = rows.some(r => isAgentRow(r) && r.iteration === iteration)
+  const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r))
   if (unfinished.length > 0) return fail(`dispatch: ${unfinished.length} agent(s) still running; wait for the wake-up prompt or cancel them first`)
   if (hadWork) {
     run = { ...run, iteration: iteration + 1, status: 'active' }
     await io.setUi(ui => ({ ...ui, collapsed: ui.collapsed.includes(iteration) ? ui.collapsed : [...ui.collapsed, iteration] }))
   } else run = { ...run, status: 'active' }
+  const startedAt = await io.now()
+  const info = { n: run.iteration, title: iterationTitle, overview: overview || undefined, startedAt }
+  run = { ...run, phase: 'implement', iterations: [...run.iterations.filter(i => i.n !== info.n), info] }
   const active = run
   await io.setRun(() => active)
 
@@ -265,6 +319,7 @@ async function dispatch(a: Args) {
         model,
         commit: str(t.commit).trim(),
         status: 'pending',
+        stats: freshStats(),
       }
       await io.setRows(list => [...list.filter(r => r.kind !== 'worker' || r.id !== row.id), row])
       started.push({ taskId, title, branch, worktree: path, model })
@@ -274,7 +329,7 @@ async function dispatch(a: Args) {
   }
   void io.openPane()
   const text = [
-    `Iteration ${active.iteration}: ${started.length} worktree(s) prepared.`,
+    `Iteration ${active.iteration} (${iterationTitle}): ${started.length} worktree(s) prepared.`,
     ...started.map(s => `- ${s.taskId}: ${s.branch} at ${s.worktree} (${s.model})`),
     ...(problems.length > 0 ? ['Problems:', ...problems.map(p => `- ${p}`)] : []),
     ...(started.length > 0
@@ -346,7 +401,7 @@ async function qa(a: Args) {
   }
   const iteration = run.iteration
   const rows = await io.getRows()
-  const unfinished = rows.filter((r): r is WorkerRow | QaRow => r.kind !== 'user' && !isTerminal(r))
+  const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r))
   if (unfinished.length > 0) return fail(`qa: ${unfinished.length} agent(s) still running; wait or cancel them first`)
   const round = rows.filter(r => r.kind === 'qa' && r.iteration === iteration).length + 1
   const worktree = `${run.root}/.workspaces/qa/${iteration}-${round}`
@@ -375,8 +430,10 @@ async function qa(a: Args) {
     reportPath,
     model,
     status: 'pending',
+    stats: freshStats(),
   }
   rubrics.set(`${iteration}-${round}`, rubric.rubric)
+  await setPhase('qa')
   await io.setRows(list => [...list, row])
   void io.openPane()
   return ok(
@@ -412,7 +469,7 @@ async function finish(a: Args) {
   const run = await currentRun()
   if (!run) return fail('finish: no active run')
   const rows = await io.getRows()
-  const unfinished = rows.filter((r): r is WorkerRow | QaRow => r.kind !== 'user' && !isTerminal(r))
+  const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r))
   if (unfinished.length > 0) return fail(`finish: ${unfinished.length} agent(s) still running; wait or cancel them first`)
   const lines: string[] = []
   if (a.abort === true) {
@@ -438,7 +495,7 @@ async function finish(a: Args) {
     lines.push(...(await git.removeWorktree(io, run.root, w.worktree, w.branch)))
   }
   for (const q of rows.filter((r): r is QaRow => r.kind === 'qa')) lines.push(...(await git.removeWorktree(io, run.root, q.worktree)))
-  await io.setRun(() => ({ ...run, status: 'done' }))
+  await io.setRun(() => ({ ...run, status: 'done', phase: 'release' }))
   lines.push(`Run ${run.id} finished. Reports and briefs are under ${run.runDir}.`)
   return ok(lines.join('\n'))
 }
@@ -543,7 +600,7 @@ async function tick() {
   const run = await io.getRun()
   if (!run || run.status === 'done' || run.status === 'aborted') return
   const rows = await io.getRows()
-  const live = rows.filter((r): r is WorkerRow | QaRow => r.kind !== 'user' && isLive(r))
+  const live = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && isLive(r))
   const now = await io.now()
   await io.setUi(ui => ({ ...ui, tick: now }))
   for (const row of live) {
@@ -572,7 +629,9 @@ const actions: Actions = {
 
 // ---------- the module ----------
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  prices = parsePrices(options.prices)
+
   on('session.start', async ($, e, next) => {
     io = {
       run: (argv, init) => $.process.run(argv, init),
@@ -601,7 +660,8 @@ export const register: Register = on => {
         inputSchema: {
           type: 'object',
           properties: {
-            task: { type: 'string', description: 'The task in one or two sentences.' },
+            task: { type: 'string', description: 'The task in one line: the heading of the run.' },
+            overview: { type: 'string', description: 'One short paragraph on the whole task: deliverable, who it is for, what done looks like. Shown under the heading.' },
             devBranch: { type: 'string', description: 'Integration branch; default "dev".' },
             mainBranch: { type: 'string', description: 'Release branch; default "main".' },
             root: { type: 'string', description: 'Absolute path inside the repository to run in; default the session working directory.' },
@@ -617,6 +677,8 @@ export const register: Register = on => {
         inputSchema: {
           type: 'object',
           properties: {
+            title: { type: 'string', description: 'A few words naming this iteration, shown as its heading (e.g. "Login page and docs", "Fix id reuse and error copy").' },
+            overview: { type: 'string', description: 'One short paragraph: what this iteration builds and why; shown under the heading.' },
             tasks: {
               type: 'array',
               minItems: 1,
@@ -644,7 +706,7 @@ export const register: Register = on => {
               },
             },
           },
-          required: ['tasks'],
+          required: ['title', 'tasks'],
         },
       }),
       $.tool.register({
@@ -683,6 +745,16 @@ export const register: Register = on => {
             model: { type: 'string', enum: ['opus', 'sonnet'], description: 'Default opus.' },
           },
           required: ['rubric', 'harness'],
+        },
+      }),
+      $.tool.register({
+        name: 'phase',
+        description: 'Marks where the orchestrator is: clarify, research, plan, implement, qa or release. start, dispatch, qa and finish set the later phases themselves; call this for clarify and research.',
+        isDeferred: false,
+        inputSchema: {
+          type: 'object',
+          properties: { phase: { type: 'string', enum: ['clarify', 'research', 'plan', 'implement', 'qa', 'release'] } },
+          required: ['phase'],
         },
       }),
       $.tool.register({
@@ -746,7 +818,7 @@ export const register: Register = on => {
     const wanted = kind === 'qa' ? pendingId('qa', Number(key.split('-')[0]), key.split('-')[1] ?? '') : pendingId('worker', run.iteration, key)
     const row = rows.find((r): r is WorkerRow | QaRow => r.kind === kind && r.id === wanted)
     if (!row) {
-      const expected = rows.filter((r): r is WorkerRow | QaRow => r.kind !== 'user' && r.status === 'pending').map(r => (r.kind === 'worker' ? `worker ${r.taskId}` : `qa ${r.iteration}-${r.round}`))
+      const expected = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && r.status === 'pending').map(r => (r.kind === 'worker' ? `worker ${r.taskId}` : `qa ${r.iteration}-${r.round}`))
       return { deny: `task-loop: nothing pending for "${ask[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(kind === 'worker' ? 'dispatch' : 'qa')} first.` }
     }
     const brief = row.kind === 'worker' ? await io.read(`${row.worktree}/.context/brief.md`) : qaPrompt(row.worktree)
@@ -817,6 +889,13 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__task-loop__qa' }, ($, e) => qa(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__task-loop__cancel' }, ($, e) => cancel(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__task-loop__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__task-loop__phase' }, async ($, e) => {
+    const phase = str((e as unknown as Args).phase) as Phase
+    if (!PHASES.includes(phase)) return fail(`phase: one of ${PHASES.join(', ')}`)
+    if (!(await currentRun())) return fail('phase: no active run')
+    await setPhase(phase)
+    return ok(`Phase: ${phase}.`)
+  }).catch(crashed)
   on('tool.call', { tool: 'mcp__task-loop__status' }, async () => {
     const snap = await snapshot()
     return ok(statusText(snap))
@@ -874,11 +953,59 @@ export const register: Register = on => {
   // ----- activity and completion of the agents -----
 
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId) await touch(e.agentId)
-    return yield* next(e)
+    const run = await io.getRun()
+    const active = !!run && (run.status === 'planning' || run.status === 'active')
+    const row = active && e.agentId ? (await io.getRows()).find(isAgent(e.agentId)) : undefined
+    if (!active || (e.agentId && !row)) return yield* next(e)
+    // one model step of a tracked agent (or of the orchestrator): collect its tool calls, text and usage, then store once
+    const texts = new Map<number, string>()
+    const tools = new Map<number, { name: string; json: string }>()
+    let usage: { input: number; output: number; cacheRead: number; cacheWrite: number } | null = null
+    const stream = next(e)[Symbol.asyncIterator]()
+    let r = await stream.next()
+    while (!r.done) {
+      const c = r.value
+      if (c.kind === 'text') texts.set(c.index, (texts.get(c.index) ?? '') + c.text)
+      else if (c.kind === 'tool') tools.set(c.index, { name: c.name, json: '' })
+      else if (c.kind === 'input') {
+        const t = tools.get(c.index)
+        if (t) t.json += c.json
+      } else if (c.kind === 'stop' && c.usage) {
+        usage = { input: c.usage.input_tokens, output: c.usage.output_tokens, cacheRead: c.usage.cache_read_input_tokens, cacheWrite: c.usage.cache_creation_input_tokens }
+      }
+      yield c
+      r = await stream.next()
+    }
+    const now = await io.now()
+    if (row) {
+      const entries: Activity[] = []
+      for (const index of [...new Set([...texts.keys(), ...tools.keys()])].sort((a, b) => a - b)) {
+        const text = texts.get(index)?.replace(/\s+/g, ' ').trim()
+        if (text) entries.push({ at: now, kind: 'text', text: text.slice(0, 200) })
+        const t = tools.get(index)
+        if (t) entries.push({ at: now, kind: 'tool', text: `${t.name} ${shortArg(t.json)}`.trim() })
+      }
+      await patchRow(row.id, old =>
+        old.kind === 'worker'
+          ? { ...old, lastActivityAt: now, status: old.status === 'stale' ? 'running' : old.status, stats: grow(old.stats, usage, tools.size, entries, e.model) }
+          : { ...old, lastActivityAt: now, status: old.status === 'stale' ? 'running' : old.status, stats: grow(old.stats, usage, tools.size, entries, e.model) },
+      )
+    } else {
+      await io.setRun(cur => (cur ? { ...cur, orchestrator: { ...addUsage(cur.orchestrator, usage ?? {}), steps: cur.orchestrator.steps + 1, modelId: e.model } } : cur))
+    }
+    return r.value
   })
 
   on('turn.complete', async ($, e, next) => {
+    if (!e.agentId) {
+      const run = await currentRun()
+      const text = e.answer.trim()
+      if (run && text) {
+        const now = await io.now()
+        const row: OrchestratorRow = { kind: 'orchestrator', id: `orch-${now}`, iteration: run.iteration, at: now, text: text.slice(0, 4000) }
+        await io.setRows(rows => [...rows, row])
+      }
+    }
     if (e.agentId) {
       const rows = await io.getRows()
       const row = rows.find(isAgent(e.agentId))
@@ -904,14 +1031,14 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e) as unknown as Els
     const [run, rows, ui] = await Promise.all([read($, runAtom), read($, rowsAtom), read($, uiAtom)])
-    return drawPane(els, { run, rows, ui }, actions, e.props.bodyColumns)
+    return drawPane(els, { run, rows, ui }, actions, e.props.bodyColumns, { prices })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const [run, rows, ui] = await Promise.all([read($, runAtom), read($, rowsAtom), read($, uiAtom)])
     const els = $.ui.resolve(e) as unknown as Els
-    const tree = drawBand(els, { run, rows, ui }, actions, e.props.bodyColumns)
+    const tree = drawBand(els, { run, rows, ui }, actions, e.props.bodyColumns, e.props.maxRows, { prices })
     return tree ?? next(e)
   })
 }

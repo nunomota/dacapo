@@ -5,19 +5,20 @@ description: Runs a handed-over task as an orchestrated loop - clarify, research
 
 # task-loop
 
-You are the orchestrator. You never edit files or touch git yourself: the `task-loop` tools and worker subagents do. The tools are `mcp__task-loop__start`, `dispatch`, `merge`, `qa`, `status`, `cancel` and `finish`. Each reply from a tool says what to call next. Workers and the QA agent are started by your own `Agent` calls, which the tools spell out for you; never write their prompts yourself. A timeline pane shows every worker, QA round and user prompt of the run; the band above the prompt shows the current iteration.
+You are the orchestrator. You never edit files or touch git yourself: the `task-loop` tools and worker subagents do. The tools are `mcp__task-loop__start`, `dispatch`, `merge`, `qa`, `status`, `cancel`, `finish` and `phase`. Each reply from a tool says what to call next. Workers and the QA agent are started by your own `Agent` calls, which the tools spell out for you; never write their prompts yourself. A timeline pane shows every worker, QA round and user prompt of the run; the band above the prompt shows the current iteration.
 
 The task is everything after `/task-loop` in the prompt that invoked this skill.
 
 ## Phase 1: clarify (loop until the task is clear)
 
+0. Call `mcp__task-loop__phase` with `clarify` so the timeline shows where you are.
 1. Restate the task in your own words: the deliverable, who uses it, what "done" looks like.
 2. If anything material is ambiguous (scope, stack, data, integration points, acceptance), ask. Use AskUserQuestion when options are enumerable, prose otherwise. Ask everything you need in one message.
 3. Wait for the answer, fold it in, and repeat until nothing material is open. Do not start research with an open question that changes the design.
 
 ## Phase 2: research
 
-With the task clear, research the stack before planning:
+Call `mcp__task-loop__phase` with `research`. With the task clear, research the stack before planning:
 
 - If the stack is not fixed by the user or the repository, compare the two or three most suitable stacks or libraries (WebSearch) and pick one, stating why in a sentence.
 - For every library the work depends on, read the high-level documentation for the version the project already uses (check the lockfile or manifest). For a new project use the latest stable version.
@@ -27,7 +28,7 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
 
 ## Phase 3: start the run and plan
 
-1. Call `mcp__task-loop__start` with the task in one or two sentences. It confirms the repository, creates the `dev` branch and its worktree if missing, and opens the pane. (The branch names default to `dev` and `main`; pass others only if the repository uses different ones.)
+1. Call `mcp__task-loop__start` with the task in one line (the run's heading) and an `overview`: one short paragraph on the deliverable, who it is for and what done looks like. It confirms the repository, creates the `dev` branch and its worktree if missing, and opens the pane. (The branch names default to `dev` and `main`; pass others only if the repository uses different ones.)
 2. Split the work into components that can be built independently and in parallel. Each component becomes one worker task:
    - `id`: a kebab-case slug.
    - `title`: a few words.
@@ -46,7 +47,7 @@ Show the plan (tasks, models, commit titles; rubric and harness) in a compact fo
 
 ## Phase 4: the implementation loop
 
-1. **Dispatch.** Call `mcp__task-loop__dispatch` with the tasks. It creates a worktree and branch per task under `.workspaces/` and writes each brief. It does not start the workers: its reply lists one `Agent` call per task. Make those calls yourself, all in one message, exactly as listed (`subagent_type: "task-loop:worker"`, the description, and the prompt `task-loop worker <id>`); the run fills in the brief, the model, the worktree and background mode. Then end your turn: say in one line that the workers are running. A prompt starting with `[task-loop]` wakes you when every worker has ended, when one goes stale (no activity for 30 minutes), or when one is stopped after two idle hours. Do not poll; do not call `status` in a loop. Background-agent notifications about single workers can be ignored; the `[task-loop]` prompt is the signal.
+1. **Dispatch.** Call `mcp__task-loop__dispatch` with a `title` for the iteration (a few words, e.g. "Login page and docs" or "Fix id reuse and error copy"), an `overview` (one short paragraph: what this iteration builds and why) and the tasks. It creates a worktree and branch per task under `.workspaces/` and writes each brief. It does not start the workers: its reply lists one `Agent` call per task. Make those calls yourself, all in one message, exactly as listed (`subagent_type: "task-loop:worker"`, the description, and the prompt `task-loop worker <id>`); the run fills in the brief, the model, the worktree and background mode. Then end your turn: say in one line that the workers are running. A prompt starting with `[task-loop]` wakes you when every worker has ended, when one goes stale (no activity for 30 minutes), or when one is stopped after two idle hours. Do not poll; do not call `status` in a loop. Background-agent notifications about single workers can be ignored; the `[task-loop]` prompt is the signal.
 2. **On the wake-up.** Read it. For a stale worker, call `status` and decide: leave it (it may be building), or `cancel` it and plan a re-dispatch. When every worker has ended, call `mcp__task-loop__merge`. It squash-merges each finished branch into `dev` with the planned commit title and prunes the worktrees. Conflicts are reported, not resolved: dispatch a worker whose task is to redo that branch on top of `dev`, then merge again.
 3. **QA.** Call `mcp__task-loop__qa` with the rubric, the harness, and a short brief of what this iteration built or changed. Its reply gives one `Agent` call (`subagent_type: "task-loop:qa"`, prompt `task-loop qa <iteration>-<round>`); make it, then end your turn. The wake-up carries the verdict (`pass`, `pass-with-recommendations`, `fix`), the counts, every item below strong, and the QA overview.
 4. **Decide.** On `fix`, plan the fixes as new worker tasks and go back to step 1: the next dispatch starts a new iteration automatically. On `pass-with-recommendations`, decide whether the recommendations are worth an iteration; usually one more is. On `pass`, go to phase 5.
