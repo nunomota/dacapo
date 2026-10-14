@@ -18,6 +18,7 @@ export type Run = {
 }
 
 export type WorkerStatus =
+  | 'pending'
   | 'running'
   | 'finished'
   | 'merged'
@@ -27,6 +28,7 @@ export type WorkerStatus =
   | 'cancelled'
 
 export type QaStatus =
+  | 'pending'
   | 'running'
   | 'finished'
   | 'invalid'
@@ -56,7 +58,7 @@ export type UserRow = {
 
 export type WorkerRow = {
   kind: 'worker'
-  /** The subagent's agent id. */
+  /** The subagent's agent id; `pending-...` until the orchestrator's Agent call started it. */
   id: string
   iteration: number
   at: number
@@ -85,6 +87,7 @@ export type QaRow = {
   lastActivityAt: number
   worktree: string
   reportPath: string
+  model: string
   status: QaStatus
   summary?: QaSummary
   items?: QaItem[]

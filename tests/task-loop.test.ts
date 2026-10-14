@@ -2,7 +2,6 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { summarize, validateReport, validateRubric } from '../hooks/report'
 import { cut, elapsed } from '../hooks/pane'
-import type { Row, WorkerRow } from '../types'
 
 const RUBRIC = [
   { id: 'login', title: 'A user can log in', category: 'core' as const },
@@ -19,7 +18,7 @@ describe('QA report validation', () => {
       overview: 'Works end to end; error copy could be clearer.',
     })
     const out = validateReport(text, RUBRIC)
-    expect(out.ok).toBe(true)
+    expect(out.ok, 'L21').toBe(true)
     if (!out.ok) return
     expect(out.summary).toEqual({ strong: 1, acceptable: 1, unacceptable: 0, verdict: 'pass-with-recommendations' })
     expect(out.items[1]?.title).toBe('Errors are explained')
@@ -34,19 +33,19 @@ describe('QA report validation', () => {
       overview: 'x',
     })
     const out = validateReport(text, RUBRIC)
-    expect(out.ok).toBe(false)
+    expect(out.ok, 'L36').toBe(false)
     if (out.ok) return
-    expect(out.problems.some(p => p.includes('"login"') && p.includes('great'))).toBe(true)
-    expect(out.problems.some(p => p.includes('"signup"'))).toBe(true)
-    expect(out.problems.some(p => p.includes('"errors"') && p.includes('no score'))).toBe(true)
+    expect(out.problems.some(p => p.includes('"login"') && p.includes('great')), 'L38').toBe(true)
+    expect(out.problems.some(p => p.includes('"signup"')), 'L39').toBe(true)
+    expect(out.problems.some(p => p.includes('"errors"') && p.includes('no score')), 'L40').toBe(true)
   })
 
   test('text that is not JSON, and an empty overview, are refused', () => {
-    expect(validateReport('not json', RUBRIC).ok).toBe(false)
+    expect(validateReport('not json', RUBRIC).ok, 'L44').toBe(false)
     const out = validateReport(JSON.stringify({ items: [], overview: '  ' }), RUBRIC)
-    expect(out.ok).toBe(false)
+    expect(out.ok, 'L46').toBe(false)
     if (out.ok) return
-    expect(out.problems.some(p => p.includes('overview'))).toBe(true)
+    expect(out.problems.some(p => p.includes('overview')), 'L48').toBe(true)
   })
 
   test('one unacceptable item means fix; all strong means pass', () => {
@@ -56,11 +55,11 @@ describe('QA report validation', () => {
   })
 
   test('a rubric needs kebab-case ids, titles and a known category', () => {
-    expect(validateRubric(RUBRIC).ok).toBe(true)
-    expect(validateRubric([]).ok).toBe(false)
-    expect(validateRubric([{ id: 'Bad Id', title: 't', category: 'core' }]).ok).toBe(false)
-    expect(validateRubric([{ id: 'a', title: 't', category: 'perf' }]).ok).toBe(false)
-    expect(validateRubric([{ id: 'a', title: 't', category: 'core' }, { id: 'a', title: 'u', category: 'core' }]).ok).toBe(false)
+    expect(validateRubric(RUBRIC).ok, 'L58').toBe(true)
+    expect(validateRubric([]).ok, 'L59').toBe(false)
+    expect(validateRubric([{ id: 'Bad Id', title: 't', category: 'core' }]).ok, 'L60').toBe(false)
+    expect(validateRubric([{ id: 'a', title: 't', category: 'perf' }]).ok, 'L61').toBe(false)
+    expect(validateRubric([{ id: 'a', title: 't', category: 'core' }, { id: 'a', title: 'u', category: 'core' }]).ok, 'L62').toBe(false)
   })
 })
 
@@ -116,23 +115,6 @@ describe('the pane', () => {
 })
 
 describe('the loop', () => {
-  // The kit starts no subagents, so a spawn comes back without an id; the rows a spawn
-  // would add are seeded through the engine's state and everything after is exercised.
-  const worker = (id: string, iteration: number, taskId: string, at: number): WorkerRow => ({
-    kind: 'worker',
-    id,
-    iteration,
-    at,
-    lastActivityAt: at,
-    taskId,
-    title: taskId === 'login' ? 'Login page' : 'Fix error copy',
-    branch: `task/${iteration}-${taskId}`,
-    worktree: `/repo/.workspaces/task/${iteration}-${taskId}`,
-    model: 'sonnet',
-    commit: taskId === 'login' ? 'feat: add login page' : 'fix: explain login errors',
-    status: 'running',
-  })
-
   test('a worker completion wakes the orchestrator; merge, QA collection, guards, folding and stale marking', async ($, on) => {
     const t0 = Date.UTC(2026, 9, 10, 12, 0, 0)
     const clock = mock.clock(on, { now: t0 })
@@ -165,44 +147,55 @@ describe('the loop', () => {
       if (argv[1] === 'rev-parse' && argv[2] === '--short') return out('beef1\n')
       return out('')
     })
-    on('agent.spawn', (_, e) => ({ model: e.model ?? 'opus' }))
     on('turn.complete', (_, e) => ({ text: e.answer }))
     on('tool.call', { tool: 'TaskStop' }, () => ({ result: 'stopped' }))
     on('tool.call', { tool: 'Write' }, () => ({ result: 'written' }))
     on('tool.call', { tool: 'Read' }, () => ({ result: 'read' }))
-    // Rows a spawn would have added: joined onto every read of the rows until the plugin's next write stores them.
-    const pending: Row[] = []
-    on('state.get', { plugin: 'task-loop', key: 'rows' }, async (_, e, next) => {
-      const got = (await next(e)) as { value: { value: Row[] | undefined; version: number } }
-      const stored = got.value.value ?? []
-      const extra = pending.filter(p => !stored.some(r => r.kind !== 'user' && r.id === p.id))
-      if (extra.length === 0) return got
-      return { value: { value: [...stored, ...extra], version: got.value.version } }
+    const agentCalls: Array<Record<string, unknown>> = []
+    let nextAgent = 0
+    on('tool.call', { tool: 'Agent' }, (_, e) => {
+      agentCalls.push({ ...e })
+      nextAgent += 1
+      return { result: { agentId: `agent-${nextAgent}`, content: [{ type: 'text' as const, text: 'started' }] } }
     })
-    const seed = async (fn: (list: Row[]) => Row[]) => {
-      for (const row of fn([])) pending.push(row)
-    }
+    const startAgent = (prompt: string) => $.tool.call({ tool: 'Agent', prompt, description: 'x', subagent_type: 'task-loop:worker' })
 
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     await $.prompt.submit({ text: '/task-loop build a login page', wait: false, origin: { kind: 'composer' } })
     const started = await $.tool.call({ tool: 'mcp__task-loop__start', task: 'Build a login page' } as never)
-    expect('result' in started && started.text).toMatch(/Run .* ready/)
-    const runId = 'result' in started ? (started.result as { runId: string }).runId : ''
+    expect('result' in started && started.result).toMatch(/Run .* ready/)
+    const runId = /Run (\S+) ready/.exec(String('result' in started ? started.result : ''))?.[1] ?? ''
 
     const bad = await $.tool.call({
       tool: 'mcp__task-loop__dispatch',
       tasks: [{ id: 'login', title: 'Login page', prompt: 'Build it', model: 'sonnet', commit: 'update(login): stuff' }],
     } as never)
-    expect('isError' in bad && bad.isError).toBe(true)
+    expect('isError' in bad && bad.isError, 'L173').toBe(true)
 
     const dispatched = await $.tool.call({
       tool: 'mcp__task-loop__dispatch',
       tasks: [{ id: 'login', title: 'Login page', prompt: 'Build the login page.', model: 'sonnet', commit: 'feat: add login page', build: 'npm run build' }],
     } as never)
-    expect('result' in dispatched && dispatched.text).toMatch(/Iteration 1/)
+    expect('result' in dispatched && dispatched.result).toMatch(/prompt: "task-loop worker login"/)
     expect(files.get('/repo/.workspaces/task/1-login/.context/brief.md')).toMatch(/npm run build/)
     expect(files.get(`/repo/.workspaces/.task-loop/${runId}/iteration-1-login.md`)).toMatch(/clean-commits/)
-    await seed(() => [worker('agent-1', 1, 'login', t0 + 1_000)])
+    const pendingStatus = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
+    expect('result' in pendingStatus && pendingStatus.result).toMatch(/login \[pending-worker-1-login\] waiting to start/)
+    // a merge cannot run while a worker is still to be started
+    const early = await $.tool.call({ tool: 'mcp__task-loop__merge' } as never)
+    expect('isError' in early && early.isError, 'L186').toBe(true)
+    // an Agent call that names nothing pending is refused; the right one is filled in from the run
+    const wrong = await startAgent('task-loop worker nope')
+    expect('deny' in wrong && typeof wrong.deny === 'string', 'L189').toBe(true)
+    await clock.advance(1_000)
+    const startedWorker = await startAgent('task-loop worker login')
+    expect('result' in startedWorker, 'L192').toBe(true)
+    const call = agentCalls[0]!
+    expect(call.subagent_type).toBe('task-loop:worker')
+    expect(call.model).toBe('sonnet')
+    expect(call.run_in_background, 'L196').toBe(true)
+    expect(String(call.prompt)).toMatch(/^\[task-loop worktree: \/repo\/.workspaces\/task\/1-login\]/)
+    expect(String(call.prompt)).toMatch(/npm run build/)
 
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'task-loop', surface, ...PANE })
@@ -212,41 +205,41 @@ describe('the loop', () => {
 
     // the orchestrator may not edit while the run is active; a worker may, inside its worktree only
     const denied = await $.tool.call({ tool: 'Write', file_path: '/repo/x.ts', content: 'x' })
-    expect('deny' in denied && typeof denied.deny === 'string').toBe(true)
+    expect('deny' in denied && typeof denied.deny === 'string', 'L208').toBe(true)
     const outside = await $.tool.call({ tool: 'Write', file_path: '/repo/src/x.ts', content: 'x', agentId: 'agent-1' } as never)
-    expect('deny' in outside && typeof outside.deny === 'string').toBe(true)
+    expect('deny' in outside && typeof outside.deny === 'string', 'L210').toBe(true)
     const inside = await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/task/1-login/src/x.ts', content: 'x', agentId: 'agent-1' } as never)
     expect('result' in inside && inside.result).toBe('written')
 
     await clock.advance(90_000)
     await $.turn.complete({ answer: 'Done. Build passes.', durationMs: 1, isAborted: false, turnId: 't1', agentId: 'agent-1', reason: 'answer' })
-    expect(prompts.some(p => p.startsWith('[task-loop]') && /all 1 worker\(s\) have ended/.test(p))).toBe(true)
+    expect(prompts.some(p => p.startsWith('[task-loop]') && /all 1 worker\(s\) have ended/.test(p)), 'L216').toBe(true)
     const statusAfter = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
-    expect('result' in statusAfter && statusAfter.text).toMatch(/login \[agent-1\] finished \(1m29s/)
+    expect('result' in statusAfter && statusAfter.result).toMatch(/login \[agent-1\] finished \(1m30s/)
 
     const merged = await $.tool.call({ tool: 'mcp__task-loop__merge' } as never)
-    expect('result' in merged && merged.text).toMatch(/feat: add login page \(beef1\)/)
+    expect('result' in merged && merged.result).toMatch(/feat: add login page \(beef1\)/)
 
     const qa = await $.tool.call({
       tool: 'mcp__task-loop__qa',
       rubric: [{ id: 'login', title: 'A user can log in', category: 'core' }, { id: 'copy', title: 'Error copy is clear', category: 'ui-ux' }],
       harness: 'Run `npm start`, open http://localhost:3000/login, use user@example.com / secret.',
     } as never)
-    expect('isError' in qa && qa.text).toMatch(/could not be started/)
+    expect('result' in qa && qa.result).toMatch(/prompt: "task-loop qa 1-1"/)
     expect(files.get('/repo/.workspaces/qa/1-1/.context/qa-brief.md')).toMatch(/npm start/)
     const reportPath = '/repo/.workspaces/qa/1-1/.context/qa-report.json'
-    const qaAt = clock.now()
-    await seed(() => [
-      { kind: 'qa', id: 'agent-2', iteration: 1, round: 1, attempt: 1, at: qaAt, lastActivityAt: qaAt, worktree: '/repo/.workspaces/qa/1-1', reportPath, status: 'running' },
-    ])
+    const startedQa = await startAgent('task-loop qa 1-1')
+    expect('result' in startedQa, 'L232').toBe(true)
+    expect(agentCalls[1]?.subagent_type).toBe('task-loop:qa')
+    expect(agentCalls[1]?.model).toBe('opus')
 
     // QA may not read source, only its .context folder; and only writes its report
     const peek = await $.tool.call({ tool: 'Read', file_path: '/repo/.workspaces/qa/1-1/src/login.ts', agentId: 'agent-2' } as never)
-    expect('deny' in peek && typeof peek.deny === 'string').toBe(true)
+    expect('deny' in peek && typeof peek.deny === 'string', 'L238').toBe(true)
     const brief = await $.tool.call({ tool: 'Read', file_path: '.context/qa-brief.md', agentId: 'agent-2' } as never)
     expect('result' in brief && brief.result).toBe('read')
     const wrongWrite = await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/qa/1-1/.context/notes.md', content: 'x', agentId: 'agent-2' } as never)
-    expect('deny' in wrongWrite && typeof wrongWrite.deny === 'string').toBe(true)
+    expect('deny' in wrongWrite && typeof wrongWrite.deny === 'string', 'L242').toBe(true)
 
     files.set(reportPath, JSON.stringify({ items: [{ id: 'login', score: 'strong', note: 'ok' }, { id: 'copy', score: 'unacceptable', note: 'says "error"' }], overview: 'Login works; the error copy needs words.' }))
     await $.turn.complete({ answer: 'Report written.', durationMs: 1, isAborted: false, turnId: 't2', agentId: 'agent-2', reason: 'answer' })
@@ -271,8 +264,8 @@ describe('the loop', () => {
       tool: 'mcp__task-loop__dispatch',
       tasks: [{ id: 'copy', title: 'Fix error copy', prompt: 'Explain errors.', model: 'sonnet', commit: 'fix: explain login errors' }],
     } as never)
-    expect('result' in again && again.text).toMatch(/Iteration 2/)
-    await seed(() => [worker('agent-3', 2, 'copy', clock.now())])
+    expect('result' in again && again.result).toMatch(/Iteration 2/)
+    await startAgent('task-loop worker copy')
     const ui = await $.ui.mount({ plugin: 'task-loop', surface: 'terminal', ...PANE })
     expect(await ui.find({ key: 'iter-2' })).toBeDefined()
     expect(await ui.find({ text: /Fix error copy/ })).toBeDefined()
@@ -283,21 +276,21 @@ describe('the loop', () => {
 
     // a silent worker is marked stale after 30 minutes and the orchestrator is told; activity clears it
     await clock.advance(31 * 60_000)
-    expect(prompts.some(p => /Worker copy \[agent-3\] looks stale/.test(p))).toBe(true)
+    expect(prompts.some(p => /Worker copy \[agent-3\] looks stale/.test(p)), 'L279').toBe(true)
     const stale = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
-    expect('result' in stale && stale.text).toMatch(/copy \[agent-3\] stale/)
+    expect('result' in stale && stale.result).toMatch(/copy \[agent-3\] stale/)
     await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/task/2-copy/a.ts', content: 'x', agentId: 'agent-3' } as never)
     const back = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
-    expect('result' in back && back.text).toMatch(/copy \[agent-3\] running/)
+    expect('result' in back && back.result).toMatch(/copy \[agent-3\] running/)
 
     // two idle hours stop it, distinct from a failure
     await clock.advance(2 * 60 * 60_000 + 1_000)
     const timed = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
-    expect('result' in timed && timed.text).toMatch(/copy \[agent-3\] timed out/)
-    expect(prompts.some(p => /Worker copy \[agent-3\] timed out/.test(p))).toBe(true)
+    expect('result' in timed && timed.result).toMatch(/copy \[agent-3\] timed out/)
+    expect(prompts.some(p => /Worker copy \[agent-3\] timed out/.test(p)), 'L290').toBe(true)
 
     const finished = await $.tool.call({ tool: 'mcp__task-loop__finish' } as never)
-    expect('result' in finished && finished.text).toMatch(/Run .* finished/)
+    expect('result' in finished && finished.result).toMatch(/Run .* finished/)
     const after = await $.tool.call({ tool: 'Write', file_path: '/repo/x.ts', content: 'x' })
     expect('result' in after && after.result).toBe('written')
   })

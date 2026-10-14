@@ -1,4 +1,4 @@
-import type { AgentSpawnArgs, AgentSpawnResult, ProcessRunInit, ProcessRunResult } from 'claude-code'
+import type { ProcessRunInit, ProcessRunResult } from 'claude-code'
 
 import type { Row, Run, Ui } from '../types'
 
@@ -14,7 +14,6 @@ export type Io = {
   exists: (path: string) => Promise<boolean>
   now: () => Promise<number>
   cwd: () => Promise<string>
-  spawn: (args: AgentSpawnArgs) => Promise<AgentSpawnResult>
   stop: (agentId: string) => Promise<unknown>
   submit: (text: string) => Promise<unknown>
   openPane: (focus?: boolean) => Promise<unknown>

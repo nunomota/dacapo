@@ -101,10 +101,14 @@ export async function addDetachedWorktree(io: Io, root: string, path: string, ba
 
 export async function removeWorktree(io: Io, root: string, path: string, branch?: string): Promise<string[]> {
   const notes: string[] = []
-  const plain = await git(io, root, ['worktree', 'remove', path])
-  if (!plain.ok) {
-    const forced = await git(io, root, ['worktree', 'remove', '--force', path])
-    if (!forced.ok) notes.push(`worktree ${path} not removed: ${forced.err || forced.out}`)
+  if (await io.exists(path)) {
+    const plain = await git(io, root, ['worktree', 'remove', path])
+    if (!plain.ok) {
+      const forced = await git(io, root, ['worktree', 'remove', '--force', path])
+      if (!forced.ok) notes.push(`worktree ${path} not removed: ${forced.err || forced.out}`)
+    }
+    // the parent (`.workspaces/task`, `.workspaces/qa`) goes once it is empty; rmdir refuses otherwise
+    await io.run(['rmdir', path.split('/').slice(0, -1).join('/')])
   }
   await git(io, root, ['worktree', 'prune'])
   if (branch) {

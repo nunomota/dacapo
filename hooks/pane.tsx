@@ -46,6 +46,8 @@ export const isActive = (row: Row): boolean => row.kind !== 'user' && (row.statu
 
 export function glyph(row: WorkerRow | QaRow, tick: number): { text: string; color?: string; dim?: boolean } {
   switch (row.status) {
+    case 'pending':
+      return { text: '○', dim: true }
     case 'running':
       return { text: FRAMES[Math.floor(tick / 100) % FRAMES.length]! }
     case 'finished':
@@ -65,6 +67,7 @@ export function glyph(row: WorkerRow | QaRow, tick: number): { text: string; col
 }
 
 export const statusWord: Record<WorkerRow['status'] | QaRow['status'], string> = {
+  pending: 'waiting to start',
   running: 'running',
   finished: 'finished',
   merged: 'merged',

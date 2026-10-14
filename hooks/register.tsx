@@ -64,7 +64,12 @@ const isUnder = (path: string, base: string, cwd: string) => {
 
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
 
-const isTerminal = (row: WorkerRow | QaRow) => row.status !== 'running' && row.status !== 'stale'
+const isLive = (row: WorkerRow | QaRow) => row.status === 'running' || row.status === 'stale'
+const isTerminal = (row: WorkerRow | QaRow) => !isLive(row) && row.status !== 'pending'
+const pendingId = (kind: 'worker' | 'qa', iteration: number, key: string) => `pending-${kind}-${iteration}-${key}`
+/** The first line of every prompt the Agent hook hands a worker or QA agent; the spawn hook reads the worktree off it. */
+const WORKTREE_LINE = /^\[task-loop worktree: (.+)\]$/m
+const ASK_LINE = /^\s*task-loop (worker|qa) (\S+)\s*$/
 
 const isAgent = (id: string) => (r: Row): r is WorkerRow | QaRow => r.kind !== 'user' && r.id === id
 
@@ -86,16 +91,17 @@ function wake(text: string) {
   void io.submit(full).catch(() => ownPrompts.delete(full))
 }
 
-const fail = (text: string) => ({ isError: true as const, result: { error: text }, text })
-const ok = (result: Record<string, unknown>, text: string) => ({ result, text })
+/** A registered tool answers with text: the engine holds `result` to a string or content blocks. */
+const fail = (text: string) => ({ isError: true as const, result: text })
+const ok = (text: string) => ({ result: text })
 /** A tool handler that threw answers the call with the error instead of failing silently. */
 const crashed = (_: unknown, e: { tool: string }, next: { error: { kind: string; message?: string } }) =>
   fail(`${e.tool} failed (${next.error.kind}): ${next.error.message ?? 'no message'}`)
 
 // ---------- the run ----------
 
-async function openRun(task: string, devBranch: string, mainBranch: string): Promise<Run> {
-  const cwd = await io.cwd()
+async function openRun(task: string, devBranch: string, mainBranch: string, at?: string): Promise<Run> {
+  const cwd = at ?? (await io.cwd())
   const root = (await git.repoRoot(io, cwd)) ?? cwd
   const now = await io.now()
   const id = `${new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15)}-${slug(task).slice(0, 24)}`
@@ -163,8 +169,16 @@ function statusText(snap: Snapshot): string {
 async function start(a: Args) {
   const task = str(a.task).trim()
   if (!task) return fail('start: "task" is required')
+  const root = str(a.root).trim()
+  if (root && !(await git.repoRoot(io, root))) return fail(`start: ${root} is not inside a git repository`)
   let run = await currentRun()
-  if (!run) run = await openRun(task, str(a.devBranch, 'dev'), str(a.mainBranch, 'main'))
+  if (!run) run = await openRun(task, str(a.devBranch, 'dev'), str(a.mainBranch, 'main'), root || undefined)
+  else if (root && !run.devWorktree) {
+    const top = (await git.repoRoot(io, root)) ?? root
+    const moved: Run = { ...run, root: top, runDir: `${top}/.workspaces/.task-loop/${run.id}` }
+    await io.setRun(() => moved)
+    run = moved
+  }
   else {
     const next: Run = { ...run, task, devBranch: str(a.devBranch, run.devBranch), mainBranch: str(a.mainBranch, run.mainBranch) }
     await io.setRun(() => next)
@@ -176,10 +190,7 @@ async function start(a: Args) {
     return fail(`start: ${String(error)}`)
   }
   void io.openPane()
-  return ok(
-    { runId: run.id, root: run.root, devBranch: run.devBranch, mainBranch: run.mainBranch, devWorktree: run.devWorktree, runDir: run.runDir },
-    `Run ${run.id} ready. Repository ${run.root}; dev branch "${run.devBranch}" checked out at ${run.devWorktree}; run folder ${run.runDir}. Plan the work, then call ${tool('dispatch')}.`,
-  )
+  return ok(`Run ${run.id} ready. Repository ${run.root}; dev branch "${run.devBranch}" checked out at ${run.devWorktree}; run folder ${run.runDir}. Plan the work, then call ${tool('dispatch')}.`)
 }
 
 const COMMIT_TITLE = /^(feat|fix|docs|style|refactor|test|chore|perf|ci|revert)!?: \S/
@@ -220,7 +231,7 @@ async function dispatch(a: Args) {
   const active = run
   await io.setRun(() => active)
 
-  const started: Array<{ taskId: string; agentId: string; branch: string; worktree: string; model: string }> = []
+  const started: Array<{ taskId: string; title: string; branch: string; worktree: string; model: string }> = []
   const problems: string[] = []
   for (const t of tasks) {
     const taskId = str(t.id)
@@ -240,22 +251,10 @@ async function dispatch(a: Args) {
       const brief = workerBrief({ title, prompt: str(t.prompt), worktree: path, branch, build: str(t.build) || undefined, test: str(t.test) || undefined, extras: names })
       await io.write(`${path}/.context/brief.md`, brief)
       await io.write(`${active.runDir}/iteration-${active.iteration}-${taskId}.md`, brief)
-      const spawned = await io.spawn({
-        subagentType: WORKER_AGENT,
-        model,
-        description: title,
-        cwd: path,
-        prompt: `${brief}\n\nStart now. Your working directory is the worktree above.`,
-      })
-      const agentId = 'agentId' in spawned ? spawned.agentId : undefined
-      if (!agentId) {
-        problems.push(`${taskId}: spawn refused${'deny' in spawned ? ` (${String(spawned.deny)})` : ''}`)
-        continue
-      }
       const now = await io.now()
       const row: WorkerRow = {
         kind: 'worker',
-        id: agentId,
+        id: pendingId('worker', active.iteration, taskId),
         iteration: active.iteration,
         at: now,
         lastActivityAt: now,
@@ -265,22 +264,28 @@ async function dispatch(a: Args) {
         worktree: path,
         model,
         commit: str(t.commit).trim(),
-        status: 'running',
+        status: 'pending',
       }
-      await io.setRows(list => [...list, row])
-      started.push({ taskId, agentId, branch, worktree: path, model })
+      await io.setRows(list => [...list.filter(r => r.kind !== 'worker' || r.id !== row.id), row])
+      started.push({ taskId, title, branch, worktree: path, model })
     } catch (error) {
       problems.push(`${taskId}: ${String(error)}`)
     }
   }
   void io.openPane()
   const text = [
-    `Iteration ${active.iteration}: ${started.length} worker(s) started.`,
-    ...started.map(s => `- ${s.taskId}: agent ${s.agentId} (${s.model}) on ${s.branch}`),
+    `Iteration ${active.iteration}: ${started.length} worktree(s) prepared.`,
+    ...started.map(s => `- ${s.taskId}: ${s.branch} at ${s.worktree} (${s.model})`),
     ...(problems.length > 0 ? ['Problems:', ...problems.map(p => `- ${p}`)] : []),
-    started.length > 0 ? 'End your turn now. A prompt wakes you when every worker has ended, or when one goes stale.' : 'Nothing is running.',
+    ...(started.length > 0
+      ? [
+          'Now start the workers: call the Agent tool once per task, all in one message, with exactly these arguments (the run fills in the brief, model, worktree and background mode):',
+          ...started.map(s => `- Agent({ subagent_type: "${WORKER_AGENT}", description: "${s.title.replace(/"/g, "'")}", prompt: "task-loop worker ${s.taskId}" })`),
+          'Then end your turn. A prompt wakes you when every worker has ended, or when one goes stale.',
+        ]
+      : ['Nothing to start.']),
   ].join('\n')
-  return ok({ iteration: active.iteration, started, problems }, text)
+  return ok(text)
 }
 
 async function merge() {
@@ -320,16 +325,11 @@ async function merge() {
   ]
     .filter(Boolean)
     .join('\n')
-  return ok({ merged, skipped }, text)
+  return ok(text)
 }
 
 const qaPrompt = (worktree: string) =>
   `Read ${worktree}/.context/qa-brief.md and ${worktree}/.context/rubric.json, then test the deliverable as its user and write the report where the brief says. Your working directory is ${worktree}.`
-
-async function spawnQa(worktree: string, model: string, prompt: string): Promise<string | null> {
-  const spawned = await io.spawn({ subagentType: QA_AGENT, model, description: 'QA as end user', cwd: worktree, prompt })
-  return 'agentId' in spawned && spawned.agentId ? spawned.agentId : null
-}
 
 async function qa(a: Args) {
   let run = await currentRun()
@@ -362,12 +362,10 @@ async function qa(a: Args) {
   } catch (error) {
     return fail(`qa: ${String(error)}`)
   }
-  const agentId = await spawnQa(worktree, model, qaPrompt(worktree))
-  if (!agentId) return fail('qa: the QA agent could not be started')
   const now = await io.now()
   const row: QaRow = {
     kind: 'qa',
-    id: agentId,
+    id: pendingId('qa', iteration, `${round}`),
     iteration,
     round,
     attempt: 1,
@@ -375,14 +373,19 @@ async function qa(a: Args) {
     lastActivityAt: now,
     worktree,
     reportPath,
-    status: 'running',
+    model,
+    status: 'pending',
   }
-  rubrics.set(row.id, rubric.rubric)
+  rubrics.set(`${iteration}-${round}`, rubric.rubric)
   await io.setRows(list => [...list, row])
   void io.openPane()
   return ok(
-    { agentId, round, worktree },
-    `QA round ${round} for iteration ${iteration} started (agent ${agentId}, ${model}). End your turn now; a prompt wakes you with the verdict and overview.`,
+    [
+      `QA round ${round} for iteration ${iteration} prepared at ${worktree}.`,
+      'Now start it: call the Agent tool with exactly these arguments (the run fills in the brief, model, worktree and background mode):',
+      `- Agent({ subagent_type: "${QA_AGENT}", description: "QA round ${round}", prompt: "task-loop qa ${iteration}-${round}" })`,
+      'Then end your turn; a prompt wakes you with the verdict and overview.',
+    ].join('\n'),
   )
 }
 
@@ -393,14 +396,16 @@ async function cancel(a: Args) {
   if (!row) return fail(`cancel: no agent ${agentId} in this run`)
   if (isTerminal(row)) return fail(`cancel: agent ${agentId} already ${statusWord[row.status]}`)
   let stopNote = ''
-  try {
-    await io.stop(agentId)
-  } catch (error) {
-    stopNote = ` (stop reported: ${String(error)})`
+  if (row.status !== 'pending') {
+    try {
+      await io.stop(agentId)
+    } catch (error) {
+      stopNote = ` (stop reported: ${String(error)})`
+    }
   }
   const now = await io.now()
   await patchRow(agentId, r => ({ ...r, status: 'cancelled', endedAt: now, note: str(a.reason) || 'cancelled by the orchestrator' }))
-  return ok({ agentId }, `Agent ${agentId} cancelled${stopNote}.`)
+  return ok(`Agent ${agentId} cancelled${stopNote}.`)
 }
 
 async function finish(a: Args) {
@@ -413,7 +418,7 @@ async function finish(a: Args) {
   if (a.abort === true) {
     await io.setRun(() => ({ ...run, status: 'aborted' }))
     lines.push(`Run ${run.id} aborted; ${run.devBranch} keeps what was merged. Leftover worktrees under .workspaces/ are kept for inspection.`)
-    return ok({ runId: run.id }, lines.join('\n'))
+    return ok(lines.join('\n'))
   }
   if (!run.devWorktree) return fail('finish: nothing was ever dispatched; call finish with abort=true to close the run')
   const { outcome, notes } = await git.releaseToMain(io, run.root, run.devBranch, run.mainBranch)
@@ -435,13 +440,13 @@ async function finish(a: Args) {
   for (const q of rows.filter((r): r is QaRow => r.kind === 'qa')) lines.push(...(await git.removeWorktree(io, run.root, q.worktree)))
   await io.setRun(() => ({ ...run, status: 'done' }))
   lines.push(`Run ${run.id} finished. Reports and briefs are under ${run.runDir}.`)
-  return ok({ runId: run.id }, lines.join('\n'))
+  return ok(lines.join('\n'))
 }
 
 // ---------- completion of the agents ----------
 
 async function rubricFor(run: Run, row: QaRow): Promise<RubricItem[]> {
-  const held = rubrics.get(row.id)
+  const held = rubrics.get(`${row.iteration}-${row.round}`)
   if (held) return held
   const text = await io.read(`${run.runDir}/qa-${row.iteration}-${row.round}-rubric.json`)
   return JSON.parse(text) as RubricItem[]
@@ -470,24 +475,9 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   }
   const checked = text === null ? { ok: false as const, problems: [`no report at ${row.reportPath}`] } : validateReport(text, rubric)
   if (!checked.ok) {
-    if (row.attempt < 2) {
-      const retry = await spawnQa(
-        row.worktree,
-        'opus',
-        `${qaPrompt(row.worktree)}\n\nA previous attempt produced an unusable report:\n${checked.problems.map(p => `- ${p}`).join('\n')}\nWrite the report again, complete and in the exact JSON shape the brief gives.`,
-      )
-      if (retry) {
-        rubrics.set(retry, rubric)
-        rubrics.delete(row.id)
-        await io.setRows(rows =>
-          rows.map(r => (r.kind === 'qa' && r.id === row.id ? { ...r, id: retry, attempt: 2, lastActivityAt: now, status: 'running' } : r)),
-        )
-        return
-      }
-    }
     const note = `report invalid: ${checked.problems.join('; ')}`
     await patchQa(row.id, r => ({ ...r, status: 'invalid', endedAt: now, note }))
-    wake(`QA round ${row.round} of iteration ${row.iteration} ended without a valid report (${note}). Call ${tool('qa')} again with a clearer harness, or decide without it.`)
+    wake(`QA round ${row.round} of iteration ${row.iteration} ended without a valid report (${note}). The worktree ${row.worktree} is kept. Call ${tool('qa')} again (a new round) with a clearer harness, or decide without it.`)
     return
   }
   const stamped = JSON.stringify(
@@ -497,7 +487,7 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   )
   await io.write(`${run.runDir}/qa-${row.iteration}-${row.round}.json`, stamped)
   await patchRow(row.id, r => ({ ...r, status: 'finished', endedAt: now, summary: checked.summary, items: checked.items, overview: checked.overview }))
-  rubrics.delete(row.id)
+  rubrics.delete(`${row.iteration}-${row.round}`)
   await git.removeWorktree(io, run.root, row.worktree)
   const s = checked.summary
   const weak = checked.items.filter(i => i.score !== 'strong').map(i => `- ${i.score}: ${i.title}${i.note ? ` — ${i.note}` : ''}`)
@@ -553,7 +543,7 @@ async function tick() {
   const run = await io.getRun()
   if (!run || run.status === 'done' || run.status === 'aborted') return
   const rows = await io.getRows()
-  const live = rows.filter((r): r is WorkerRow | QaRow => r.kind !== 'user' && !isTerminal(r))
+  const live = rows.filter((r): r is WorkerRow | QaRow => r.kind !== 'user' && isLive(r))
   const now = await io.now()
   await io.setUi(ui => ({ ...ui, tick: now }))
   for (const row of live) {
@@ -591,7 +581,6 @@ export const register: Register = on => {
       exists: path => $.fs.exists(path),
       now: () => $.clock.now(),
       cwd: () => $.session.cwd(),
-      spawn: args => $.agent.spawn(args),
       stop: agentId => $.tool.call({ tool: 'TaskStop', task_id: agentId }),
       submit: text => $.prompt.submit({ text }),
       openPane: focus => $.ui.open(focus ? { id: PANE, title: 'Task loop', focus: true } : { id: PANE, title: 'Task loop' }),
@@ -615,6 +604,7 @@ export const register: Register = on => {
             task: { type: 'string', description: 'The task in one or two sentences.' },
             devBranch: { type: 'string', description: 'Integration branch; default "dev".' },
             mainBranch: { type: 'string', description: 'Release branch; default "main".' },
+            root: { type: 'string', description: 'Absolute path inside the repository to run in; default the session working directory.' },
           },
           required: ['task'],
         },
@@ -741,8 +731,51 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('agent.offer', { agent: 'task-loop:worker' }, () => ({ isOffered: false })).catch(() => ({ isOffered: false }))
-  on('agent.offer', { agent: 'task-loop:qa' }, () => ({ isOffered: false })).catch(() => ({ isOffered: false }))
+  // ----- the orchestrator starts each agent itself (so the permission mode judges its own call); the run fills the call in -----
+
+  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    const a = e as unknown as Args
+    const ask = ASK_LINE.exec(str(a.prompt))
+    if (!ask || e.agentId !== undefined) return next(e)
+    const run = await currentRun()
+    if (!run) return { deny: 'task-loop: no active run; call mcp__task-loop__start first' }
+    const rows = await io.getRows()
+    const kind = ask[1] as 'worker' | 'qa'
+    const key = ask[2]!
+    // a worker is asked for by task id, QA by `<iteration>-<round>`; the pending row's key is the task id or the round
+    const wanted = kind === 'qa' ? pendingId('qa', Number(key.split('-')[0]), key.split('-')[1] ?? '') : pendingId('worker', run.iteration, key)
+    const row = rows.find((r): r is WorkerRow | QaRow => r.kind === kind && r.id === wanted)
+    if (!row) {
+      const expected = rows.filter((r): r is WorkerRow | QaRow => r.kind !== 'user' && r.status === 'pending').map(r => (r.kind === 'worker' ? `worker ${r.taskId}` : `qa ${r.iteration}-${r.round}`))
+      return { deny: `task-loop: nothing pending for "${ask[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(kind === 'worker' ? 'dispatch' : 'qa')} first.` }
+    }
+    const brief = row.kind === 'worker' ? await io.read(`${row.worktree}/.context/brief.md`) : qaPrompt(row.worktree)
+    const prompt = `[task-loop worktree: ${row.worktree}]\n\n${brief}\n\nStart now. Your working directory is the worktree above; every path you touch is under it.`
+    const ran = await next({
+      ...e,
+      prompt,
+      description: row.kind === 'worker' ? row.title : `QA round ${row.round}`,
+      subagent_type: row.kind === 'worker' ? WORKER_AGENT : QA_AGENT,
+      model: row.model === 'sonnet' ? ('sonnet' as const) : ('opus' as const),
+      run_in_background: true,
+    })
+    const got = 'result' in ran && ran.result && typeof ran.result === 'object' ? (ran.result as { agentId?: unknown }).agentId : undefined
+    const agentId = typeof got === 'string' ? got : undefined
+    const now = await io.now()
+    if (agentId) {
+      await io.setRows(list => list.map(r => (r.kind === kind && r.id === row.id ? { ...r, id: agentId, status: 'running', at: now, lastActivityAt: now } : r)))
+    } else {
+      const note = 'deny' in ran && ran.deny ? String(ran.deny) : 'isError' in ran && ran.isError ? String(ran.result ?? 'the Agent tool reported an error') : 'the Agent tool answered without an agent id'
+      await patchRow(row.id, r => ({ ...r, note: `not started: ${note.slice(0, 300)}` }))
+    }
+    return ran
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'task-loop: the Agent call could not be prepared' }))
+
+  on('agent.spawn', async ($, e, next) => {
+    const line = WORKTREE_LINE.exec(e.prompt)
+    if (!line || e.isTeammate) return next(e)
+    return next({ ...e, cwd: line[1]! })
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'task-loop-pane' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Task loop', focus: true })
@@ -758,6 +791,9 @@ export const register: Register = on => {
       ownPrompts.delete(text)
       return next(e)
     }
+    // only what the person typed is a row: not a subagent's hand-back, a notification or another session's message
+    const isTyped = ['composer', 'bridge', 'sdk', 'channel'].includes(e.origin.kind) && !/^\s*<agent-message\b/.test(text)
+    if (!isTyped) return next(e)
     const starts = /^\s*\/task-loop(?::task-loop)?(\s|$)/.exec(text)
     let run = await currentRun()
     if (starts) {
@@ -783,7 +819,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__task-loop__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__task-loop__status' }, async () => {
     const snap = await snapshot()
-    return ok({ run: snap.run, rows: snap.rows }, statusText(snap))
+    return ok(statusText(snap))
   }).catch(crashed)
 
   // ----- guards: the orchestrator does not edit; workers stay in their worktree; QA never reads source -----

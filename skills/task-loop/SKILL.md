@@ -5,7 +5,7 @@ description: Runs a handed-over task as an orchestrated loop - clarify, research
 
 # task-loop
 
-You are the orchestrator. You never edit files or touch git yourself: the `task-loop` tools and worker subagents do. The tools are `mcp__task-loop__start`, `dispatch`, `merge`, `qa`, `status`, `cancel` and `finish`. Each reply from a tool says what to call next. A timeline pane shows every worker, QA round and user prompt of the run; the band above the prompt shows the current iteration.
+You are the orchestrator. You never edit files or touch git yourself: the `task-loop` tools and worker subagents do. The tools are `mcp__task-loop__start`, `dispatch`, `merge`, `qa`, `status`, `cancel` and `finish`. Each reply from a tool says what to call next. Workers and the QA agent are started by your own `Agent` calls, which the tools spell out for you; never write their prompts yourself. A timeline pane shows every worker, QA round and user prompt of the run; the band above the prompt shows the current iteration.
 
 The task is everything after `/task-loop` in the prompt that invoked this skill.
 
@@ -46,9 +46,9 @@ Show the plan (tasks, models, commit titles; rubric and harness) in a compact fo
 
 ## Phase 4: the implementation loop
 
-1. **Dispatch.** Call `mcp__task-loop__dispatch` with the tasks. It creates a worktree and branch per task under `.workspaces/` and starts the workers. Then end your turn: say in one line that the workers are running. A prompt starting with `[task-loop]` wakes you when every worker has ended, when one goes stale (no activity for 30 minutes), or when one is stopped after two idle hours. Do not poll; do not call `status` in a loop.
+1. **Dispatch.** Call `mcp__task-loop__dispatch` with the tasks. It creates a worktree and branch per task under `.workspaces/` and writes each brief. It does not start the workers: its reply lists one `Agent` call per task. Make those calls yourself, all in one message, exactly as listed (`subagent_type: "task-loop:worker"`, the description, and the prompt `task-loop worker <id>`); the run fills in the brief, the model, the worktree and background mode. Then end your turn: say in one line that the workers are running. A prompt starting with `[task-loop]` wakes you when every worker has ended, when one goes stale (no activity for 30 minutes), or when one is stopped after two idle hours. Do not poll; do not call `status` in a loop. Background-agent notifications about single workers can be ignored; the `[task-loop]` prompt is the signal.
 2. **On the wake-up.** Read it. For a stale worker, call `status` and decide: leave it (it may be building), or `cancel` it and plan a re-dispatch. When every worker has ended, call `mcp__task-loop__merge`. It squash-merges each finished branch into `dev` with the planned commit title and prunes the worktrees. Conflicts are reported, not resolved: dispatch a worker whose task is to redo that branch on top of `dev`, then merge again.
-3. **QA.** Call `mcp__task-loop__qa` with the rubric, the harness, and a short brief of what this iteration built or changed. End your turn. The wake-up carries the verdict (`pass`, `pass-with-recommendations`, `fix`), the counts, every item below strong, and the QA overview.
+3. **QA.** Call `mcp__task-loop__qa` with the rubric, the harness, and a short brief of what this iteration built or changed. Its reply gives one `Agent` call (`subagent_type: "task-loop:qa"`, prompt `task-loop qa <iteration>-<round>`); make it, then end your turn. The wake-up carries the verdict (`pass`, `pass-with-recommendations`, `fix`), the counts, every item below strong, and the QA overview.
 4. **Decide.** On `fix`, plan the fixes as new worker tasks and go back to step 1: the next dispatch starts a new iteration automatically. On `pass-with-recommendations`, decide whether the recommendations are worth an iteration; usually one more is. On `pass`, go to phase 5.
 5. The user may type while workers run. Their prompts are rows in the timeline; answer them, and fold any new direction into the next iteration rather than into the running one.
 

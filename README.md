@@ -31,7 +31,7 @@ The skill then runs in phases:
 1. **Clarify.** It restates the task and asks about anything material, until nothing is open.
 2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, and notes the build and test commands.
 3. **Plan.** It calls `start`, splits the work into independent tasks (each with a brief, a model, a build command and the Conventional Commit title of its squash commit), and writes the QA rubric and harness.
-4. **Loop.** `dispatch` starts one worker per task in `.workspaces/task/<iteration>-<id>`; the orchestrator ends its turn and is woken by a `[task-loop]` prompt when every worker has ended or one goes stale. `merge` squash-merges the finished branches into `dev`. `qa` starts the QA subagent in a fresh worktree of `dev`; its report wakes the orchestrator with the verdict and overview. On `fix` the next `dispatch` starts a new iteration.
+4. **Loop.** `dispatch` prepares one worktree and brief per task under `.workspaces/task/<iteration>-<id>` and spells out the `Agent` call that starts each worker; the orchestrator makes those calls itself, so the session's permission mode (auto mode included) judges them as its own actions, and the mod fills in the brief, model, worktree and background mode. The orchestrator then ends its turn and is woken by a `[task-loop]` prompt when every worker has ended or one goes stale. `merge` squash-merges the finished branches into `dev`. `qa` prepares the QA subagent's worktree of `dev` the same way; its report wakes the orchestrator with the verdict and overview. On `fix` the next `dispatch` starts a new iteration.
 5. **Finish.** `finish` fast-forwards `main` to `dev` (or makes one merge commit when the histories diverged) and removes the run's worktrees.
 
 You can type while workers run; your prompts become rows in the timeline and are folded into the next iteration.
@@ -50,10 +50,10 @@ The orchestrator calls these; the skill says when.
 
 | Tool | What it does |
 | --- | --- |
-| `mcp__task-loop__start` | Records the repository, creates `dev` and its worktree if missing, opens the pane. |
-| `mcp__task-loop__dispatch` | Starts one worker per task in its own worktree and branch. A second dispatch after QA starts the next iteration. |
+| `mcp__task-loop__start` | Records the repository (the session's, or `root`), creates `dev` and its worktree if missing, opens the pane. |
+| `mcp__task-loop__dispatch` | Prepares one worktree, branch and brief per task and returns the `Agent` calls that start the workers. A second dispatch after QA starts the next iteration. |
 | `mcp__task-loop__merge` | Squash-merges every finished branch of the iteration into `dev`, one titled commit each; reports conflicts instead of resolving them. |
-| `mcp__task-loop__qa` | Starts the QA subagent with a rubric and harness; the report is collected when the agent ends. |
+| `mcp__task-loop__qa` | Prepares the QA worktree with a rubric and harness and returns the `Agent` call that starts it; the report is collected when the agent ends. |
 | `mcp__task-loop__status` | The timeline as text. |
 | `mcp__task-loop__cancel` | Stops a running agent by id. |
 | `mcp__task-loop__finish` | Releases `dev` into `main` and closes the run (`abort: true` closes without releasing). |
@@ -66,7 +66,7 @@ Each iteration is a collapsible section; the previous one folds when a new itera
 
 - **Worker:** start time, a spinner while running or a glyph for finished, merged, failed, stale, timed out or cancelled, the task title, the model and the elapsed time.
 - **QA:** start time, the round, the counts of strong, acceptable and unacceptable items and the verdict, the elapsed time. Click to expand the overview and the items below strong; while QA runs it says the report is not ready.
-- **You:** every prompt you typed during the run, expandable to its full text.
+- **You:** every prompt you typed during the run, expandable to its full text. Subagent hand-backs and notifications are not rows.
 
 ## Layout
 
@@ -93,6 +93,8 @@ claude plugin test .
 ```
 
 Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude Code API tested on Claude Code 2.1.296; it may change between releases.
+
+The tools in `hooks/register.tsx` answer with text only: the engine holds a registered tool's `result` to a string or content blocks. Subagents are never started from inside the mod (`$.agent.spawn`): in auto mode the permission classifier refuses an action the model's own request did not ask for, so the tools hand the orchestrator the `Agent` calls to make and a `tool.call` hook on `Agent` fills them in and records the agent id from the result.
 
 ## Known limits
 
