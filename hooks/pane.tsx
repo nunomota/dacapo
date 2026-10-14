@@ -350,7 +350,7 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
       kind: 'worker',
       color,
       title: row.title,
-      subline: [span, row.model, statusWord[row.status]].join(' · '),
+      subline: [span, row.model, statusWord[row.status], ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · '),
       body: [
         <Text key="stats" dimColor wrap="truncate-end">
           {statsLine(row.stats, row.model, theme.prices)}
@@ -381,7 +381,7 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
     kind: 'qa',
     color,
     title: `QA round ${row.round}${row.summary ? `: ${verdictWord(row)}` : ''}`,
-    subline: [span, row.model, row.summary ? scoreLine(row) : statusWord[row.status]].join(' · '),
+    subline: [span, row.model, row.summary ? scoreLine(row) : statusWord[row.status], ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · '),
     body: [
       <Text key="stats" dimColor wrap="truncate-end">
         {statsLine(row.stats, row.model, theme.prices)}

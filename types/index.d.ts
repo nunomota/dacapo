@@ -114,6 +114,8 @@ export type WorkerRow = {
   /** The worker's closing answer, or the failure reason. */
   note?: string
   stats: AgentStats
+  /** How many times the agent was resumed after it had ended. */
+  restarts?: number
 }
 
 export type QaRow = {
@@ -137,6 +139,8 @@ export type QaRow = {
   stats: AgentStats
   /** Set when the agent ended: the ticker collects the report outside the agent's own dispatch. */
   collect?: { failure: string | null }
+  /** How many times the agent was resumed after it had ended. */
+  restarts?: number
 }
 
 export type Row = UserRow | OrchestratorRow | WorkerRow | QaRow

@@ -233,6 +233,18 @@ describe('the loop', () => {
     const statusAfter = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
     expect('result' in statusAfter && statusAfter.result).toMatch(/login \[agent-1\] finished \(1m30s/)
 
+    // a finished agent that acts again is live again, and its next completion wakes the orchestrator once more
+    await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/task/1-login/src/y.ts', content: 'y', agentId: 'agent-1' } as never)
+    const revived = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
+    expect('result' in revived && revived.result).toMatch(/login \[agent-1\] running \(restarted 1x\)/)
+    const blocked = await $.tool.call({ tool: 'mcp__task-loop__merge' } as never)
+    expect('isError' in blocked && blocked.isError).toBe(true)
+    const before = prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length
+    await $.turn.complete({ answer: 'Done again.', durationMs: 1, isAborted: false, turnId: 't1b', agentId: 'agent-1', reason: 'answer' })
+    await clock.advance(1_000)
+    expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(before + 1)
+    await $.turn.start({ text: `The task-loop plugin sent a message: ${prompts[prompts.length - 1]!}` } as never)
+
     const merged = await $.tool.call({ tool: 'mcp__task-loop__merge' } as never)
     expect('result' in merged && merged.result).toMatch(/feat: add login page \(beef1\)/)
 

@@ -219,7 +219,7 @@ function statusText(snap: Snapshot): string {
       else if (row.kind === 'orchestrator') lines.push(`  ${t} orchestrator: ${row.text.replace(/\s+/g, ' ').slice(0, 120)}`)
       else if (row.kind === 'worker') {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
-        lines.push(`  ${t} worker ${row.taskId} [${row.id}] ${statusWord[row.status]} (${span}, ${row.model}, ${row.branch})${row.note ? `: ${row.note.slice(0, 200)}` : ''}`)
+        lines.push(`  ${t} worker ${row.taskId} [${row.id}] ${statusWord[row.status]}${row.restarts ? ` (restarted ${row.restarts}x)` : ''} (${span}, ${row.model}, ${row.branch})${row.note ? `: ${row.note.slice(0, 200)}` : ''}`)
       } else {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
         lines.push(`  ${t} QA round ${row.round} [${row.id}] ${statusWord[row.status]} (${span}): ${scoreLine(row)}`)
@@ -606,11 +606,27 @@ async function maybeWakeForWorkers() {
   )
 }
 
+/**
+ * An agent that ended and then acts again (the person or the orchestrator resumed it) is live again: its row
+ * goes back to running, its end time is cleared, and the wake-up its round already sent is forgotten so the
+ * next completion wakes the orchestrator afresh.
+ */
+async function revive(row: WorkerRow | QaRow, now: number) {
+  const key = row.kind === 'worker' ? `workers-${row.iteration}` : `qa-${row.iteration}-${row.round}`
+  await io.setRun(cur => (cur ? { ...cur, wakes: cur.wakes.filter(w => w.key !== key) } : cur))
+  await patchRow(row.id, r =>
+    r.kind === 'worker'
+      ? { ...r, status: 'running', endedAt: undefined, lastActivityAt: now, restarts: (r.restarts ?? 0) + 1, note: undefined }
+      : { ...r, status: 'running', endedAt: undefined, lastActivityAt: now, restarts: (r.restarts ?? 0) + 1, note: undefined, collect: undefined },
+  )
+}
+
 async function touch(agentId: string) {
   const rows = await io.getRows()
   const row = rows.find(isAgent(agentId))
-  if (!row || isTerminal(row)) return
+  if (!row) return
   const now = await io.now()
+  if (isTerminal(row)) return revive(row, now)
   if (row.status === 'stale' || row.lastActivityAt < now - 5_000) {
     await patchRow(row.id, r =>
       r.kind === 'worker'
@@ -1005,6 +1021,7 @@ export const register: Register = (on, options) => {
     const active = !!run && (run.status === 'planning' || run.status === 'active')
     const row = active && e.agentId ? (await io.getRows()).find(isAgent(e.agentId)) : undefined
     if (!active || (e.agentId && !row)) return yield* next(e)
+    if (row && isTerminal(row)) await revive(row, await io.now())
     // one model step of a tracked agent (or of the orchestrator): collect its tool calls, text and usage, then store once
     const texts = new Map<number, string>()
     const tools = new Map<number, { name: string; json: string }>()
