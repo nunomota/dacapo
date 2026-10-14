@@ -426,7 +426,8 @@ async function qa(a: Args) {
   const rows = await io.getRows()
   const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r))
   if (unfinished.length > 0) return fail(`qa: ${unfinished.length} agent(s) still running; wait or cancel them first`)
-  const round = rows.filter(r => r.kind === 'qa' && r.iteration === iteration).length + 1
+  // QA rounds count across the whole run, since the timeline no longer groups by iteration
+  const round = rows.filter(r => r.kind === 'qa').length + 1
   const worktree = `${run.root}/.workspaces/qa/${iteration}-${round}`
   const reportPath = `${worktree}/.context/qa-report.json`
   try {
