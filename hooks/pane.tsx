@@ -1,6 +1,6 @@
 import type { Elements } from 'claude-code'
 
-import type { Activity, AgentStats, IterationInfo, OrchestratorRow, Phase, QaRow, Row, Run, Ui, UserRow, WorkerRow } from '../types'
+import type { Activity, AgentStats, Phase, QaRow, Row, Run, Ui, WorkerRow } from '../types'
 import { ZERO, addUsage, costOf, fmtCost, fmtTokens, totalTokens, type Price } from './cost'
 
 /** The three elements every surface has; the hook resolves the table and hands these in. */
@@ -57,35 +57,8 @@ export function cut(text: string, width: number): string {
   return one.length > width ? `${one.slice(0, width - 1)}…` : one
 }
 
-const pad = (n: number) => (n > 0 ? ' '.repeat(n) : '')
-
 export const isAgentRow = (row: Row): row is WorkerRow | QaRow => row.kind === 'worker' || row.kind === 'qa'
 export const isActive = (row: Row): boolean => isAgentRow(row) && (row.status === 'running' || row.status === 'stale')
-
-export const ICON = { worker: '⚒', qa: '⚖', user: '✎', orchestrator: '◆' } as const
-
-/** The color a row's text and mark take from its status; `dim` for the states that are not news. */
-export type Tone = { color?: string; dim?: boolean }
-
-export function tone(row: WorkerRow | QaRow): Tone {
-  switch (row.status) {
-    case 'pending':
-    case 'cancelled':
-      return { dim: true }
-    case 'running':
-      return { color: 'claude' }
-    case 'finished':
-      return { color: 'success' }
-    case 'merged':
-      return { color: 'success', dim: true }
-    case 'failed':
-    case 'invalid':
-    case 'timeout':
-      return { color: 'error' }
-    case 'stale':
-      return { color: 'warning' }
-  }
-}
 
 export const statusWord: Record<WorkerRow['status'] | QaRow['status'], string> = {
   pending: 'waiting to start',
@@ -133,6 +106,35 @@ export const spendText = (s: { tokens: number; cost: number | undefined }) =>
 
 const SEP = '  ·  '
 
+/** Border colors: the person white, the orchestrator purple, QA cyan, a sub-agent by its status. */
+export const PURPLE = '#a855f7'
+export const CYAN = 'cyan'
+
+export function cardColor(row: Row): string {
+  if (row.kind === 'user') return 'white'
+  if (row.kind === 'orchestrator') return PURPLE
+  if (row.kind === 'qa') return CYAN
+  switch (row.status) {
+    case 'finished':
+    case 'merged':
+      return 'green'
+    case 'failed':
+    case 'timeout':
+    case 'cancelled':
+      return 'red'
+    default:
+      return 'yellow'
+  }
+}
+
+/** Two-line icons, four columns wide, drawn in the card's color on the left of every card. */
+export const ART: Record<Row['kind'], readonly [string, string]> = {
+  worker: ['╭●●╮', '╰┬┬╯'],
+  qa: ['▛✓▜ ', '▙──▟'],
+  user: [' ◯  ', '╱█╲ '],
+  orchestrator: [' ◆  ', '╱│╲ '],
+}
+
 // ---------- the pane ----------
 
 export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number, theme: Theme): JSX.Element {
@@ -152,7 +154,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const endAt = isOver ? (rows[rows.length - 1]?.at ?? now) : now
   const agents = rows.filter(isAgentRow)
   const total = spend(agents, theme.prices, run.orchestrator)
-  const iterations = run.iterations.length || (rows.some(isAgentRow) ? run.iteration : 0)
+  const ordered = [...rows].sort((a, b) => a.at - b.at)
 
   return (
     <Box flexDirection="column">
@@ -173,9 +175,6 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           <Text dimColor>{SEP}</Text>
           {`${agents.length}`}
           <Text dimColor>{agents.length === 1 ? ' agent' : ' agents'}</Text>
-          <Text dimColor>{SEP}</Text>
-          {`${iterations}`}
-          <Text dimColor>{iterations === 1 ? ' iteration' : ' iterations'}</Text>
           <Text dimColor>{SEP}</Text>
           {fmtTokens(total.tokens)}
           <Text dimColor> tokens</Text>
@@ -202,9 +201,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           {'─'.repeat(Math.max(10, width - 2))}
         </Text>
       </Box>
-      {Array.from({ length: run.iteration }, (_, i) => i + 1)
-        .filter(n => n <= iterations || rows.some(r => r.iteration === n))
-        .map(n => drawIteration(els, snap, act, width, theme, n, now))}
+      {ordered.map(row => drawCard(els, row, ui, act, width, theme, now))}
     </Box>
   )
 }
@@ -233,106 +230,38 @@ function drawPhases(els: Els, current: Phase, width: number): JSX.Element {
   )
 }
 
-function iterationOf(run: Run, n: number): IterationInfo {
-  return run.iterations.find(i => i.n === n) ?? { n, title: `Iteration ${n}`, startedAt: run.startedAt }
-}
+/** The card's text block: the header is the button that expands it; one dim subline is always shown; the body when expanded. */
+type Card = { key: string; title: string; subline: string; body: JSX.Element[] }
 
-function drawIteration(els: Els, snap: Snapshot, act: Actions, width: number, theme: Theme, n: number, now: number): JSX.Element {
-  const { Box, Text, Button } = els
-  const { run, rows, ui } = snap
-  const info = iterationOf(run!, n)
-  const isCollapsed = ui.collapsed.includes(n)
-  const inner = width - 4
-  const mine = rows.filter(r => r.iteration === n).sort((a, b) => a.at - b.at)
-  const workers = mine.filter((r): r is WorkerRow => r.kind === 'worker')
-  const qas = mine.filter((r): r is QaRow => r.kind === 'qa')
-  const done = workers.filter(w => w.status === 'finished' || w.status === 'merged').length
-  const verdict = verdictWord(qas[qas.length - 1])
-  const money = spendText(spend(mine.filter(isAgentRow), theme.prices))
-  const bits: string[] = []
-  if (workers.length > 0) bits.push(`${done}/${workers.length} workers`)
-  if (verdict) bits.push(`QA ${verdict}`)
-  if (money) bits.push(money)
-  const tail = bits.join(SEP)
-  const head = `${isCollapsed ? '▸' : '▾'} `
-  const title = cut(info.title, Math.max(10, inner - head.length - (tail ? tail.length + 2 : 0)))
-  const fill = pad(inner - head.length - title.length - (tail ? tail.length : 0))
-
-  return (
-    <Box key={`iteration-${n}`} borderStyle="round" borderDimColor paddingX={1} flexDirection="column" marginBottom={1}>
-      <Button key={`iter-${n}`} plain onPress={() => act.toggleIteration(n)}>
-        {head}
-        <Text bold>{title}</Text>
-        {fill}
-        <Text dimColor>{tail}</Text>
-      </Button>
-      {!isCollapsed && info.overview && (
-        <Box paddingLeft={2}>
-          <Text dimColor wrap="wrap">
-            {info.overview}
-          </Text>
-        </Box>
-      )}
-      {!isCollapsed && mine.length > 0 && (
-        <Box flexDirection="column" marginTop={info.overview ? 1 : 0}>
-          {mine.map(row => drawRow(els, row, ui, act, inner, theme, now))}
-        </Box>
-      )}
-    </Box>
-  )
-}
-
-/** One row: `▸ ⚒  20s · sonnet · description`, the prefix dim and the description in the status color; the line is the button that expands it. */
-function line(els: Els, icon: string, isOpen: boolean, prefix: string, label: string, t: Tone, width: number) {
-  const { Text } = els
-  const head = `${isOpen ? '▾' : '▸'} ${icon}  `
-  const room = width - head.length - prefix.length
-  return [
-    <Text key="h" dimColor>
-      {head}
-    </Text>,
-    prefix ? (
-      <Text key="p" dimColor>
-        {prefix}
-      </Text>
-    ) : (
-      ''
-    ),
-    <Text key="l" color={t.color} dimColor={t.dim}>
-      {cut(label, Math.max(6, room))}
-    </Text>,
-  ]
-}
-
-function drawRow(els: Els, row: Row, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
-  if (row.kind === 'user' || row.kind === 'orchestrator') return drawNote(els, row, ui, act, width)
-  return row.kind === 'worker' ? drawWorker(els, row, ui, act, width, theme, now) : drawQa(els, row, ui, act, width, theme, now)
-}
-
-function detail(els: Els, children: JSX.Element[]): JSX.Element {
-  const { Box } = els
-  return (
-    <Box paddingLeft={5} flexDirection="column" marginBottom={1}>
-      {children}
-    </Box>
-  )
-}
-
-function drawNote(els: Els, row: UserRow | OrchestratorRow, ui: Ui, act: Actions, width: number): JSX.Element {
+function drawCard(els: Els, row: Row, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
   const { Box, Text, Button } = els
   const isOpen = ui.expanded.includes(row.id)
-  const label = row.kind === 'user' ? 'User message' : 'Orchestrator'
+  const color = cardColor(row)
+  const art = ART[row.kind]
+  const textWidth = Math.max(10, width - 4 - 6)
+  const card = cardOf(els, row, theme, now, textWidth)
   return (
-    <Box key={`row-${row.id}`} flexDirection="column">
-      <Button key={`note-${row.id}`} plain onPress={() => act.toggleRow(row.id)}>
-        {line(els, ICON[row.kind], isOpen, '', label, {}, width)}
-      </Button>
-      {isOpen &&
-        detail(els, [
-          <Text key="text" wrap="wrap">
-            {row.text.trim()}
-          </Text>,
-        ])}
+    <Box key={`card-${row.id}`} borderStyle="round" borderColor={color} paddingX={1} flexDirection="row" marginBottom={1}>
+      <Box flexDirection="column" width={5} flexShrink={0}>
+        <Text color={color}>{art[0]}</Text>
+        <Text color={color}>{art[1]}</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1}>
+        <Button key={card.key} plain onPress={() => act.toggleRow(row.id)}>
+          <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
+          <Text bold color={color}>
+            {cut(card.title, textWidth - 2)}
+          </Text>
+        </Button>
+        <Text dimColor wrap="truncate-end">
+          {cut(card.subline, textWidth)}
+        </Text>
+        {isOpen && card.body.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            {card.body}
+          </Box>
+        )}
+      </Box>
     </Box>
   )
 }
@@ -356,95 +285,95 @@ function drawActivity(els: Els, items: readonly Activity[], width: number): JSX.
   ))
 }
 
-function drawWorker(els: Els, row: WorkerRow, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
-  const { Box, Text, Button } = els
-  const isOpen = ui.expanded.includes(row.id)
+function cardOf(els: Els, row: Row, theme: Theme, now: number, width: number): Card {
+  const { Box, Text } = els
+  if (row.kind === 'user' || row.kind === 'orchestrator') {
+    return {
+      key: `note-${row.id}`,
+      title: row.kind === 'user' ? 'User message' : 'Orchestrator',
+      subline: row.text,
+      body: [
+        <Text key="text" wrap="wrap">
+          {row.text.trim()}
+        </Text>,
+      ],
+    }
+  }
   const span = row.status === 'pending' ? 'waiting' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
-  return (
-    <Box key={`row-${row.id}`} flexDirection="column">
-      <Button key={`worker-${row.id}`} plain onPress={() => act.toggleRow(row.id)}>
-        {line(els, ICON.worker, isOpen, `${span} · ${row.model} · `, row.title, tone(row), width)}
-      </Button>
-      {isOpen &&
-        detail(els, [
-          <Text key="stats" dimColor wrap="truncate-end">
-            {statsLine(row.stats, row.model, theme.prices)}
-          </Text>,
-          ...(row.stats.activity.length > 0
-            ? [
-                <Box key="feed" marginTop={1} flexDirection="column">
-                  {drawActivity(els, row.stats.activity, width - 5)}
-                </Box>,
-              ]
-            : []),
-          ...(row.note
-            ? [
-                <Box key="note" marginTop={1}>
-                  <Text wrap="wrap">
-                    <Text dimColor>↳ </Text>
-                    {row.note.trim()}
+  if (row.kind === 'worker') {
+    return {
+      key: `worker-${row.id}`,
+      title: row.title,
+      subline: [span, row.model, statusWord[row.status]].join(' · '),
+      body: [
+        <Text key="stats" dimColor wrap="truncate-end">
+          {statsLine(row.stats, row.model, theme.prices)}
+        </Text>,
+        ...(row.stats.activity.length > 0
+          ? [
+              <Box key="feed" marginTop={1} flexDirection="column">
+                {drawActivity(els, row.stats.activity, width)}
+              </Box>,
+            ]
+          : []),
+        ...(row.note
+          ? [
+              <Box key="note" marginTop={1}>
+                <Text wrap="wrap">
+                  <Text dimColor>↳ </Text>
+                  {row.note.trim()}
+                </Text>
+              </Box>,
+            ]
+          : []),
+      ],
+    }
+  }
+  return {
+    key: `qa-${row.id}`,
+    title: `QA round ${row.round}${row.summary ? `: ${verdictWord(row)}` : ''}`,
+    subline: [span, row.model, row.summary ? scoreLine(row) : statusWord[row.status]].join(' · '),
+    body: [
+      <Text key="stats" dimColor wrap="truncate-end">
+        {statsLine(row.stats, row.model, theme.prices)}
+      </Text>,
+      <Text key="score" wrap="wrap">
+        {scoreLine(row)}
+      </Text>,
+      row.overview ? (
+        <Box key="overview" marginTop={1}>
+          <Text wrap="wrap">{row.overview}</Text>
+        </Box>
+      ) : (
+        <Text key="overview" dimColor>
+          {row.status === 'running' || row.status === 'stale' || row.status === 'pending'
+            ? 'The QA agent is still working; the overview appears when its report is collected.'
+            : (row.note ?? 'No overview was collected.')}
+        </Text>
+      ),
+      ...(row.items && row.items.some(i => i.score !== 'strong')
+        ? [
+            <Box key="items" flexDirection="column" marginTop={1}>
+              {row.items
+                .filter(i => i.score !== 'strong')
+                .map(i => (
+                  <Text key={`item-${row.id}-${i.id}`} wrap="wrap">
+                    <Text color={i.score === 'unacceptable' ? 'error' : 'warning'}>{i.score}</Text>
+                    {` ${i.title}${i.note ? `: ${i.note}` : ''}`}
                   </Text>
-                </Box>,
-              ]
-            : []),
-        ])}
-    </Box>
-  )
-}
-
-function drawQa(els: Els, row: QaRow, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
-  const { Box, Text, Button } = els
-  const isOpen = ui.expanded.includes(row.id)
-  const span = row.status === 'pending' ? 'waiting' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
-  const label = `QA round ${row.round}${row.summary ? `: ${verdictWord(row)}` : ''}`
-  return (
-    <Box key={`row-${row.id}`} flexDirection="column">
-      <Button key={`qa-${row.id}`} plain onPress={() => act.toggleRow(row.id)}>
-        {line(els, ICON.qa, isOpen, `${span} · ${row.model} · `, label, tone(row), width)}
-      </Button>
-      {isOpen &&
-        detail(els, [
-          <Text key="stats" dimColor wrap="truncate-end">
-            {statsLine(row.stats, row.model, theme.prices)}
-          </Text>,
-          <Text key="score" wrap="wrap">
-            {scoreLine(row)}
-          </Text>,
-          row.overview ? (
-            <Box key="overview" marginTop={1}>
-              <Text wrap="wrap">{row.overview}</Text>
-            </Box>
-          ) : (
-            <Text key="overview" dimColor>
-              {row.status === 'running' || row.status === 'stale' || row.status === 'pending'
-                ? 'The QA agent is still working; the overview appears when its report is collected.'
-                : (row.note ?? 'No overview was collected.')}
-            </Text>
-          ),
-          ...(row.items && row.items.some(i => i.score !== 'strong')
-            ? [
-                <Box key="items" flexDirection="column" marginTop={1}>
-                  {row.items
-                    .filter(i => i.score !== 'strong')
-                    .map(i => (
-                      <Text key={`item-${row.id}-${i.id}`} wrap="wrap">
-                        <Text color={i.score === 'unacceptable' ? 'error' : 'warning'}>{i.score}</Text>
-                        {` ${i.title}${i.note ? `: ${i.note}` : ''}`}
-                      </Text>
-                    ))}
-                </Box>,
-              ]
-            : []),
-          ...(row.stats.activity.length > 0
-            ? [
-                <Box key="feed" marginTop={1} flexDirection="column">
-                  {drawActivity(els, row.stats.activity, width - 5)}
-                </Box>,
-              ]
-            : []),
-        ])}
-    </Box>
-  )
+                ))}
+            </Box>,
+          ]
+        : []),
+      ...(row.stats.activity.length > 0
+        ? [
+            <Box key="feed" marginTop={1} flexDirection="column">
+              {drawActivity(els, row.stats.activity, width)}
+            </Box>,
+          ]
+        : []),
+    ],
+  }
 }
 
 // ---------- the band above the prompt ----------
@@ -461,7 +390,6 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   const trouble = workers.length - running - waiting - done
   const qa = current.filter((r): r is QaRow => r.kind === 'qa').pop()
   const money = spendText(spend(rows.filter(isAgentRow), theme.prices, run.orchestrator))
-  const info = run.iterations.find(i => i.n === run.iteration)
 
   const workerBits: string[] = []
   if (running > 0) workerBits.push(`${running} running`)
@@ -469,11 +397,11 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   if (done > 0) workerBits.push(`${done} done`)
   if (trouble > 0) workerBits.push(`${trouble} failed`)
   const second: string[] = []
-  if (workerBits.length > 0) second.push(`${ICON.worker} ${workerBits.join(', ')}`)
-  if (qa) second.push(`${ICON.qa} QA ${verdictWord(qa)}`)
+  if (workerBits.length > 0) second.push(`agents ${workerBits.join(', ')}`)
+  if (qa) second.push(`QA ${verdictWord(qa)}`)
   if (money) second.push(money)
 
-  const first = `${ICON.orchestrator} task-loop${SEP}${run.phase}${info ? `${SEP}${info.title}` : ''}`
+  const first = `task-loop${SEP}${run.phase}`
   const buttons = (
     <Box flexDirection="row" flexShrink={0}>
       <Button key="open-pane" plain onPress={() => act.openPane()}>
@@ -502,11 +430,11 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
     <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
       <Text wrap="truncate-end">
         <Text color="claude" bold>
-          {ICON.orchestrator} task-loop
+          task-loop
         </Text>
         <Text dimColor>{SEP}</Text>
         <Text bold>{run.phase}</Text>
-        {info ? <Text dimColor>{`${SEP}${cut(info.title, Math.max(8, inner - 24 - run.phase.length))}`}</Text> : ''}
+        <Text dimColor>{`${SEP}${cut(run.task, Math.max(8, inner - 24 - run.phase.length))}`}</Text>
       </Text>
       <Box flexDirection="row" justifyContent="space-between">
         <Text dimColor wrap="truncate-end">

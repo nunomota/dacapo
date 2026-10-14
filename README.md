@@ -52,7 +52,7 @@ The orchestrator calls these; the skill says when.
 | Tool | What it does |
 | --- | --- |
 | `mcp__task-loop__start` | Records the repository (the session's, or `root`), creates `dev` and its worktree if missing, opens the pane. |
-| `mcp__task-loop__dispatch` | Takes an iteration title and overview plus the tasks; prepares one worktree, branch and brief per task and returns the `Agent` calls that start the workers. A second dispatch after QA starts the next iteration. |
+| `mcp__task-loop__dispatch` | Prepares one worktree, branch and brief per task and returns the `Agent` calls that start the workers. A second dispatch after QA starts the next round. |
 | `mcp__task-loop__merge` | Squash-merges every finished branch of the iteration into `dev`, one titled commit each; reports conflicts instead of resolving them. |
 | `mcp__task-loop__qa` | Prepares the QA worktree with a rubric and harness and returns the `Agent` call that starts it; the report is collected when the agent ends. |
 | `mcp__task-loop__status` | The timeline as text, with tokens and cost. |
@@ -64,14 +64,15 @@ The orchestrator calls these; the skill says when.
 
 ## The timeline
 
-The pane opens with a card: the task heading, a status strip (elapsed, agents, iterations, tokens, estimated cost) and the phase strip `clarify › research › plan › implement › qa › release`, which steps back to `implement` when a fix iteration starts. The task overview sits under the card in dim text, then a rule.
+The pane opens with a card: the task heading, a status strip (elapsed, agents, tokens, estimated cost) and the phase strip `clarify › research › plan › implement › qa › release`, which steps back to `implement` when a fix round starts. The task overview sits under the card in dim text, then a rule.
 
-Below it, one card per iteration, collapsible, headed by the iteration's title with its counts on the right (`2/2 workers · QA fix needed · 61k tok · ~$0.28`) and its overview underneath. The previous card folds when a new iteration starts. Rows inside are one line each, all collapsible:
+Below it, one card per entry, in order: a two-line icon on the left, a header line that expands or collapses the card, and a dim subline. The border and icon take the entry's color: white for a message you typed, purple for what the orchestrator answered, cyan for QA, and for a sub-agent yellow while waiting, running or stale, green when finished or merged, red when failed, timed out or cancelled.
 
-- `⚒ 20s · sonnet · <task title>` for a worker, `⚖ 21s · sonnet · QA round n: <verdict>` for QA, `✎ User message` and `◆ Orchestrator` for what you typed and what the orchestrator answered during the run. The description's color is the status: accent while running, green finished, red failed or timed out, yellow stale, dim waiting or cancelled.
-- Expanded, a worker shows tool calls, tokens and cost, a feed of its tool calls and assistant text (the last 40 entries, captured from the engine's model steps), and its closing summary. QA adds the score line, the overview, every item below strong and its own feed. User and orchestrator rows show the full text.
+- A sub-agent card reads `count command` over `18s · sonnet · merged`; expanded it adds tool calls, tokens and cost, a feed of its tool calls and assistant text (the last 40 entries, captured from the engine's model steps), and its closing summary.
+- A QA card reads `QA round 1: pass` over the score counts; expanded it adds the overview, every item below strong and its own feed.
+- Your messages and the orchestrator's answers show their first words on the subline and the full text when expanded.
 
-The band above the prompt is a two-line box: phase and iteration title, then worker counts, QA state and spend, with buttons for the timeline and to hide the band.
+The band above the prompt is a two-line box: the phase and task, then agent counts, QA state and spend, with buttons for the timeline and to hide the band.
 
 Token counts include cache reads and writes, as the API bills them. The cost estimate uses Anthropic list prices per model (see `hooks/cost.ts`); override or extend the table with the plugin's `prices` option, a JSON object of `{"<model id prefix>": [input, output, cacheRead, cacheWrite]}` in dollars per million tokens.
 

@@ -106,7 +106,6 @@ describe('the pane', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'task-loop', surface, ...PANE })
       expect(await ui.find({ type: 'Text', text: /build a todo app/ })).toBeDefined()
-      expect(await ui.find({ key: 'iter-1' })).toBeDefined()
       const row = await ui.find({ text: /User message/ })
       expect(row).toBeDefined()
       await ui.unmount()
@@ -181,7 +180,6 @@ describe('the loop', () => {
       tasks: [{ id: 'login', title: 'Login page', prompt: 'Build the login page.', model: 'sonnet', commit: 'feat: add login page', build: 'npm run build' }],
     } as never)
     expect('result' in dispatched && dispatched.result).toMatch(/prompt: "task-loop worker login"/)
-    expect('result' in dispatched && dispatched.result).toMatch(/Login page and docs/)
     expect(files.get('/repo/.workspaces/task/1-login/.context/brief.md')).toMatch(/npm run build/)
     expect(files.get(`/repo/.workspaces/.task-loop/${runId}/iteration-1-login.md`)).toMatch(/clean-commits/)
     const pendingStatus = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
@@ -205,7 +203,6 @@ describe('the loop', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'task-loop', surface, ...PANE })
       expect(await ui.find({ text: /Login page/ })).toBeDefined()
-      expect(await ui.find({ text: /Build the login page first/ })).toBeDefined()
       expect(await ui.find({ text: /implement/ })).toBeDefined()
       await ui.unmount()
     }
@@ -277,20 +274,16 @@ describe('the loop', () => {
       await ui.unmount()
     }
 
-    // a second dispatch starts iteration 2 and folds iteration 1
+    // a second dispatch starts iteration 2; the pane shows the new card in sequence
     const again = await $.tool.call({
       tool: 'mcp__task-loop__dispatch',
-      title: 'Fix error copy',
       tasks: [{ id: 'copy', title: 'Fix error copy', prompt: 'Explain errors.', model: 'sonnet', commit: 'fix: explain login errors' }],
     } as never)
     expect('result' in again && again.result).toMatch(/Iteration 2/)
     await startAgent('task-loop worker copy')
     const ui = await $.ui.mount({ plugin: 'task-loop', surface: 'terminal', ...PANE })
-    expect(await ui.find({ key: 'iter-2' })).toBeDefined()
     expect(await ui.find({ text: /Fix error copy/ })).toBeDefined()
-    expect(await ui.find({ text: /Build the login page first/ })).toBeUndefined()
-    await ui.press({ plugin: 'task-loop', key: 'iter-1' })
-    expect(await ui.find({ text: /Build the login page first/ })).toBeDefined()
+    expect(await ui.find({ text: /Login page/ })).toBeDefined()
     await ui.unmount()
 
     // a silent worker is marked stale after 30 minutes and the orchestrator is told; activity clears it

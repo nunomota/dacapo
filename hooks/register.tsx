@@ -259,6 +259,8 @@ async function start(a: Args) {
   return ok(`Run ${run.id} ready. Repository ${run.root}; dev branch "${run.devBranch}" checked out at ${run.devWorktree}; run folder ${run.runDir}. Plan the work, then call ${tool('dispatch')}.`)
 }
 
+const rows_hadWork = (rows: Row[], iteration: number) => rows.some(r => isAgentRow(r) && r.iteration === iteration)
+
 const COMMIT_TITLE = /^(feat|fix|docs|style|refactor|test|chore|perf|ci|revert)!?: \S/
 
 async function dispatch(a: Args) {
@@ -266,8 +268,7 @@ async function dispatch(a: Args) {
   if (!run) return fail(`dispatch: no active run; call ${tool('start')} first`)
   const tasks = Array.isArray(a.tasks) ? (a.tasks as Args[]) : []
   if (tasks.length === 0) return fail('dispatch: "tasks" must hold at least one task')
-  const iterationTitle = str(a.title).trim()
-  if (!iterationTitle) return fail('dispatch: "title" (a few words naming this iteration) is required')
+  const iterationTitle = str(a.title).trim() || `Iteration ${run.iteration + (rows_hadWork(await io.getRows(), run.iteration) ? 1 : 0)}`
   const overview = str(a.overview).trim()
   const ids = new Set<string>()
   for (const t of tasks) {
@@ -293,10 +294,8 @@ async function dispatch(a: Args) {
   const hadWork = rows.some(r => isAgentRow(r) && r.iteration === iteration)
   const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r))
   if (unfinished.length > 0) return fail(`dispatch: ${unfinished.length} agent(s) still running; wait for the wake-up prompt or cancel them first`)
-  if (hadWork) {
-    run = { ...run, iteration: iteration + 1, status: 'active' }
-    await io.setUi(ui => ({ ...ui, collapsed: ui.collapsed.includes(iteration) ? ui.collapsed : [...ui.collapsed, iteration] }))
-  } else run = { ...run, status: 'active' }
+  if (hadWork) run = { ...run, iteration: iteration + 1, status: 'active' }
+  else run = { ...run, status: 'active' }
   const startedAt = await io.now()
   const info = { n: run.iteration, title: iterationTitle, overview: overview || undefined, startedAt }
   run = { ...run, phase: 'implement', iterations: [...run.iterations.filter(i => i.n !== info.n), info] }
@@ -347,7 +346,7 @@ async function dispatch(a: Args) {
   }
   void io.openPane()
   const text = [
-    `Iteration ${active.iteration} (${iterationTitle}): ${started.length} worktree(s) prepared.`,
+    `Iteration ${active.iteration}: ${started.length} worktree(s) prepared.`,
     ...started.map(s => `- ${s.taskId}: ${s.branch} at ${s.worktree} (${s.model})`),
     ...(problems.length > 0 ? ['Problems:', ...problems.map(p => `- ${p}`)] : []),
     ...(started.length > 0
@@ -719,8 +718,8 @@ export const register: Register = (on, options) => {
         inputSchema: {
           type: 'object',
           properties: {
-            title: { type: 'string', description: 'A few words naming this iteration, shown as its heading (e.g. "Login page and docs", "Fix id reuse and error copy").' },
-            overview: { type: 'string', description: 'One short paragraph: what this iteration builds and why; shown under the heading.' },
+            title: { type: 'string', description: 'Optional: a few words naming this round of work, kept in the run log.' },
+            overview: { type: 'string', description: 'Optional: one short paragraph on what this round builds and why, kept in the run log.' },
             tasks: {
               type: 'array',
               minItems: 1,
@@ -748,7 +747,7 @@ export const register: Register = (on, options) => {
               },
             },
           },
-          required: ['title', 'tasks'],
+          required: ['tasks'],
         },
       }),
       $.tool.register({
