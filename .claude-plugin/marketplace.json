@@ -1,0 +1,13 @@
+{
+  "name": "claude-task-loop",
+  "owner": {
+    "name": "Nuno Mota"
+  },
+  "plugins": [
+    {
+      "name": "task-loop",
+      "source": "./"
+    }
+  ],
+  "description": "task-loop: an orchestrated implementation loop for Claude Code with worker worktrees, squash merges and end-user QA"
+}
