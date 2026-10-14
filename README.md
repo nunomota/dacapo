@@ -63,12 +63,12 @@ The orchestrator calls these; the skill says when.
 
 ## The timeline
 
-The pane opens with a card: the task heading, a status strip (state, elapsed, agents, iterations, tokens, estimated cost) and the phase strip `clarify › research › plan › implement › qa › release`, which steps back to `implement` when a fix iteration starts. The task overview sits under the card in dim text, then a rule.
+The pane opens with a card: the task heading, a status strip (elapsed, agents, iterations, tokens, estimated cost) and the phase strip `clarify › research › plan › implement › qa › release`, which steps back to `implement` when a fix iteration starts. The task overview sits under the card in dim text, then a rule.
 
 Below it, one card per iteration, collapsible, headed by the iteration's title with its counts on the right (`2/2 workers · QA fix needed · 61k tok · ~$0.28`) and its overview underneath. The previous card folds when a new iteration starts. Rows inside are one line each, all collapsible:
 
-- `⚒ <task title>` for a worker, `⚖ QA round n: <verdict>` for QA, `✎ User message` and `◆ Orchestrator` for what you typed and what the orchestrator answered during the run. The text color is the status: accent while running, green finished, red failed or timed out, yellow stale, dim waiting or cancelled, with the same mark on the right edge (`●` `✓` `✗` `…` `⏱` `○`).
-- Expanded, a worker shows start time, elapsed, model, steps, tool calls, tokens and cost, its branch and planned commit title, a feed of its tool calls and assistant text (the last 40 entries, captured from the engine's model steps), and its closing summary. QA adds the score line, the overview, every item below strong and its own feed. User and orchestrator rows show the full text.
+- `⚒ 20s · sonnet · <task title>` for a worker, `⚖ 21s · sonnet · QA round n: <verdict>` for QA, `✎ User message` and `◆ Orchestrator` for what you typed and what the orchestrator answered during the run. The description's color is the status: accent while running, green finished, red failed or timed out, yellow stale, dim waiting or cancelled.
+- Expanded, a worker shows tool calls, tokens and cost, a feed of its tool calls and assistant text (the last 40 entries, captured from the engine's model steps), and its closing summary. QA adds the score line, the overview, every item below strong and its own feed. User and orchestrator rows show the full text.
 
 The band above the prompt is a two-line box: phase and iteration title, then worker counts, QA state and spend, with buttons for the timeline and to hide the band.
 

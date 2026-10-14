@@ -87,27 +87,6 @@ export function tone(row: WorkerRow | QaRow): Tone {
   }
 }
 
-export function mark(row: WorkerRow | QaRow): string {
-  switch (row.status) {
-    case 'pending':
-      return '○'
-    case 'running':
-      return '●'
-    case 'finished':
-    case 'merged':
-      return '✓'
-    case 'failed':
-    case 'invalid':
-      return '✗'
-    case 'stale':
-      return '…'
-    case 'timeout':
-      return '⏱'
-    case 'cancelled':
-      return '∅'
-  }
-}
-
 export const statusWord: Record<WorkerRow['status'] | QaRow['status'], string> = {
   pending: 'waiting to start',
   running: 'running',
@@ -173,7 +152,6 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const endAt = isOver ? (rows[rows.length - 1]?.at ?? now) : now
   const agents = rows.filter(isAgentRow)
   const total = spend(agents, theme.prices, run.orchestrator)
-  const state = run.status === 'done' ? 'Finished' : run.status === 'aborted' ? 'Aborted' : run.status === 'planning' ? 'Planning' : 'Running'
   const iterations = run.iterations.length || (rows.some(isAgentRow) ? run.iteration : 0)
 
   return (
@@ -183,8 +161,14 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           {cut(run.task, inner)}
         </Text>
         <Text wrap="truncate-end">
-          <Text color={run.status === 'done' ? 'success' : run.status === 'aborted' ? 'error' : 'claude'}>{state}</Text>
-          <Text dimColor>{SEP}</Text>
+          {run.status === 'aborted' ? (
+            <Text>
+              <Text color="error">Aborted</Text>
+              <Text dimColor>{SEP}</Text>
+            </Text>
+          ) : (
+            ''
+          )}
           {elapsed(run.startedAt, endAt)}
           <Text dimColor>{SEP}</Text>
           {`${agents.length}`}
@@ -214,7 +198,9 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
         </Box>
       )}
       <Box marginY={1}>
-        <Text dimColor>{'─'.repeat(width)}</Text>
+        <Text dimColor wrap="truncate-end">
+          {'─'.repeat(Math.max(10, width - 2))}
+        </Text>
       </Box>
       {Array.from({ length: run.iteration }, (_, i) => i + 1)
         .filter(n => n <= iterations || rows.some(r => r.iteration === n))
@@ -296,27 +282,25 @@ function drawIteration(els: Els, snap: Snapshot, act: Actions, width: number, th
   )
 }
 
-/** One row: `▸ ⚒  description` in the status color, the mark on the right edge; the whole line is the button that expands it. */
-function line(els: Els, icon: string, isOpen: boolean, label: string, t: Tone, m: string | undefined, width: number) {
+/** One row: `▸ ⚒  20s · sonnet · description`, the prefix dim and the description in the status color; the line is the button that expands it. */
+function line(els: Els, icon: string, isOpen: boolean, prefix: string, label: string, t: Tone, width: number) {
   const { Text } = els
   const head = `${isOpen ? '▾' : '▸'} ${icon}  `
-  const room = width - head.length - (m ? 2 : 0)
-  const text = cut(label, Math.max(6, room))
+  const room = width - head.length - prefix.length
   return [
     <Text key="h" dimColor>
       {head}
     </Text>,
-    <Text key="l" color={t.color} dimColor={t.dim}>
-      {text}
-    </Text>,
-    m ? pad(room - text.length + 1) : '',
-    m ? (
-      <Text key="m" color={t.color} dimColor={t.dim}>
-        {m}
+    prefix ? (
+      <Text key="p" dimColor>
+        {prefix}
       </Text>
     ) : (
       ''
     ),
+    <Text key="l" color={t.color} dimColor={t.dim}>
+      {cut(label, Math.max(6, room))}
+    </Text>,
   ]
 }
 
@@ -341,13 +325,10 @@ function drawNote(els: Els, row: UserRow | OrchestratorRow, ui: Ui, act: Actions
   return (
     <Box key={`row-${row.id}`} flexDirection="column">
       <Button key={`note-${row.id}`} plain onPress={() => act.toggleRow(row.id)}>
-        {line(els, ICON[row.kind], isOpen, label, {}, undefined, width)}
+        {line(els, ICON[row.kind], isOpen, '', label, {}, width)}
       </Button>
       {isOpen &&
         detail(els, [
-          <Text key="when" dimColor>
-            {stamp(row.at)}
-          </Text>,
           <Text key="text" wrap="wrap">
             {row.text.trim()}
           </Text>,
@@ -356,22 +337,21 @@ function drawNote(els: Els, row: UserRow | OrchestratorRow, ui: Ui, act: Actions
   )
 }
 
-function statsBits(stats: AgentStats, model: string, prices: Record<string, Price>): string[] {
+function statsLine(stats: AgentStats, model: string, prices: Record<string, Price>): string {
   const money = spendText(spend([{ stats, model } as WorkerRow], prices))
-  const bits = [`${stats.steps} step${stats.steps === 1 ? '' : 's'}`, `${stats.toolCalls} tool call${stats.toolCalls === 1 ? '' : 's'}`]
+  const bits = [`${stats.toolCalls} tool call${stats.toolCalls === 1 ? '' : 's'}`]
   if (money) bits.push(money)
-  return bits
+  return bits.join(' · ')
 }
 
 function drawActivity(els: Els, items: readonly Activity[], width: number): JSX.Element[] {
   const { Text } = els
   return items.map((a, i) => (
     <Text key={`act-${i}-${a.at}`} wrap="truncate-end">
-      <Text dimColor>{clock(a.at)} </Text>
       <Text color={a.kind === 'tool' ? 'claude' : undefined} dimColor={a.kind === 'text'}>
         {a.kind === 'tool' ? '⚙ ' : '“ '}
       </Text>
-      <Text dimColor={a.kind === 'text'}>{cut(a.text, Math.max(10, width - 12))}</Text>
+      <Text dimColor={a.kind === 'text'}>{cut(a.text, Math.max(10, width - 3))}</Text>
     </Text>
   ))
 }
@@ -379,20 +359,16 @@ function drawActivity(els: Els, items: readonly Activity[], width: number): JSX.
 function drawWorker(els: Els, row: WorkerRow, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
   const { Box, Text, Button } = els
   const isOpen = ui.expanded.includes(row.id)
-  const span = row.status === 'pending' ? 'not started' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
-  const first = [stamp(row.at), span, statusWord[row.status], row.stats.modelId ?? row.model, ...statsBits(row.stats, row.model, theme.prices)].join(' · ')
+  const span = row.status === 'pending' ? 'waiting' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
   return (
     <Box key={`row-${row.id}`} flexDirection="column">
       <Button key={`worker-${row.id}`} plain onPress={() => act.toggleRow(row.id)}>
-        {line(els, ICON.worker, isOpen, row.title, tone(row), mark(row), width)}
+        {line(els, ICON.worker, isOpen, `${span} · ${row.model} · `, row.title, tone(row), width)}
       </Button>
       {isOpen &&
         detail(els, [
-          <Text key="when" dimColor wrap="truncate-end">
-            {first}
-          </Text>,
-          <Text key="branch" dimColor wrap="truncate-end">
-            {row.branch} → {row.commit}
+          <Text key="stats" dimColor wrap="truncate-end">
+            {statsLine(row.stats, row.model, theme.prices)}
           </Text>,
           ...(row.stats.activity.length > 0
             ? [
@@ -419,18 +395,17 @@ function drawWorker(els: Els, row: WorkerRow, ui: Ui, act: Actions, width: numbe
 function drawQa(els: Els, row: QaRow, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
   const { Box, Text, Button } = els
   const isOpen = ui.expanded.includes(row.id)
-  const span = row.status === 'pending' ? 'not started' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
-  const first = [stamp(row.at), span, statusWord[row.status], row.stats.modelId ?? row.model, ...statsBits(row.stats, row.model, theme.prices)].join(' · ')
+  const span = row.status === 'pending' ? 'waiting' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
   const label = `QA round ${row.round}${row.summary ? `: ${verdictWord(row)}` : ''}`
   return (
     <Box key={`row-${row.id}`} flexDirection="column">
       <Button key={`qa-${row.id}`} plain onPress={() => act.toggleRow(row.id)}>
-        {line(els, ICON.qa, isOpen, label, tone(row), mark(row), width)}
+        {line(els, ICON.qa, isOpen, `${span} · ${row.model} · `, label, tone(row), width)}
       </Button>
       {isOpen &&
         detail(els, [
-          <Text key="when" dimColor wrap="truncate-end">
-            {first}
+          <Text key="stats" dimColor wrap="truncate-end">
+            {statsLine(row.stats, row.model, theme.prices)}
           </Text>,
           <Text key="score" wrap="wrap">
             {scoreLine(row)}
