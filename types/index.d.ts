@@ -31,7 +31,12 @@ export type Run = {
   iterations: IterationInfo[]
   /** The orchestrator's own model steps during the run. */
   orchestrator: Usage & { steps: number; modelId?: string }
+  /** Wake-up prompts sent to the orchestrator, with their delivery. */
+  wakes: Wake[]
 }
+
+/** A prompt the run queued for the orchestrator; `deliveredAt` is set when its turn starts, else the ticker resends it. */
+export type Wake = { key: string; text: string; sentAt: number; tries: number; deliveredAt?: number }
 
 export type WorkerStatus =
   | 'pending'
@@ -130,6 +135,8 @@ export type QaRow = {
   overview?: string
   note?: string
   stats: AgentStats
+  /** Set when the agent ended: the ticker collects the report outside the agent's own dispatch. */
+  collect?: { failure: string | null }
 }
 
 export type Row = UserRow | OrchestratorRow | WorkerRow | QaRow

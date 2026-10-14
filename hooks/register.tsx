@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Activity, AgentStats, OrchestratorRow, Phase, QaRow, Row, Run, UserRow, WorkerRow } from '../types'
+import type { Activity, AgentStats, OrchestratorRow, Phase, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as git from './git'
 import type { Io } from './io'
@@ -18,6 +18,9 @@ const STALE_MS = 30 * 60_000
 const TIMEOUT_MS = 2 * 60 * 60_000
 const TICK_MS = 1_000
 const WAKE_PREFIX = '[task-loop]'
+/** A wake-up whose turn has not started after this long is sent again, up to WAKE_TRIES times. */
+const WAKE_RETRY_MS = 30_000
+const WAKE_TRIES = 3
 
 const runAtom = atom({ plugin: 'task-loop', key: 'run' } as const, null)
 const rowsAtom = atom({ plugin: 'task-loop', key: 'rows' } as const, [])
@@ -90,10 +93,21 @@ async function snapshot(): Promise<Snapshot> {
   return { run, rows, ui }
 }
 
-function wake(text: string) {
+/** Queues a prompt for the orchestrator once per `key`; the ticker resends it until its turn starts. */
+async function wake(key: string, text: string) {
+  const run = await io.getRun()
+  if (!run || run.wakes.some(w => w.key === key)) return
   const full = `${WAKE_PREFIX} ${text}`
+  const now = await io.now()
+  const entry: Wake = { key, text: full, sentAt: now, tries: 1 }
+  await io.setRun(cur => (cur ? { ...cur, wakes: [...cur.wakes, entry] } : cur))
   ownPrompts.add(full)
-  void io.submit(full).catch(() => ownPrompts.delete(full))
+  void io.submit(full).catch(() => undefined)
+}
+
+async function markDelivered(text: string) {
+  const now = await io.now()
+  await io.setRun(cur => (cur && cur.wakes.some(w => w.text === text && !w.deliveredAt) ? { ...cur, wakes: cur.wakes.map(w => (w.text === text && !w.deliveredAt ? { ...w, deliveredAt: now } : w)) } : cur))
 }
 
 /** A registered tool answers with text: the engine holds `result` to a string or content blocks. */
@@ -124,6 +138,7 @@ async function openRun(task: string, devBranch: string, mainBranch: string, at?:
     phase: 'clarify',
     iterations: [],
     orchestrator: { ...ZERO, steps: 0 },
+    wakes: [],
   }
   await io.setRun(() => run)
   await io.setRows(() => [])
@@ -183,6 +198,9 @@ function statusText(snap: Snapshot): string {
   const total = spendText(spend(rows.filter(isAgentRow), prices, run.orchestrator))
   lines[0] += `, phase ${run.phase}${total ? `, ${total}` : ''}`
   if (run.overview) lines.push(`  ${run.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
+  for (const w of run.wakes.filter(w => !w.deliveredAt)) {
+    lines.push(`Wake-up not yet delivered (sent ${elapsed(w.sentAt, ui.tick)} ago, try ${w.tries}/${WAKE_TRIES}): ${w.text.split('\n')[0]}`)
+  }
   for (let n = 1; n <= run.iteration; n += 1) {
     const info = run.iterations.find(i => i.n === n)
     const mine = rows.filter(r => r.iteration === n).sort((a, b) => a.at - b.at)
@@ -513,8 +531,8 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   const run = await io.getRun()
   if (!run) return
   if (agentFailure) {
-    await patchRow(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: agentFailure }))
-    wake(`QA round ${row.round} of iteration ${row.iteration} failed before writing a report (${agentFailure}). Call ${tool('status')}, then ${tool('qa')} again or ${tool('finish')} as you see fit.`)
+    await patchQa(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: agentFailure, collect: undefined }))
+    await wake(`qa-${row.iteration}-${row.round}`, `QA round ${row.round} of iteration ${row.iteration} failed before writing a report (${agentFailure}). Call ${tool('status')}, then ${tool('qa')} again or ${tool('finish')} as you see fit.`)
     return
   }
   let text: string | null = null
@@ -527,14 +545,15 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   try {
     rubric = await rubricFor(run, row)
   } catch (error) {
-    await patchRow(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: `rubric unreadable: ${String(error)}` }))
+    await patchQa(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: `rubric unreadable: ${String(error)}`, collect: undefined }))
+    await wake(`qa-${row.iteration}-${row.round}`, `QA round ${row.round} of iteration ${row.iteration} ended but its rubric could not be read (${String(error)}). Call ${tool('qa')} again.`)
     return
   }
   const checked = text === null ? { ok: false as const, problems: [`no report at ${row.reportPath}`] } : validateReport(text, rubric)
   if (!checked.ok) {
     const note = `report invalid: ${checked.problems.join('; ')}`
-    await patchQa(row.id, r => ({ ...r, status: 'invalid', endedAt: now, note }))
-    wake(`QA round ${row.round} of iteration ${row.iteration} ended without a valid report (${note}). The worktree ${row.worktree} is kept. Call ${tool('qa')} again (a new round) with a clearer harness, or decide without it.`)
+    await patchQa(row.id, r => ({ ...r, status: 'invalid', endedAt: now, note, collect: undefined }))
+    await wake(`qa-${row.iteration}-${row.round}`, `QA round ${row.round} of iteration ${row.iteration} ended without a valid report (${note}). The worktree ${row.worktree} is kept. Call ${tool('qa')} again (a new round) with a clearer harness, or decide without it.`)
     return
   }
   const stamped = JSON.stringify(
@@ -543,12 +562,12 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
     2,
   )
   await io.write(`${run.runDir}/qa-${row.iteration}-${row.round}.json`, stamped)
-  await patchRow(row.id, r => ({ ...r, status: 'finished', endedAt: now, summary: checked.summary, items: checked.items, overview: checked.overview }))
+  await patchQa(row.id, r => ({ ...r, status: 'finished', endedAt: now, summary: checked.summary, items: checked.items, overview: checked.overview, collect: undefined }))
   rubrics.delete(`${row.iteration}-${row.round}`)
-  await git.removeWorktree(io, run.root, row.worktree)
   const s = checked.summary
   const weak = checked.items.filter(i => i.score !== 'strong').map(i => `- ${i.score}: ${i.title}${i.note ? ` — ${i.note}` : ''}`)
-  wake(
+  await wake(
+    `qa-${row.iteration}-${row.round}`,
     [
       `QA round ${row.round} for iteration ${row.iteration}: ${s.strong} strong, ${s.acceptable} acceptable, ${s.unacceptable} unacceptable → verdict: ${s.verdict}.`,
       ...(weak.length > 0 ? ['Items below strong:', ...weak] : []),
@@ -559,6 +578,7 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
         : `Next: call ${tool('finish')} to merge ${run.devBranch} into ${run.mainBranch}, or dispatch improvements first if the recommendations are worth another iteration.`,
     ].join('\n'),
   )
+  await git.removeWorktree(io, run.root, row.worktree)
 }
 
 async function maybeWakeForWorkers() {
@@ -569,7 +589,8 @@ async function maybeWakeForWorkers() {
   if (workers.length === 0 || workers.some(w => !isTerminal(w))) return
   const lines = workers.map(w => `- ${w.taskId} [${w.id}]: ${statusWord[w.status]} after ${elapsed(w.at, w.endedAt ?? w.at)}${w.note ? ` — ${w.note.slice(0, 300)}` : ''}`)
   const finished = workers.filter(w => w.status === 'finished').length
-  wake(
+  await wake(
+    `workers-${run.iteration}`,
     [
       `Iteration ${run.iteration}: all ${workers.length} worker(s) have ended (${finished} finished).`,
       ...lines,
@@ -609,16 +630,37 @@ async function tick() {
     if (idle >= TIMEOUT_MS) {
       await patchRow(row.id, r => ({ ...r, status: 'timeout', endedAt: now, note: `no activity for ${elapsed(row.lastActivityAt, now)}; stopped` }))
       void io.stop(row.id).catch(() => undefined)
-      wake(`${who} [${row.id}] timed out: no activity for ${elapsed(row.lastActivityAt, now)}, so it was stopped. Call ${tool('status')} and re-dispatch or finish.`)
-      if (row.kind === 'worker') await maybeWakeForWorkers()
+      await wake(`timeout-${row.id}`, `${who} [${row.id}] timed out: no activity for ${elapsed(row.lastActivityAt, now)}, so it was stopped. Call ${tool('status')} and re-dispatch or finish.`)
     } else if (idle >= STALE_MS && row.status === 'running') {
       await patchRow(row.id, r => ({ ...r, status: 'stale' }))
-      wake(
+      await wake(
+        `stale-${row.id}`,
         `${who} [${row.id}] looks stale: no tool call or model step for ${elapsed(row.lastActivityAt, now)}. It is still running. Call ${tool('status')} to review, and ${tool('cancel')} with its agent id if it should stop; it is stopped automatically after ${TIMEOUT_MS / 3_600_000} hours idle.`,
       )
     }
   }
+  // work that must outlive an agent's own dispatch runs here, on the session's timer
+  for (const row of rows) {
+    if (row.kind === 'qa' && row.collect && !collecting.has(row.id)) {
+      collecting.add(row.id)
+      try {
+        await collectQa(row, now, row.collect.failure)
+      } finally {
+        collecting.delete(row.id)
+      }
+    }
+  }
+  await maybeWakeForWorkers()
+  const stuck = (await io.getRun())?.wakes.filter(w => !w.deliveredAt && w.tries < WAKE_TRIES && now - w.sentAt >= WAKE_RETRY_MS) ?? []
+  for (const w of stuck) {
+    await io.setRun(cur => (cur ? { ...cur, wakes: cur.wakes.map(x => (x.key === w.key ? { ...x, sentAt: now, tries: x.tries + 1 } : x)) } : cur))
+    ownPrompts.add(w.text)
+    void io.submit(w.text).catch(() => undefined)
+  }
 }
+
+/** QA rows whose report is being collected right now, so a slow collection is not started twice. */
+const collecting = new Set<string>()
 
 const actions: Actions = {
   toggleIteration: n => void io.setUi(ui => ({ ...ui, collapsed: ui.collapsed.includes(n) ? ui.collapsed.filter(x => x !== n) : [...ui.collapsed, n] })),
@@ -861,6 +903,7 @@ export const register: Register = (on, options) => {
     const text = e.text
     if (ownPrompts.has(text) || text.startsWith(WAKE_PREFIX)) {
       ownPrompts.delete(text)
+      await markDelivered(text)
       return next(e)
     }
     // only what the person typed is a row: not a subagent's hand-back, a notification or another session's message
@@ -996,6 +1039,11 @@ export const register: Register = (on, options) => {
     return r.value
   })
 
+  on('turn.start', async ($, e, next) => {
+    if (e.text.startsWith(WAKE_PREFIX)) await markDelivered(e.text)
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     if (!e.agentId) {
       const run = await currentRun()
@@ -1017,9 +1065,8 @@ export const register: Register = (on, options) => {
             ? `${e.reason}${e.reason === 'refusal' ? `: ${e.refusal.explanation ?? ''}` : ''}`
             : e.answer.replace(/\s+/g, ' ').trim().slice(0, 400)
           await patchRow(row.id, r => ({ ...r, status: failed ? 'failed' : 'finished', endedAt: now, note }))
-          await maybeWakeForWorkers()
         } else {
-          await collectQa(row, now, failed ? `agent ended: ${e.reason}` : null)
+          await patchQa(row.id, r => ({ ...r, endedAt: now, collect: { failure: failed ? `agent ended: ${e.reason}` : null } }))
         }
       }
     }

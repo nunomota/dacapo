@@ -148,6 +148,7 @@ describe('the loop', () => {
       return out('')
     })
     on('turn.complete', (_, e) => ({ text: e.answer }))
+    on('turn.start', () => ({ turnId: 'wake' }))
     on('tool.call', { tool: 'TaskStop' }, () => ({ result: 'stopped' }))
     on('tool.call', { tool: 'Write' }, () => ({ result: 'written' }))
     on('tool.call', { tool: 'Read' }, () => ({ result: 'read' }))
@@ -219,7 +220,16 @@ describe('the loop', () => {
 
     await clock.advance(90_000)
     await $.turn.complete({ answer: 'Done. Build passes.', durationMs: 1, isAborted: false, turnId: 't1', agentId: 'agent-1', reason: 'answer' })
+    // the wake-up is sent by the ticker, not inside the agent's own completion
+    expect(prompts.some(p => p.startsWith('[task-loop]'))).toBe(false)
+    await clock.advance(1_000)
     expect(prompts.some(p => p.startsWith('[task-loop]') && /all 1 worker\(s\) have ended/.test(p))).toBe(true)
+    // undelivered, it is sent again after 30 seconds and at most three times; a started turn marks it delivered
+    await clock.advance(31_000)
+    expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(2)
+    await $.turn.start({ text: prompts.find(p => /all 1 worker\(s\) have ended/.test(p))! } as never)
+    await clock.advance(31_000)
+    expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(2)
     const statusAfter = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
     expect('result' in statusAfter && statusAfter.result).toMatch(/login \[agent-1\] finished \(1m30s/)
 
@@ -249,6 +259,7 @@ describe('the loop', () => {
 
     files.set(reportPath, JSON.stringify({ items: [{ id: 'login', score: 'strong', note: 'ok' }, { id: 'copy', score: 'unacceptable', note: 'says "error"' }], overview: 'Login works; the error copy needs words.' }))
     await $.turn.complete({ answer: 'Report written.', durationMs: 1, isAborted: false, turnId: 't2', agentId: 'agent-2', reason: 'answer' })
+    await clock.advance(1_000)
     const wakeQa = prompts.find(p => /QA round 1 for iteration 1/.test(p))
     expect(wakeQa).toMatch(/1 strong, 0 acceptable, 1 unacceptable → verdict: fix/)
     expect(wakeQa).toMatch(/Login works; the error copy needs words\./)
