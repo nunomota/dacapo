@@ -103,11 +103,14 @@ describe('the pane', () => {
     on('process.run', () => ({ value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }))
     await $.session.start({ cwd: '/tmp/task-loop-test', surface: 'terminal', isInteractive: true })
     await $.prompt.submit({ text: '/task-loop build a todo app', wait: false, origin: { kind: 'composer' } })
+    await $.prompt.submit({ text: 'also keep it tiny', wait: false, origin: { kind: 'composer' } })
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'task-loop', surface, ...PANE })
       expect(await ui.find({ type: 'Text', text: /build a todo app/ })).toBeDefined()
-      const row = await ui.find({ text: /User message/ })
-      expect(row).toBeDefined()
+      expect(await ui.find({ text: /User messages \(2\)/ })).toBeDefined()
+      expect(await ui.find({ text: /also keep it tiny/ })).toBeDefined()
+      if (surface === 'desktop') expect(await ui.find({ type: 'Svg' })).toBeDefined()
+      else expect(await ui.find({ type: 'Svg' })).toBeUndefined()
       await ui.unmount()
     }
   })

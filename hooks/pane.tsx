@@ -1,6 +1,6 @@
 import type { Elements } from 'claude-code'
 
-import type { Activity, AgentStats, Phase, QaRow, Row, Run, Ui, WorkerRow } from '../types'
+import type { Activity, AgentStats, OrchestratorRow, Phase, QaRow, Row, Run, Ui, UserRow, WorkerRow } from '../types'
 import { ZERO, addUsage, costOf, fmtCost, fmtTokens, totalTokens, type Price } from './cost'
 
 /** The three elements every surface has; the hook resolves the table and hands these in. */
@@ -8,6 +8,8 @@ export type Els = {
   Box: Elements['terminal']['Box']
   Text: Elements['terminal']['Text']
   Button: Elements['terminal']['Button']
+  /** Present on the surfaces that draw vector icons (desktop, VS Code, mobile); the terminal gets a glyph. */
+  Svg?: Elements['desktop']['Svg']
 }
 
 export type Snapshot = { run: Run | null; rows: Row[]; ui: Ui }
@@ -127,12 +129,42 @@ export function cardColor(row: Row): string {
   }
 }
 
-/** Two-line icons, four columns wide, drawn in the card's color on the left of every card. */
-export const ART: Record<Row['kind'], readonly [string, string]> = {
-  worker: ['╭●●╮', '╰┬┬╯'],
-  qa: ['▛✓▜ ', '▙──▟'],
-  user: [' ◯  ', '╱█╲ '],
-  orchestrator: [' ◆  ', '╱│╲ '],
+/** The terminal's one-glyph stand-in for each icon. */
+export const GLYPH: Record<Row['kind'], string> = { worker: '⚒', qa: '⚖', user: '✎', orchestrator: '◆' }
+
+/** Vector icons for the surfaces that draw SVG (desktop, VS Code, mobile), in the card's color. */
+export function icon(kind: Row['kind'], color: string): string {
+  const open = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">`
+  const close = '</svg>'
+  switch (kind) {
+    case 'worker':
+      // a robot head: antenna, face plate, two eyes, a mouth
+      return `${open}<line x1="12" y1="2.5" x2="12" y2="6"/><circle cx="12" cy="2.5" r="0.9" fill="${color}"/><rect x="4" y="6" width="16" height="13" rx="3"/><circle cx="9" cy="12" r="1.4" fill="${color}" stroke="none"/><circle cx="15" cy="12" r="1.4" fill="${color}" stroke="none"/><line x1="9" y1="16" x2="15" y2="16"/><line x1="2" y1="11" x2="4" y2="11"/><line x1="20" y1="11" x2="22" y2="11"/>${close}`
+    case 'user':
+      // a person: head and shoulders
+      return `${open}<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7.5 8-7.5s8 3.1 8 7.5"/>${close}`
+    case 'orchestrator':
+      // a conductor's baton over a stand
+      return `${open}<path d="M12 3l3.5 4.5L12 12 8.5 7.5z" fill="${color}" stroke="none"/><line x1="12" y1="12" x2="12" y2="21"/><line x1="12" y1="15" x2="6" y2="21"/><line x1="12" y1="15" x2="18" y2="21"/>${close}`
+    case 'qa':
+      // a clipboard with a check mark
+      return `${open}<rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3" rx="1" fill="${color}" stroke="none"/><path d="M8.5 13l2.5 2.5 4.5-5"/>${close}`
+  }
+}
+
+/** Consecutive messages from the person, or from the orchestrator, fold into one card. */
+export type Entry = { kind: 'messages'; rows: (UserRow | OrchestratorRow)[] } | { kind: 'agent'; row: WorkerRow | QaRow }
+
+export function entriesOf(rows: readonly Row[]): Entry[] {
+  const out: Entry[] = []
+  for (const row of [...rows].sort((a, b) => a.at - b.at)) {
+    if (row.kind === 'user' || row.kind === 'orchestrator') {
+      const last = out[out.length - 1]
+      if (last && last.kind === 'messages' && last.rows[0]!.kind === row.kind) last.rows.push(row)
+      else out.push({ kind: 'messages', rows: [row] })
+    } else out.push({ kind: 'agent', row })
+  }
+  return out
 }
 
 // ---------- the pane ----------
@@ -148,19 +180,17 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
     )
   }
   const width = Math.max(28, columns)
-  const inner = width - 4
   const now = ui.tick
   const isOver = run.status === 'done' || run.status === 'aborted'
   const endAt = isOver ? (rows[rows.length - 1]?.at ?? now) : now
   const agents = rows.filter(isAgentRow)
   const total = spend(agents, theme.prices, run.orchestrator)
-  const ordered = [...rows].sort((a, b) => a.at - b.at)
 
   return (
     <Box flexDirection="column">
       <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
         <Text bold wrap="truncate-end">
-          {cut(run.task, inner)}
+          {run.task}
         </Text>
         <Text wrap="truncate-end">
           {run.status === 'aborted' ? (
@@ -187,7 +217,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
             ''
           )}
         </Text>
-        {drawPhases(els, run.phase, inner)}
+        {drawPhases(els, run.phase, width - 4)}
       </Box>
       {run.overview && (
         <Box paddingX={1} marginTop={1}>
@@ -198,10 +228,10 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
       )}
       <Box marginY={1}>
         <Text dimColor wrap="truncate-end">
-          {'─'.repeat(Math.max(10, width - 2))}
+          {'─'.repeat(Math.max(10, width - 6))}
         </Text>
       </Box>
-      {ordered.map(row => drawCard(els, row, ui, act, width, theme, now))}
+      {entriesOf(rows).map(entry => drawCard(els, entry, ui, act, width, theme, now))}
     </Box>
   )
 }
@@ -231,30 +261,30 @@ function drawPhases(els: Els, current: Phase, width: number): JSX.Element {
 }
 
 /** The card's text block: the header is the button that expands it; one dim subline is always shown; the body when expanded. */
-type Card = { key: string; title: string; subline: string; body: JSX.Element[] }
+type Card = { id: string; key: string; kind: Row['kind']; color: string; title: string; subline: string; body: JSX.Element[] }
 
-function drawCard(els: Els, row: Row, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
-  const { Box, Text, Button } = els
-  const isOpen = ui.expanded.includes(row.id)
-  const color = cardColor(row)
-  const art = ART[row.kind]
-  const textWidth = Math.max(10, width - 4 - 6)
-  const card = cardOf(els, row, theme, now, textWidth)
+function drawCard(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
+  const { Box, Text, Button, Svg } = els
+  const card = entry.kind === 'agent' ? agentCard(els, entry.row, theme, now, width - 12) : messagesCard(els, entry.rows)
+  const isOpen = ui.expanded.includes(card.id)
   return (
-    <Box key={`card-${row.id}`} borderStyle="round" borderColor={color} paddingX={1} flexDirection="row" marginBottom={1}>
-      <Box flexDirection="column" width={5} flexShrink={0}>
-        <Text color={color}>{art[0]}</Text>
-        <Text color={color}>{art[1]}</Text>
+    <Box key={`card-${card.id}`} borderStyle="round" borderColor={card.color} paddingX={1} flexDirection="row" marginBottom={1}>
+      <Box flexDirection="column" width={Svg ? 6 : 3} flexShrink={0} marginRight={1}>
+        {Svg ? (
+          <Svg source={icon(card.kind, card.color)} alt={card.kind} width={34} height={34} />
+        ) : (
+          <Text color={card.color}>{GLYPH[card.kind]}</Text>
+        )}
       </Box>
       <Box flexDirection="column" flexGrow={1}>
-        <Button key={card.key} plain onPress={() => act.toggleRow(row.id)}>
+        <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
           <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
-          <Text bold color={color}>
-            {cut(card.title, textWidth - 2)}
+          <Text bold color={card.color} wrap="truncate-end">
+            {card.title}
           </Text>
         </Button>
         <Text dimColor wrap="truncate-end">
-          {cut(card.subline, textWidth)}
+          {card.subline.replace(/\s+/g, ' ').trim()}
         </Text>
         {isOpen && card.body.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
@@ -266,6 +296,26 @@ function drawCard(els: Els, row: Row, ui: Ui, act: Actions, width: number, theme
   )
 }
 
+function messagesCard(els: Els, rows: (UserRow | OrchestratorRow)[]): Card {
+  const { Box, Text } = els
+  const first = rows[0]!
+  const last = rows[rows.length - 1]!
+  const who = first.kind === 'user' ? 'User message' : 'Orchestrator'
+  return {
+    id: first.id,
+    key: `note-${first.id}`,
+    kind: first.kind,
+    color: cardColor(first),
+    title: rows.length > 1 ? `${who === 'User message' ? 'User messages' : who} (${rows.length})` : who,
+    subline: last.text,
+    body: rows.map((r, i) => (
+      <Box key={`msg-${r.id}`} marginTop={i > 0 ? 1 : 0}>
+        <Text wrap="wrap">{r.text.trim()}</Text>
+      </Box>
+    )),
+  }
+}
+
 function statsLine(stats: AgentStats, model: string, prices: Record<string, Price>): string {
   const money = spendText(spend([{ stats, model } as WorkerRow], prices))
   const bits = [`${stats.toolCalls} tool call${stats.toolCalls === 1 ? '' : 's'}`]
@@ -273,36 +323,28 @@ function statsLine(stats: AgentStats, model: string, prices: Record<string, Pric
   return bits.join(' · ')
 }
 
-function drawActivity(els: Els, items: readonly Activity[], width: number): JSX.Element[] {
+function drawActivity(els: Els, items: readonly Activity[]): JSX.Element[] {
   const { Text } = els
   return items.map((a, i) => (
     <Text key={`act-${i}-${a.at}`} wrap="truncate-end">
       <Text color={a.kind === 'tool' ? 'claude' : undefined} dimColor={a.kind === 'text'}>
         {a.kind === 'tool' ? '⚙ ' : '“ '}
       </Text>
-      <Text dimColor={a.kind === 'text'}>{cut(a.text, Math.max(10, width - 3))}</Text>
+      <Text dimColor={a.kind === 'text'}>{a.text.replace(/\s+/g, ' ')}</Text>
     </Text>
   ))
 }
 
-function cardOf(els: Els, row: Row, theme: Theme, now: number, width: number): Card {
+function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, width: number): Card {
   const { Box, Text } = els
-  if (row.kind === 'user' || row.kind === 'orchestrator') {
-    return {
-      key: `note-${row.id}`,
-      title: row.kind === 'user' ? 'User message' : 'Orchestrator',
-      subline: row.text,
-      body: [
-        <Text key="text" wrap="wrap">
-          {row.text.trim()}
-        </Text>,
-      ],
-    }
-  }
   const span = row.status === 'pending' ? 'waiting' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
+  const color = cardColor(row)
   if (row.kind === 'worker') {
     return {
+      id: row.id,
       key: `worker-${row.id}`,
+      kind: 'worker',
+      color,
       title: row.title,
       subline: [span, row.model, statusWord[row.status]].join(' · '),
       body: [
@@ -312,7 +354,7 @@ function cardOf(els: Els, row: Row, theme: Theme, now: number, width: number): C
         ...(row.stats.activity.length > 0
           ? [
               <Box key="feed" marginTop={1} flexDirection="column">
-                {drawActivity(els, row.stats.activity, width)}
+                {drawActivity(els, row.stats.activity)}
               </Box>,
             ]
           : []),
@@ -330,7 +372,10 @@ function cardOf(els: Els, row: Row, theme: Theme, now: number, width: number): C
     }
   }
   return {
+    id: row.id,
     key: `qa-${row.id}`,
+    kind: 'qa',
+    color,
     title: `QA round ${row.round}${row.summary ? `: ${verdictWord(row)}` : ''}`,
     subline: [span, row.model, row.summary ? scoreLine(row) : statusWord[row.status]].join(' · '),
     body: [
@@ -368,7 +413,7 @@ function cardOf(els: Els, row: Row, theme: Theme, now: number, width: number): C
       ...(row.stats.activity.length > 0
         ? [
             <Box key="feed" marginTop={1} flexDirection="column">
-              {drawActivity(els, row.stats.activity, width)}
+              {drawActivity(els, row.stats.activity)}
             </Box>,
           ]
         : []),
