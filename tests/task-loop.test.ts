@@ -227,7 +227,7 @@ describe('the loop', () => {
     // undelivered, it is sent again after 30 seconds and at most three times; a started turn marks it delivered
     await clock.advance(31_000)
     expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(2)
-    await $.turn.start({ text: prompts.find(p => /all 1 worker\(s\) have ended/.test(p))! } as never)
+    await $.turn.start({ text: `The task-loop plugin sent a message: ${prompts.find(p => /all 1 worker\(s\) have ended/.test(p))!}` } as never)
     await clock.advance(31_000)
     expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(2)
     const statusAfter = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)

@@ -105,9 +105,15 @@ async function wake(key: string, text: string) {
   void io.submit(full).catch(() => undefined)
 }
 
+/** A wake-up counts as delivered when a turn starts whose text holds it; the engine may wrap the prompt ("The task-loop plugin sent a message: ..."). */
 async function markDelivered(text: string) {
+  const squash = (t: string) => t.replace(/\s+/g, ' ').trim()
+  const seen = squash(text)
+  const holds = (w: Wake) => !w.deliveredAt && seen.includes(squash(w.text))
+  const run = await io.getRun()
+  if (!run || !run.wakes.some(holds)) return
   const now = await io.now()
-  await io.setRun(cur => (cur && cur.wakes.some(w => w.text === text && !w.deliveredAt) ? { ...cur, wakes: cur.wakes.map(w => (w.text === text && !w.deliveredAt ? { ...w, deliveredAt: now } : w)) } : cur))
+  await io.setRun(cur => (cur ? { ...cur, wakes: cur.wakes.map(w => (holds(w) ? { ...w, deliveredAt: now } : w)) } : cur))
 }
 
 /** A registered tool answers with text: the engine holds `result` to a string or content blocks. */
@@ -900,7 +906,7 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     const text = e.text
-    if (ownPrompts.has(text) || text.startsWith(WAKE_PREFIX)) {
+    if (ownPrompts.has(text) || text.includes(WAKE_PREFIX)) {
       ownPrompts.delete(text)
       await markDelivered(text)
       return next(e)
@@ -1039,7 +1045,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.text.startsWith(WAKE_PREFIX)) await markDelivered(e.text)
+    if (e.text.includes(WAKE_PREFIX)) await markDelivered(e.text)
     return next(e)
   })
 
