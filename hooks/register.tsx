@@ -204,6 +204,7 @@ function statusText(snap: Snapshot): string {
   const total = spendText(spend(rows.filter(isAgentRow), prices, run.orchestrator))
   lines[0] += `, phase ${run.phase}${total ? `, ${total}` : ''}`
   if (run.overview) lines.push(`  ${run.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
+  if (run.pushProblem) lines.push(`Push problem: ${run.pushProblem}`)
   for (const w of run.wakes.filter(w => !w.deliveredAt)) {
     lines.push(`Wake-up not yet delivered (sent ${elapsed(w.sentAt, ui.tick)} ago, try ${w.tries}/${WAKE_TRIES}): ${w.text.split('\n')[0]}`)
   }
@@ -393,9 +394,11 @@ async function merge() {
       skipped.push(`${w.taskId}: conflicts in ${outcome.files.join(', ')} (branch ${w.branch} kept at ${w.worktree})`)
     } else skipped.push(`${w.taskId}: ${outcome.message} (branch ${w.branch} kept)`)
   }
+  const pushed = merged.length > 0 ? await pushAfter(run.devWorktree, run.devBranch) : ''
   const text = [
     `Merged ${merged.length} of ${candidates.length} branch(es) into ${run.devBranch}.`,
     ...merged.map(m => `- ${m}`),
+    ...(pushed ? [pushed] : []),
     ...(skipped.length > 0
       ? ['Not merged:', ...skipped.map(s => `- ${s}`), 'Resolve by dispatching a worker whose task is to redo the conflicting branch on top of dev, then merge again.']
       : []),
@@ -515,6 +518,7 @@ async function finish(a: Args) {
         : `${run.mainBranch} merged ${run.devBranch} with one merge commit (histories had diverged).`,
   )
   lines.push(...notes)
+  if (outcome.kind !== 'up-to-date') lines.push(await pushAfter(run.root, run.mainBranch))
   for (const w of rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.status !== 'merged')) {
     lines.push(...(await git.removeWorktree(io, run.root, w.worktree, w.branch)))
   }
@@ -622,6 +626,19 @@ async function revive(row: WorkerRow | QaRow, now: number) {
   )
 }
 
+/** Pushes a branch after the run changed it; a failure is told and remembered, never fatal. */
+async function pushAfter(cwd: string, branch: string): Promise<string> {
+  const out = await git.pushBranch(io, cwd, branch)
+  if (out.kind === 'pushed') {
+    await io.setRun(cur => (cur && cur.pushProblem ? { ...cur, pushProblem: undefined } : cur))
+    return `Pushed ${branch} to origin.`
+  }
+  const problem = out.kind === 'no-remote' ? `${branch} was not pushed: the repository has no origin remote.` : `${branch} was not pushed to origin: ${out.message}`
+  await io.setRun(cur => (cur ? { ...cur, pushProblem: problem } : cur))
+  io.toast(`task-loop: ${problem} Work continues; push by hand when you can.`)
+  return `${problem} Work continues; push by hand when convenient.`
+}
+
 async function touch(agentId: string) {
   const rows = await io.getRows()
   const row = rows.find(isAgent(agentId))
@@ -707,6 +724,7 @@ export const register: Register = (on, options) => {
       stop: agentId => $.tool.call({ tool: 'TaskStop', task_id: agentId }),
       submit: text => $.prompt.submit({ text }),
       openPane: focus => $.ui.open(focus ? { id: PANE, title: 'Task loop', focus: true } : { id: PANE, title: 'Task loop' }),
+      toast: text => $.ui.toast(text, { timeoutMs: 8_000 }),
       getRun: () => read($, runAtom),
       setRun: fn => update($, runAtom, fn),
       getRows: () => read($, rowsAtom),

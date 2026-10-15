@@ -17,6 +17,7 @@ export type Io = {
   stop: (agentId: string) => Promise<unknown>
   submit: (text: string) => Promise<unknown>
   openPane: (focus?: boolean) => Promise<unknown>
+  toast: (text: string) => void
   getRun: () => Promise<Run | null>
   setRun: (fn: (run: Run | null) => Run | null) => Promise<unknown>
   getRows: () => Promise<Row[]>

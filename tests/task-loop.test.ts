@@ -147,6 +147,8 @@ describe('the loop', () => {
       if (argv[1] === 'worktree' && argv[2] === 'list') return out('worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo/.workspaces/dev\nHEAD abc\nbranch refs/heads/dev\n\n')
       if (argv[1] === 'diff' && argv[3] === '--quiet') return out('', 1)
       if (argv[1] === 'rev-parse' && argv[2] === '--short') return out('beef1\n')
+      if (argv[1] === 'remote') return out('git@github.com:x/y.git\n')
+      if (argv[1] === 'push') return pushFails ? out('', 1) : out('')
       return out('')
     })
     on('turn.complete', (_, e) => ({ text: e.answer }))
@@ -154,6 +156,7 @@ describe('the loop', () => {
     on('tool.call', { tool: 'TaskStop' }, () => ({ result: 'stopped' }))
     on('tool.call', { tool: 'Write' }, () => ({ result: 'written' }))
     on('tool.call', { tool: 'Read' }, () => ({ result: 'read' }))
+    let pushFails = false
     const agentCalls: Array<Record<string, unknown>> = []
     let nextAgent = 0
     on('tool.call', { tool: 'Agent' }, (_, e) => {
@@ -247,6 +250,7 @@ describe('the loop', () => {
 
     const merged = await $.tool.call({ tool: 'mcp__task-loop__merge' } as never)
     expect('result' in merged && merged.result).toMatch(/feat: add login page \(beef1\)/)
+    expect('result' in merged && merged.result).toMatch(/Pushed dev to origin/)
 
     const qa = await $.tool.call({
       tool: 'mcp__task-loop__qa',
@@ -316,8 +320,10 @@ describe('the loop', () => {
     expect('result' in timed && timed.result).toMatch(/copy \[agent-3\] timed out/)
     expect(prompts.some(p => /Worker copy \[agent-3\] timed out/.test(p))).toBe(true)
 
+    pushFails = true
     const finished = await $.tool.call({ tool: 'mcp__task-loop__finish' } as never)
     expect('result' in finished && finished.result).toMatch(/Run .* finished/)
+    expect('result' in finished && finished.result).toMatch(/main was not pushed to origin.*Work continues/)
     const after = await $.tool.call({ tool: 'Write', file_path: '/repo/x.ts', content: 'x' })
     expect('result' in after && after.result).toBe('written')
   })

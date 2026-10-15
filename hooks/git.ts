@@ -146,6 +146,18 @@ export async function squashMerge(
   return { kind: 'merged', commit: sha.out }
 }
 
+export type PushOutcome = { kind: 'pushed' } | { kind: 'no-remote' } | { kind: 'failed'; message: string }
+
+/** Pushes `branch` to `origin`, setting the upstream on the first push; never throws. */
+export async function pushBranch(io: Io, cwd: string, branch: string): Promise<PushOutcome> {
+  const remote = await git(io, cwd, ['remote', 'get-url', 'origin'])
+  if (!remote.ok || !remote.out) return { kind: 'no-remote' }
+  const pushed = await git(io, cwd, ['push', '--set-upstream', 'origin', branch])
+  if (pushed.ok) return { kind: 'pushed' }
+  const message = (pushed.err || pushed.out).split('\n').filter(l => l.trim() && !/^\s*(To |remote: |hint:)/.test(l)).join(' ').slice(0, 300)
+  return { kind: 'failed', message: message || 'push failed' }
+}
+
 export type ReleaseOutcome =
   | { kind: 'fast-forward' }
   | { kind: 'merge-commit' }

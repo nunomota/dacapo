@@ -219,6 +219,13 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
         </Text>
         {drawPhases(els, run.phase, width - 4)}
       </Box>
+      {run.pushProblem && (
+        <Box paddingX={1} marginTop={1}>
+          <Text color="warning" wrap="wrap">
+            {run.pushProblem}
+          </Text>
+        </Box>
+      )}
       {run.overview && (
         <Box paddingX={1} marginTop={1}>
           <Text dimColor wrap="wrap">

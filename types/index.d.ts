@@ -33,6 +33,8 @@ export type Run = {
   orchestrator: Usage & { steps: number; modelId?: string }
   /** Wake-up prompts sent to the orchestrator, with their delivery. */
   wakes: Wake[]
+  /** The last push to origin that did not happen, shown until the next push succeeds. */
+  pushProblem?: string
 }
 
 /** A prompt the run queued for the orchestrator; `deliveredAt` is set when its turn starts, else the ticker resends it. */
