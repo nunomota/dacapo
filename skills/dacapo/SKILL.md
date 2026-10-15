@@ -73,7 +73,7 @@ Call `mcp__dacapo__dispatch` with `tasks` (and optionally a round `title` and `o
 
 This host already gives every worker its standing instructions with the brief it writes. They cover building and testing, fixing what it introduced, clean commits, landing through the pull request, and the report and its last line. Put only the task itself and its contracts in the task `prompt`.
 
-The reply lists one `Agent` call per task. Make them yourself, all in one message, exactly as listed: `subagent_type: "dacapo:worker"`, the listed description, and the prompt `dacapo worker <id>`. Never write the prompts yourself; the run fills in the brief, model, worktree and background mode. Then end your turn, saying in one line that the workers run. Each worker opens its draft pull request after its first commit.
+The reply lists one `Agent` call per task. Make them yourself, all in one message, exactly as listed: `subagent_type: "dacapo:worker"`, the listed description, and the prompt `dacapo worker <id>`. Never write the prompts yourself; the run fills in the brief, model, worktree and background mode. Then end your turn. Each worker opens its draft pull request after its first commit.
 
 ### wait
 
@@ -101,8 +101,10 @@ Call `mcp__dacapo__finish` with:
 - `body`: the paragraph of the loop's phase 6 step 1, to the `clean-prs` rules, with a `Verified:` line and an optional `Notes:` line. No attribution lines of any kind.
 
 Then end your turn. The run watches the pull request and merges it when green. It then prunes the worktrees and branches, and wakes you with `Merged into <base>`. Two wake-ups ask for more work first:
-- Conflicts with the base branch: `dispatch` one worker with `merge: "merge"`. It merges `origin/<base>` into its branch and resolves the conflicts, under the commit title `chore: merge <base> into <run branch>`. Then `sync`, then `qa`, then decide as the loop's phase 6 step 2 says. Call `finish` again only when that decision sends you there.
-- Failing checks on the final pull request: `dispatch` the fix, then `sync`, then `qa`, then decide as the loop's phase 6 step 2 says. Call `finish` again only when that decision sends you there.
+- Conflicts with the base branch: `dispatch` one worker with `merge: "merge"`. It merges `origin/<base>` into its branch and resolves the conflicts, under the commit title `chore: merge <base> into <run branch>`.
+- Failing checks on the final pull request: `dispatch` a fix worker.
+
+From there follow the loop's phase 6 step 2, where `sync` collects the worker's outcome and `qa` runs QA. Call `finish` again only when that decision sends you there.
 
 `abort: true` ends the run without a final pull request.
 
@@ -110,7 +112,7 @@ Then end your turn. The run watches the pull request and merges it when green. I
 
 Call `mcp__dacapo__status` once, never in a loop. It returns the timeline as text: every worker and QA row with status, pull request and elapsed time, any undelivered wake-up, and the run state. Call it in two cases:
 - No `[dacapo]` wake-up has arrived two minutes after a hand-back.
-- A worker is stale: decide to leave it, or `cancel` it and plan a re-dispatch.
+- A worker is stale: `status` shows it as `stale` and still running, and `cancel` stops it. Whether to let it run or stop it is the loop's phase 4 step 3.
 
 ### phase
 
