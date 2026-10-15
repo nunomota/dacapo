@@ -295,14 +295,14 @@ function logo(els: Els): JSX.Element {
   const { Box, Text, Svg } = els
   if (Svg) {
     return (
-      <Box width={LOGO_COLS} flexShrink={0} alignItems="center" justifyContent="center" marginRight={1}>
+      <Box width={LOGO_COLS} flexShrink={0} alignSelf="stretch" alignItems="center" justifyContent="center" marginRight={1}>
         <Svg source={icon('orchestrator', PHASE_COLOR.implement)} alt="dacapo" width={64} height={64} />
       </Box>
     )
   }
   const art = ['  ●  ', '  │  ', '●─┼─●', ' ╱ ╲ ', '●   ●']
   return (
-    <Box width={LOGO_COLS} flexShrink={0} flexDirection="column" alignItems="center" marginRight={1}>
+    <Box width={LOGO_COLS} flexShrink={0} flexDirection="column" alignSelf="stretch" alignItems="center" justifyContent="center" marginRight={1}>
       {art.map((line, i) => (
         <Text key={`logo-${i}`} color={PHASE_COLOR.implement}>
           {line}
