@@ -325,7 +325,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           {'─'.repeat(Math.max(10, width - 12))}
         </Text>
       </Box>
-      {entries.length > 0 ? <Box flexDirection="row">{connector(els, 'trunk')}</Box> : ''}
+      {entries.length > 0 ? treeLead(els) : ''}
       {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
     </Box>
   )
@@ -369,9 +369,9 @@ const ICON_COLS = 2
 const ROW_PX = 20
 const TREE_COLOR = '#6e7681'
 
-type Piece = 'branch' | 'last' | 'trunk' | 'none'
+type Piece = 'branch' | 'last' | 'trunk' | 'tick' | 'none'
 
-/** A tree piece `rows` text rows tall: on the remote surfaces one smooth SVG, in the terminal box-drawing glyphs. */
+/** A tree piece `rows` text rows tall, as one SVG: the trunk, a branch tick, or both. */
 function treeSvg(piece: Piece, rows: number): string {
   const h = ROW_PX * rows
   const mid = ROW_PX / 2
@@ -379,22 +379,47 @@ function treeSvg(piece: Piece, rows: number): string {
   const parts: string[] = []
   if (piece === 'trunk' || piece === 'branch') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${h}"/>`)
   if (piece === 'last') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${mid}"/>`)
-  if (piece === 'branch' || piece === 'last') parts.push(`<line x1="${x}" y1="${mid}" x2="16" y2="${mid}"/>`)
+  if (piece === 'branch' || piece === 'last' || piece === 'tick') parts.push(`<line x1="${x}" y1="${mid}" x2="16" y2="${mid}"/>`)
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 ${h}" fill="none" stroke="${TREE_COLOR}" stroke-width="1.5" stroke-linecap="round">${parts.join('')}</svg>`
 }
 
-const TREE_GLYPH: Record<Piece, string> = { branch: '├─', last: '└─', trunk: '│ ', none: '  ' }
+const TREE_GLYPH: Record<Piece, string> = { branch: '├─', last: '└─', trunk: '│ ', tick: '─', none: '  ' }
 
+/** One piece in the tree column, `rows` rows tall; the terminal draws glyphs, the other surfaces an SVG. */
 function connector(els: Els, piece: Piece, rows = 1): JSX.Element {
   const { Box, Text, Svg } = els
   return (
-    <Box width={TREE_COLS} flexShrink={0} flexDirection="column">
+    <Box width={TREE_COLS} flexShrink={0} flexDirection="column" alignSelf="flex-start">
       {Svg ? (
         <Svg source={treeSvg(piece, rows)} alt="tree line" width={16} height={ROW_PX * rows} />
       ) : (
         <Text dimColor>{[TREE_GLYPH[piece], ...Array.from({ length: rows - 1 }, () => TREE_GLYPH[piece === 'trunk' || piece === 'branch' ? 'trunk' : 'none'])].join('\n')}</Text>
       )}
     </Box>
+  )
+}
+
+/** The trunk as tall as its parent, whatever the rows measure: an absolute box from top to bottom clipping a long SVG. */
+const TRUNK_ROWS = 120
+
+function trunk(els: Els): JSX.Element {
+  const { Box, Svg } = els
+  return (
+    <Box position="absolute" top={0} bottom={0} left={0} width={TREE_COLS} overflow="hidden" flexDirection="column">
+      {Svg ? <Svg source={treeSvg('trunk', TRUNK_ROWS)} alt="tree line" width={16} height={ROW_PX * TRUNK_ROWS} /> : ''}
+    </Box>
+  )
+}
+
+/** The lead-in above the first entry: one row of trunk. */
+export function treeLead(els: Els): JSX.Element {
+  const { Box } = els
+  return els.Svg ? (
+    <Box height={1} overflow="hidden">
+      {trunk(els)}
+    </Box>
+  ) : (
+    <Box flexDirection="row">{connector(els, 'trunk')}</Box>
   )
 }
 
@@ -405,11 +430,15 @@ function drawEntry(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, 
   const textWidth = Math.max(16, width - TREE_COLS - ICON_COLS - 4)
   const card = entry.kind === 'agent' ? agentCard(els, entry.row, theme, now, run, textWidth) : messagesCard(els, entry.rows, textWidth)
   const isOpen = ui.expanded.includes(card.id)
-  const below: Piece = isLast ? 'none' : 'trunk'
+  // on the SVG surfaces the trunk is one piece behind the rows, so the rows' heights do not matter; the terminal's
+  // rows are exact, so it draws a glyph per row
+  const smooth = !!Svg
+  const below = (rows = 1) => (isLast ? <Box width={TREE_COLS} flexShrink={0} /> : smooth ? <Box width={TREE_COLS} flexShrink={0} /> : connector(els, 'trunk', rows))
   return (
     <Box key={`entry-${card.id}`} flexDirection="column" overflow="hidden">
+      {smooth && !isLast ? trunk(els) : ''}
       <Box flexDirection="row" alignItems="center">
-        {connector(els, isLast ? 'last' : 'branch')}
+        {connector(els, isLast ? 'last' : smooth ? 'tick' : 'branch')}
         <Box width={ICON_COLS} flexShrink={0} alignItems="center" justifyContent="center">
           {Svg ? <Svg source={icon(card.kind, card.color)} alt={card.kind} width={16} height={16} /> : <Text color={card.color}>{GLYPH[card.kind]}</Text>}
         </Box>
@@ -423,7 +452,7 @@ function drawEntry(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, 
         </Box>
       </Box>
       <Box flexDirection="row" alignItems="flex-start">
-        {connector(els, below)}
+        {below()}
         <Box width={ICON_COLS} flexShrink={0} />
         <Box width={textWidth} flexShrink={0} marginLeft={1}>
           {card.subline}
@@ -431,14 +460,14 @@ function drawEntry(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, 
       </Box>
       {isOpen && card.body.length > 0 && (
         <Box flexDirection="row" alignItems="flex-start">
-          {connector(els, below, card.bodyRows + 1)}
+          {below(card.bodyRows + 1)}
           <Box width={ICON_COLS} flexShrink={0} />
           <Box width={textWidth} flexShrink={0} marginLeft={1} flexDirection="column" marginTop={1}>
             {card.body}
           </Box>
         </Box>
       )}
-      {!isLast ? <Box flexDirection="row">{connector(els, 'trunk')}</Box> : ''}
+      {!isLast ? <Box flexDirection="row" height={1}>{below()}</Box> : ''}
     </Box>
   )
 }
