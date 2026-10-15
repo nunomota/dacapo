@@ -52,7 +52,7 @@ You can type while workers run. Your prompts become events in the timeline and a
 - **Clean history.** Commits follow the bundled `clean-commits` skill: Conventional Commit titles, one unit of work each, no bodies, no attribution lines. Pull requests follow `clean-prs`: the planned title, one paragraph on the contribution, a `Verified:` line.
 - **QA never reads source.** The QA subagent can only read the brief and rubric it was given and only write its report. The mod validates the report and derives the verdict.
 - **Nothing is fired and forgotten.** Report collection, pull request polling, the final merge and every wake-up run on the mod's own timer. A wake-up that does not arrive is sent again.
-- **Stale is not failed.** An agent silent for 30 minutes is marked stale and the orchestrator is told; after two idle hours it is stopped. Both are distinct from a failure.
+- **Stale is not failed.** An agent silent for 30 minutes is marked stale and the orchestrator is told; it keeps running. After two idle hours it is timed out: stopped and handled as a failure (resume, repair, drop or ask).
 
 ## The pane
 
