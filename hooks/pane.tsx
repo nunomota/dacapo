@@ -289,22 +289,6 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           )}
         </Text>
         {drawPhases(els, run.phase, width - 4)}
-        {prs.length > 0 && (
-          <Box flexDirection="column">
-            <Button key="pr-list" plain onPress={() => act.togglePrList()}>
-              <Text dimColor>{ui.isPrListOpen ? '▾ ' : '▸ '}</Text>
-              <Text wrap="truncate-end">
-                {`${prs.length} pull request${prs.length === 1 ? '' : 's'}`}
-                <Text dimColor>{counts.map(([s, n]) => ` · ${n} ${s}`).join('')}</Text>
-              </Text>
-            </Button>
-            {ui.isPrListOpen && (
-              <Box flexDirection="column" paddingLeft={2}>
-                {prs.map(pr => drawPr(els, pr, `top-pr-${pr.number}`))}
-              </Box>
-            )}
-          </Box>
-        )}
       </Box>
       {run.pushProblem && (
         <Box paddingX={1} marginTop={1}>
@@ -320,18 +304,28 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           </Text>
         </Box>
       )}
+      {prs.length > 0 && (
+        <Box flexDirection="column" paddingX={1} marginTop={1}>
+          <Button key="pr-list" plain onPress={() => act.togglePrList()}>
+            <Text dimColor>{ui.isPrListOpen ? '▾ ' : '▸ '}</Text>
+            <Text wrap="truncate-end">
+              {`${prs.length} pull request${prs.length === 1 ? '' : 's'}`}
+              <Text dimColor>{counts.map(([s, n]) => ` · ${n} ${s}`).join('')}</Text>
+            </Text>
+          </Button>
+          {ui.isPrListOpen && (
+            <Box flexDirection="column" paddingLeft={2}>
+              {prs.map(pr => drawPr(els, pr, `top-pr-${pr.number}`))}
+            </Box>
+          )}
+        </Box>
+      )}
       <Box marginTop={1}>
         <Text dimColor wrap="truncate-end">
           {'─'.repeat(Math.max(10, width - 12))}
         </Text>
       </Box>
-      {entries.length > 0 ? (
-        <Box width={ICON_COLS} flexShrink={0} alignItems="center" flexDirection="column">
-          <Text dimColor>│</Text>
-        </Box>
-      ) : (
-        ''
-      )}
+      {entries.length > 0 ? treeLead(els) : ''}
       {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
     </Box>
   )
@@ -367,43 +361,113 @@ function drawPhases(els: Els, current: Phase, width: number): JSX.Element {
  */
 type Card = { id: string; key: string; kind: Row['kind']; color: string; title: string; subline: JSX.Element; body: JSX.Element[]; bodyRows: number }
 
-/** The icon column: the entry's icon where a timeline dot would be, and the line running down from it. */
-const ICON_COLS = 3
+/** The tree column: `├─` beside an entry's header, `│` down to the next entry, `└─` for the last; three cells wide, the last one blank so the tick stops short of the icon. */
+const TREE_COLS = 3
+/** The icon column, right of the tree. */
+const ICON_COLS = 2
+/** One text row on the remote surfaces, in CSS pixels: the tree pieces are drawn this tall so they meet edge to edge. */
+const ROW_PX = 20
+const TREE_COLOR = '#6e7681'
+
+type Piece = 'branch' | 'last' | 'trunk' | 'tick' | 'none'
+
+/** A tree piece `rows` text rows tall, as one SVG: the trunk, a branch tick, or both. */
+function treeSvg(piece: Piece, rows: number): string {
+  const h = ROW_PX * rows
+  const mid = ROW_PX / 2
+  const x = 5
+  const parts: string[] = []
+  if (piece === 'trunk' || piece === 'branch') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${h}"/>`)
+  if (piece === 'last') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${mid}"/>`)
+  if (piece === 'branch' || piece === 'last' || piece === 'tick') parts.push(`<line x1="${x}" y1="${mid}" x2="14" y2="${mid}"/>`)
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 ${h}" fill="none" stroke="${TREE_COLOR}" stroke-width="1.5" stroke-linecap="round">${parts.join('')}</svg>`
+}
+
+const TREE_GLYPH: Record<Piece, string> = { branch: '├─ ', last: '└─ ', trunk: '│  ', tick: '─  ', none: '   ' }
+
+/** One piece in the tree column, `rows` rows tall; the terminal draws glyphs, the other surfaces an SVG. */
+function connector(els: Els, piece: Piece, rows = 1): JSX.Element {
+  const { Box, Text, Svg } = els
+  return (
+    <Box width={TREE_COLS} flexShrink={0} flexDirection="column" alignSelf="flex-start">
+      {Svg ? (
+        <Svg source={treeSvg(piece, rows)} alt="tree line" width={16} height={ROW_PX * rows} />
+      ) : (
+        <Text dimColor>{[TREE_GLYPH[piece], ...Array.from({ length: rows - 1 }, () => TREE_GLYPH[piece === 'trunk' || piece === 'branch' ? 'trunk' : 'none'])].join('\n')}</Text>
+      )}
+    </Box>
+  )
+}
+
+/** The trunk as tall as its parent, whatever the rows measure: an absolute box from top to bottom clipping a long SVG. */
+const TRUNK_ROWS = 120
+
+function trunk(els: Els): JSX.Element {
+  const { Box, Svg } = els
+  return (
+    <Box position="absolute" top={0} bottom={0} left={0} width={TREE_COLS} overflow="hidden" flexDirection="column">
+      {Svg ? <Svg source={treeSvg('trunk', TRUNK_ROWS)} alt="tree line" width={16} height={ROW_PX * TRUNK_ROWS} /> : ''}
+    </Box>
+  )
+}
+
+/** The lead-in above the first entry: one row of trunk. */
+export function treeLead(els: Els): JSX.Element {
+  const { Box } = els
+  return els.Svg ? (
+    <Box height={1} overflow="hidden">
+      {trunk(els)}
+    </Box>
+  ) : (
+    <Box flexDirection="row">{connector(els, 'trunk')}</Box>
+  )
+}
 
 function drawEntry(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, theme: Theme, now: number, run: Run, isLast: boolean): JSX.Element {
   const { Box, Text, Button, Svg } = els
   // the text column gets an explicit width: the desktop's column count is approximate for its font, and without a
   // bound the surface never truncates or wraps
-  const textWidth = Math.max(16, width - ICON_COLS - 3)
+  const textWidth = Math.max(16, width - TREE_COLS - ICON_COLS - 4)
   const card = entry.kind === 'agent' ? agentCard(els, entry.row, theme, now, run, textWidth) : messagesCard(els, entry.rows, textWidth)
   const isOpen = ui.expanded.includes(card.id)
-  // the line joins this icon to the next one: it covers the subline, the body when open, and the blank row before
-  // the next entry; after the last entry there is nothing to join
-  const lineRows = isLast ? 0 : 1 + (isOpen ? card.bodyRows : 0) + 1
+  // on the SVG surfaces the trunk is one piece behind the rows, so the rows' heights do not matter; the terminal's
+  // rows are exact, so it draws a glyph per row
+  const smooth = !!Svg
+  const below = (rows = 1) => (isLast ? <Box width={TREE_COLS} flexShrink={0} /> : smooth ? <Box width={TREE_COLS} flexShrink={0} /> : connector(els, 'trunk', rows))
   return (
-    <Box key={`entry-${card.id}`} flexDirection="row" alignItems="flex-start" overflow="hidden">
-      <Box flexDirection="column" width={ICON_COLS} flexShrink={0} alignItems="center">
-        {Svg ? (
-          <Svg source={icon(card.kind, card.color)} alt={card.kind} width={16} height={16} />
-        ) : (
-          <Text color={card.color}>{GLYPH[card.kind]}</Text>
-        )}
-        {lineRows > 0 ? <Text dimColor>{Array.from({ length: lineRows }, () => '│').join('\n')}</Text> : ''}
+    <Box key={`entry-${card.id}`} flexDirection="column" overflow="hidden">
+      {smooth && !isLast ? trunk(els) : ''}
+      <Box flexDirection="row" alignItems="center">
+        {connector(els, isLast ? 'last' : smooth ? 'tick' : 'branch')}
+        <Box width={ICON_COLS} flexShrink={0} alignItems="center" justifyContent="center">
+          {Svg ? <Svg source={icon(card.kind, card.color)} alt={card.kind} width={16} height={16} /> : <Text color={card.color}>{GLYPH[card.kind]}</Text>}
+        </Box>
+        <Box width={textWidth} flexShrink={0} marginLeft={1}>
+          <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
+            <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
+            <Text bold color={card.color} wrap="truncate-end">
+              {card.title}
+            </Text>
+          </Button>
+        </Box>
       </Box>
-      <Box flexDirection="column" width={textWidth} flexShrink={0} marginLeft={1} paddingBottom={isLast ? 0 : 1}>
-        <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
-          <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
-          <Text bold color={card.color} wrap="truncate-end">
-            {card.title}
-          </Text>
-        </Button>
-        {card.subline}
-        {isOpen && card.body.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" alignItems="flex-start">
+        {below()}
+        <Box width={ICON_COLS} flexShrink={0} />
+        <Box width={textWidth} flexShrink={0} marginLeft={1}>
+          {card.subline}
+        </Box>
+      </Box>
+      {isOpen && card.body.length > 0 && (
+        <Box flexDirection="row" alignItems="flex-start">
+          {below(card.bodyRows + 1)}
+          <Box width={ICON_COLS} flexShrink={0} />
+          <Box width={textWidth} flexShrink={0} marginLeft={1} flexDirection="column" marginTop={1}>
             {card.body}
           </Box>
-        )}
-      </Box>
+        </Box>
+      )}
+      {!isLast ? <Box flexDirection="row" height={1}>{below()}</Box> : ''}
     </Box>
   )
 }
