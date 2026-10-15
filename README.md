@@ -28,7 +28,7 @@ claude --plugin-dir ~/dacapo
 /dacapo <what you want built>
 ```
 
-The skill comes in three parts: `dacapo-core` is the loop itself, host-agnostic, so another orchestrator host with its own dispatch and merge can use it; `dacapo-claude` is the binding to this mod's tools and subagents; and the `/dacapo` entry loads both. The two parts are hidden from the slash menu.
+The skill comes in two parts. `dacapo-loop` is the loop itself, host-agnostic and callable on its own as `/dacapo-loop <task>`, so another orchestrator host with its own dispatch and merge can use it; the `/dacapo` entry loads it and carries the binding to this mod's tools and subagents.
 
 The skill then runs in phases:
 
@@ -96,9 +96,8 @@ hooks/pane.tsx                   the timeline pane and the band
 hooks/cost.ts                    price table, token and cost formatting
 hooks/io.ts                      the engine calls the helpers use
 types/index.d.ts                 the $.state contract
-skills/dacapo/SKILL.md           the /dacapo entry, loads the core and the claude binding
-skills/dacapo-core/SKILL.md      the loop, host-agnostic
-skills/dacapo-claude/SKILL.md    the binding to this mod's tools and subagents
+skills/dacapo/SKILL.md           the /dacapo skill: loads dacapo-loop and binds it to the mod
+skills/dacapo-loop/SKILL.md      the loop, host-agnostic, also /dacapo-loop
 skills/clean-commits/SKILL.md    the commit rules workers and squash merges follow
 skills/clean-prs/SKILL.md        the pull request rules workers and the release follow
 tests/dacapo.test.ts             claude plugin test
