@@ -11,7 +11,7 @@ dacapo runs a task as a loop with three roles. The **orchestrator** (you) clarif
 ## What the host provides
 
 - `start`: open a run for the clarified task.
-- `dispatch`: start one isolated worker per task brief, all in parallel.
+- `dispatch`: start one isolated worker per task, all in parallel.
 - `wait`: be woken when every worker has ended or one stalls; never poll.
 - `collect`: learn each worker's outcome and bring landed work into the run.
 - `cancel`: stop a worker and discard what it has not landed.
@@ -40,8 +40,8 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
 
 ## Phase 3: start the run and plan
 
-1. Call `start` with the task in one line (written by you after clarification, never the prompt verbatim) and one short paragraph on the deliverable, who it is for and what done looks like.
-2. Split the work into components that can be built independently and in parallel. Each component becomes one task brief:
+1. Mark the phase (`plan`) with `phase` unless the host marks it itself. Call `start` with the task in one line (written by you after clarification, never the prompt verbatim) and one short paragraph on the deliverable, who it is for and what done looks like.
+2. Split the work into components that can be built independently and in parallel. Each component becomes one task, with the fields:
    - `id`: a kebab-case slug.
    - `title`: a few words.
    - `brief`: the complete prompt for a worker that knows nothing else: what to build, which files or modules, the interfaces it must expose or consume, the research facts that matter, constraints, and what finished looks like. Workers cannot see each other's work, so name the contracts between components explicitly (routes, types, function signatures, file names).
@@ -49,7 +49,7 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
    - `landing title`: the one-line title the work lands under, in the form the host requires.
    - `build`: the command that must pass before the worker lands. `test`: the test command, if any.
    - `context`: optional extra files (API notes, fixtures, a design sketch).
-   Every worker is told to build, to fix errors and warnings it introduced unless expected, to keep its work in clean commits, and to land it before it reports finished.
+   The host hands every worker these standing instructions with its brief, so write them into each brief if your host does not: build, fix the errors and warnings you introduced unless expected, leave the work in clean commits, stay within the task, and land it before reporting finished.
 3. Define the QA work now, so it does not get shaped by what the workers happen to produce:
    - A rubric: items with `id`, `title` (a user-visible outcome) and `category` (`core` or `ui-ux`). Cover the core function first, then clarity, feedback, error handling and flow.
    - A harness: how QA starts, reaches and uses the deliverable (install and run commands, URL or binary, accounts or fixtures, the flows a user walks). QA behaves as the end user and never reads source, so the harness must be enough on its own.
@@ -59,26 +59,26 @@ Show the plan (tasks, models, landing titles; rubric and harness) in a compact f
 
 ## Phase 4: the implementation loop
 
-1. **Dispatch.** Call `dispatch` with the task briefs; all workers start in parallel. Say in one line that the workers are running, then `wait` to be woken. Do not poll.
+1. **Dispatch.** Mark the phase (`implement`) with `phase` unless the host marks it itself. Call `dispatch` with the tasks; all workers start in parallel. Say in one line that the workers are running, then `wait` to be woken. Do not poll.
 2. **On the wake-up.** Read every worker's outcome. For a `stale` worker, decide: leave it (it may be building or waiting on checks), or `cancel` it and plan a re-dispatch. When every worker has ended, call `collect`. A worker that says finished but has not `landed` has not finished: resume it.
 3. **A failed worker** (`failed` or `timed out`) leaves its work in place. Options, in order of preference:
    1. **Resume it**: dispatch the same `id` with `resume` and a brief that says what to fix or finish. The new worker continues the earlier one's work.
    2. **Repair first** when the failure is not the task's fault (a broken check, a flaky test, a missing dependency): dispatch a repair task of its own, `collect`, then resume the original.
    3. **Drop it** with `cancel`; the run continues with the others.
    4. **Ask the user** when a human is needed: missing secrets, a required approval, an outage.
-4. **QA.** Call `qa` with the rubric, the harness, and a short brief of what this round built or changed, then `wait`. The report scores every rubric item `strong`, `acceptable` or `unacceptable` with a short note, and carries an overview and a verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any item is acceptable and none unacceptable; `pass` otherwise.
-5. **Decide.** On `fix`, plan the fixes as new task briefs and go back to step 1: the next dispatch starts a new round. On `pass-with-recommendations`, decide whether the recommendations are worth a round; usually one more is. On `pass`, go to phase 5.
+4. **QA.** Mark the phase (`qa`) with `phase` unless the host marks it itself. Call `qa` with the rubric, the harness, and a short note of what this round built or changed, then `wait`. The report scores every rubric item `strong`, `acceptable` or `unacceptable` with a short note, and carries an overview and a verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any item is acceptable and none unacceptable; `pass` otherwise.
+5. **Decide.** On `fix`, plan the fixes as new tasks and go back to step 1: the next dispatch starts a new round. On `pass-with-recommendations`, decide whether the recommendations are worth a round; usually one more is. On `pass`, go to phase 5.
 6. The user may type while workers run. Answer them, and fold any new direction into the next round rather than into the running one.
 
 ## Phase 5: release
 
-1. Call `release` with a one-line title summing up the run and one paragraph on what changed and why, then `wait`.
+1. Mark the phase (`release`) with `phase` unless the host marks it itself. Call `release` with a one-line title summing up the run and one paragraph on what changed and why, then `wait`.
 2. If the integration is refused because the base line moved or its checks fail, dispatch a worker to reconcile or fix it (resume the task at fault, or a repair task), `collect`, run `qa` once more (a reconciliation can break things), and call `release` again.
 3. When the run is released, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out.
 
 ## Rules
 
 - Only workers change the codebase.
-- Workers never see each other's work mid-flight: contracts go in the briefs.
+- Workers never see each other's work mid-flight: contracts go in each task's `brief`.
 - QA never reads source: judge its report, not its method.
 - Prefer finishing the loop over polishing forever: when QA says pass, release.
