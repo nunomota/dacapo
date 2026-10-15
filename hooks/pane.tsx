@@ -18,6 +18,7 @@ export type Snapshot = { run: Run | null; rows: Row[]; ui: Ui }
 export type Actions = {
   toggleRow: (id: string) => void
   toggleSection: (name: Section) => void
+  toggleTimelineFull: () => void
   openPane: () => void
   hideBand: () => void
 }
@@ -325,21 +326,48 @@ function keyLine(els: Els, key: string, value: JSX.Element | string): JSX.Elemen
   )
 }
 
-/** Six blocks, one per phase in its own color up to the current one, the ones ahead grey; the current phase's name under its block. */
+/** How many of the latest entries the timeline shows until "earlier" is pressed. */
+export const TIMELINE_LATEST = 8
+
+/**
+ * Six blocks, one per phase: the ones done greyed out, the current one in its own color with its name beneath,
+ * the ones ahead hollow. One SVG on the remote surfaces so the label sits under its block whatever the font;
+ * glyph rows in the terminal.
+ */
 function drawBar(els: Els, current: Phase): JSX.Element {
-  const { Box, Text } = els
+  const { Box, Text, Svg } = els
   const at = PHASES.indexOf(current)
-  const blank = ' '.repeat(BLOCK_COLS)
+  const grey = '#6e7681'
+  if (Svg) {
+    const w = 46
+    const gap = 6
+    const bar = 13
+    const rects = PHASES.map((p, i) => {
+      const x = i * (w + gap)
+      if (i < at) return `<rect x="${x}" y="0" width="${w}" height="${bar}" rx="3" fill="${grey}"/>`
+      if (i === at) return `<rect x="${x}" y="0" width="${w}" height="${bar}" rx="3" fill="${PHASE_COLOR[p]}"/>`
+      return `<rect x="${x + 0.5}" y="0.5" width="${w - 1}" height="${bar - 1}" rx="3" fill="none" stroke="${grey}" stroke-width="1"/>`
+    })
+    const cx = at * (w + gap) + w / 2
+    const total = PHASES.length * (w + gap) - gap
+    const source = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${bar + 18}">${rects.join('')}<text x="${cx}" y="${bar + 14}" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="${PHASE_COLOR[current]}">${current}</text></svg>`
+    return (
+      <Box>
+        <Svg source={source} alt={`phase ${current}`} width={total} height={bar + 18} />
+      </Box>
+    )
+  }
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row">
+      <Text>
         {PHASES.map((p, i) => (
-          <Box key={`bar-${p}`} width={BLOCK_COLS} marginRight={1} backgroundColor={i <= at ? PHASE_COLOR[p] : '#5c6370'}>
-            <Text>{blank}</Text>
-          </Box>
+          <Text key={`bar-${p}`}>
+            {i > 0 ? ' ' : ''}
+            {i < at ? <Text dimColor>{'█'.repeat(BLOCK_COLS)}</Text> : i === at ? <Text color={PHASE_COLOR[p]}>{'█'.repeat(BLOCK_COLS)}</Text> : <Text dimColor>{'░'.repeat(BLOCK_COLS)}</Text>}
+          </Text>
         ))}
-      </Box>
-      <Box flexDirection="row" paddingLeft={at * (BLOCK_COLS + 1)}>
+      </Text>
+      <Box paddingLeft={at * (BLOCK_COLS + 1)}>
         <Text color={PHASE_COLOR[current]}>{current}</Text>
       </Box>
     </Box>
@@ -396,7 +424,7 @@ function sectionLine(els: Els, key: string, kind: Row['kind'], color: string, te
 }
 
 export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number, theme: Theme): JSX.Element {
-  const { Box, Text, Button } = els
+  const { Box, Text } = els
   const { run, rows, ui } = snap
   if (!run) {
     return (
@@ -416,7 +444,6 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const prs = [...run.prs].sort((a, b) => a.createdAt - b.createdAt)
   const entries = entriesOf(rows)
   const textWidth = Math.max(16, width - LOGO_COLS - 2)
-  const isTimelineOpen = ui.openSections.includes('timeline')
 
   const models = new Map<string, number>()
   for (const a of agents) models.set(a.model, (models.get(a.model) ?? 0) + 1)
@@ -551,27 +578,48 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           {sections}
         </Box>
       )}
-      <Box flexDirection="row" marginTop={1} alignItems="center">
-        <Button key="section-timeline" plain onPress={() => act.toggleSection('timeline')}>
-          <Text dimColor>{isTimelineOpen ? '▾ ' : '▸ '}</Text>
-          <Text color="claude" bold>
-            Timeline
-          </Text>
-          <Text dimColor>{` (${entries.length}) `}</Text>
-        </Button>
-        <Box flexGrow={1} overflow="hidden">
-          <Text dimColor wrap="truncate-end">
-            {'─'.repeat(Math.max(4, width))}
-          </Text>
+      {drawTimeline(els, entries, ui, act, width, theme, now, run)}
+    </Box>
+  )
+}
+
+/**
+ * The timeline as its own panel under the header: a solid title band (name, counts, the earlier/latest switch and
+ * the hide/show toggle) over a framed tree of the latest entries.
+ */
+function drawTimeline(els: Els, entries: Entry[], ui: Ui, act: Actions, width: number, theme: Theme, now: number, run: Run): JSX.Element {
+  const { Box, Text, Button } = els
+  const isOpen = ui.openSections.includes('timeline')
+  const running = entries.filter(e => e.kind === 'agent' && isInProgress(e.row)).length
+  const hidden = ui.isTimelineFull ? 0 : Math.max(0, entries.length - TIMELINE_LATEST)
+  const shown = hidden > 0 ? entries.slice(hidden) : entries
+  const bits = [`${entries.length} ${entries.length === 1 ? 'event' : 'events'}`, ...(running > 0 ? [`${running} running`] : [])]
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" backgroundColor="claude" paddingX={1} justifyContent="space-between">
+        <Text color="white" wrap="truncate-end">
+          <Text bold>Timeline</Text>
+          {` · ${bits.join(' · ')}`}
+        </Text>
+        <Box flexDirection="row" flexShrink={0}>
+          {entries.length > TIMELINE_LATEST ? (
+            <Button key="timeline-earlier" plain onPress={() => act.toggleTimelineFull()}>
+              <Text color="white">{ui.isTimelineFull ? `latest ${TIMELINE_LATEST}` : `earlier (${hidden})`}</Text>
+            </Button>
+          ) : (
+            ''
+          )}
+          {entries.length > TIMELINE_LATEST ? <Text color="white"> · </Text> : ''}
+          <Button key="section-timeline" plain onPress={() => act.toggleSection('timeline')}>
+            <Text color="white">{isOpen ? 'hide' : 'show'}</Text>
+          </Button>
         </Box>
       </Box>
-      {entries.length > 0 && isTimelineOpen ? (
-        <Box flexDirection="column" marginTop={1}>
-          {treeLead(els)}
-          {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
+      {isOpen && (
+        <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
+          {shown.length > 0 ? treeLead(els) : <Text dimColor>Nothing yet.</Text>}
+          {shown.map((entry, i) => drawEntry(els, entry, ui, act, width - 4, theme, now, run, i === shown.length - 1))}
         </Box>
-      ) : (
-        ''
       )}
     </Box>
   )

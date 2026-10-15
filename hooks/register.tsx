@@ -30,6 +30,7 @@ const rowsAtom = atom({ plugin: 'dacapo', key: 'rows' } as const, [])
 const uiAtom = atom({ plugin: 'dacapo', key: 'ui' } as const, {
   expanded: [],
   openSections: ['timeline'],
+  isTimelineFull: false,
   tick: 0,
   isBandHidden: false,
 })
@@ -154,7 +155,7 @@ async function openRun(task: string, baseBranch: string, at?: string): Promise<R
   }
   await io.setRun(() => run)
   await io.setRows(() => [])
-  await io.setUi(() => ({ expanded: [], openSections: ['timeline'], tick: now, isBandHidden: false }))
+  await io.setUi(() => ({ expanded: [], openSections: ['timeline'], isTimelineFull: false, tick: now, isBandHidden: false }))
   return run
 }
 
@@ -910,6 +911,7 @@ const collecting = new Set<string>()
 const actions: Actions = {
   toggleRow: id => void io.setUi(ui => ({ ...ui, expanded: ui.expanded.includes(id) ? ui.expanded.filter(x => x !== id) : [...ui.expanded, id] })),
   toggleSection: name => void io.setUi(ui => ({ ...ui, openSections: ui.openSections.includes(name) ? ui.openSections.filter(x => x !== name) : [...ui.openSections, name] })),
+  toggleTimelineFull: () => void io.setUi(ui => ({ ...ui, isTimelineFull: !ui.isTimelineFull })),
   openPane: () => void io.openPane(true),
   hideBand: () => void io.setUi(ui => ({ ...ui, isBandHidden: true })),
 }

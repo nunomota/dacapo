@@ -192,8 +192,10 @@ export type Row = UserRow | OrchestratorRow | WorkerRow | QaRow
 export type Ui = {
   /** Ids of rows whose body is shown. */
   expanded: string[]
-  /** The badge's progress rows that are unfolded: 'prs', 'agents', 'qa'. */
+  /** The header's progress rows that are unfolded ('prs', 'agents', 'qa') and the timeline panel ('timeline'). */
   openSections: string[]
+  /** The timeline shows every entry, not only the latest few. */
+  isTimelineFull: boolean
   /** The clock as of the last tick, for spinners and elapsed times. */
   tick: number
   /** The pane is hidden from the band's point of view. */
