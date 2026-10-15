@@ -1,12 +1,13 @@
 ---
-name: dacapo-core
-user-invocable: false
-description: The host-agnostic dacapo loop - clarify, research, plan, parallel isolated workers, end-user QA with a scored rubric, iterate, release - that /dacapo loads before its binding. Another orchestrator host can follow it with its own way to dispatch agents and merge their work.
+name: dacapo-loop
+description: The dacapo loop - clarify, research, plan, parallel isolated workers, end-user QA with a scored rubric, iterate, release. Any orchestrator host can follow it with its own way to dispatch agents and merge their work. Invoked by the user via /dacapo-loop <task>.
 ---
 
-# dacapo-core
+# dacapo-loop
 
 dacapo runs a request as a loop with three roles. The **orchestrator** (you) clarifies the request, researches the stack, plans the work, starts the workers, reads their outcomes and decides what happens next. **Workers**, one per task, each build one component in isolation and land it into the run. The **QA agent** uses the deliverable as an end user and scores it against a rubric you wrote before any work began. You never edit files or integrate work yourself: workers change the codebase and the host integrates what they land.
+
+The request is everything after `/dacapo-loop` in the prompt that invoked this skill, or the task handed to you by the host.
 
 ## What the host provides
 
@@ -17,9 +18,9 @@ dacapo runs a request as a loop with three roles. The **orchestrator** (you) cla
 - `cancel`: stop a worker and discard what it has not landed.
 - `qa`: start the QA agent on the current state of the run with the rubric and harness; receive the scored report.
 - `release`: integrate the run into the base line.
-- `phase`: mark where the loop stands (clarify, research, plan, implement, qa, release). Mark each later phase (plan, implement, qa, release) as you enter it unless the host marks it itself; the binding says which ones this host marks.
+- `phase`: mark where the loop stands (clarify, research, plan, implement, qa, release). Mark each later phase (plan, implement, qa, release) as you enter it, unless the host marks it itself.
 
-The loaded binding describes how each operation is done in the host at hand. A worker's outcome is one of `landed`, `failed`, `stale`, `timed out` or `cancelled`.
+The host you run in says how each operation is done: its own tools, agents and integration. A worker's outcome is one of `landed`, `failed`, `stale`, `timed out` or `cancelled`.
 
 ## Phase 1: clarify (loop until the request is clear)
 
