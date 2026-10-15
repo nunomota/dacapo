@@ -10,11 +10,11 @@ You are the orchestrator. You never edit files, touch git, or open and merge pul
 
 ## How work lands here
 
-- The base branch is `main` unless told otherwise. `start` cuts the run branch from it in its own worktree under `.workspaces/<branch>` and pushes it.
+- The base branch is `main` unless told otherwise. `start` pulls it from origin, then cuts the run branch from it in its own worktree under `.workspaces/<branch>` and pushes it.
 - Every worker gets its own branch and worktree under `.workspaces/<run branch>--<id>` and lands through a draft pull request against the run branch: ready when its build passes, conflicts rebased away, checks waited for and fixed (three rounds at most; no CI counts as green), then squash-merged with the planned title.
 - Commits follow the bundled `clean-commits` skill; pull requests follow the bundled `clean-prs` skill.
 - QA tests the run branch in a fresh worktree.
-- The release is a pull request from the run branch into the base branch, merged with a merge commit once its checks are green.
+- The release is a pull request from the run branch into the base branch, merged with a merge commit.
 
 ## Clarify, research and plan in this host
 
@@ -33,21 +33,21 @@ Call `mcp__dacapo__start` once the task is clear:
 - `branch`: named after the change (`add-login`, `fix-export-crash`).
 - `baseBranch`: only when the repository releases from another branch than `main`.
 
-It pulls the base branch from origin before cutting the run branch.
-
 If it answers that `gh` is missing, not logged in, or cannot reach the repository on GitHub, stop. Tell the user the install command for their system and that they must run `gh auth login` in a terminal themselves. Call `start` again once they say it is done. Every change lands through a pull request, so do not plan around it.
 
 ### dispatch
 
-Call `mcp__dacapo__dispatch` with `tasks` (and optionally a round `title` and `overview`, kept only in the run log). Map each task brief:
-- `id`, `title`: as in the brief.
-- `prompt`: the brief. For a resumed task, what to fix or finish.
+Call `mcp__dacapo__dispatch` with `tasks` (and optionally a round `title` and `overview`, kept only in the run log). Map each task:
+- `id`, `title`: as given.
+- `prompt`: its brief. For a resumed task, what to fix or finish.
 - `model`: `opus` for `strong`, `sonnet` for `fast`.
 - `commit`: the landing title. A Conventional Commit line: types feat, fix, docs, style, refactor, test, chore, perf, ci, revert only; no scope in parentheses; at most 72 characters.
 - `build`, `test`: the commands.
 - `context`: a list of `{ name, text }` files placed under `.context/`.
 - `resume: true`: continue the earlier worker of the same `id` on its branch, worktree and pull request.
 - `merge: "merge"`: only for a branch that merges the base branch into the run branch. Otherwise leave it out (squash).
+
+This host already gives every worker its standing instructions with the brief it writes (build and test, fix what you introduced, clean commits, land through the pull request), so do not copy them into the task `prompt`; put only the task itself and its contracts there.
 
 The reply lists one `Agent` call per task. Make them yourself, all in one message, exactly as listed: `subagent_type: "dacapo:worker"`, the listed description, and the prompt `dacapo worker <id>`. Never write the prompts yourself; the run fills in the brief, model, worktree and background mode. Then end your turn, saying in one line that the workers run. Each worker opens its draft pull request after its first commit.
 
@@ -64,7 +64,7 @@ Do nothing. A prompt starting with `[dacapo]` wakes you when every worker has en
 When every worker has ended, call `mcp__dacapo__sync`. It lists the pull requests through `gh`, marks the merged ones as landed, prunes their worktrees and branches, and fast-forwards the run worktree. A worker has not landed when its pull request is still open after it said finished.
 
 A failed worker leaves its branch and pull request in place. The failure ladder here:
-1. Resume: `dispatch` the same `id` with `resume: true` and a prompt saying what to fix or finish.
+1. Resume: `dispatch` the same `id` with `resume: true`.
 2. Repair: `dispatch` a repair task of its own, `sync`, then resume.
 3. Drop: `cancel`.
 
