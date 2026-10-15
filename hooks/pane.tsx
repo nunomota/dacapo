@@ -396,7 +396,7 @@ function sectionLine(els: Els, key: string, kind: Row['kind'], color: string, te
 }
 
 export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number, theme: Theme): JSX.Element {
-  const { Box, Text } = els
+  const { Box, Text, Button } = els
   const { run, rows, ui } = snap
   if (!run) {
     return (
@@ -546,25 +546,33 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           </Text>
         </Box>
       )}
-      <Box flexDirection="column" marginTop={1}>
-        {sections}
-        {sectionRow(
-          els,
-          act,
-          'timeline',
-          `Timeline (${entries.length})`,
-          isTimelineOpen,
-          [],
-          entries.length > 0 && isTimelineOpen
-            ? [
-                <Box key="tree" flexDirection="column" marginTop={1}>
-                  {treeLead(els)}
-                  {entries.map((entry, i) => drawEntry(els, entry, ui, act, width - 2, theme, now, run, i === entries.length - 1))}
-                </Box>,
-              ]
-            : [],
-        )}
+      {sections.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          {sections}
+        </Box>
+      )}
+      <Box flexDirection="row" marginTop={1} alignItems="center">
+        <Button key="section-timeline" plain onPress={() => act.toggleSection('timeline')}>
+          <Text dimColor>{isTimelineOpen ? '▾ ' : '▸ '}</Text>
+          <Text color="claude" bold>
+            Timeline
+          </Text>
+          <Text dimColor>{` (${entries.length}) `}</Text>
+        </Button>
+        <Box flexGrow={1} overflow="hidden">
+          <Text dimColor wrap="truncate-end">
+            {'─'.repeat(Math.max(4, width))}
+          </Text>
+        </Box>
       </Box>
+      {entries.length > 0 && isTimelineOpen ? (
+        <Box flexDirection="column" marginTop={1}>
+          {treeLead(els)}
+          {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
+        </Box>
+      ) : (
+        ''
+      )}
     </Box>
   )
 }
