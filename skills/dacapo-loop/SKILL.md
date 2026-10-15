@@ -1,21 +1,21 @@
 ---
 name: dacapo-loop
-description: The dacapo loop as a specification for any orchestrator that runs agents and lands their work its own way: three roles (orchestrator, workers, QA) and their boundaries, what a host must guarantee, the inputs written before any code exists, the worker and QA report contracts, and the decision rules of each phase (clarify, research, plan, implement, qa, merge).
+description: The dacapo loop as a specification for any orchestrator that runs agents and lands their work its own way. It covers three roles (orchestrator, workers, QA) and their boundaries, what a host must guarantee, and the inputs written before any code exists. It also gives the worker and QA report contracts and the decision rules of each phase (clarify, research, plan, implement, qa, merge).
 ---
 
 # dacapo-loop
 
-dacapo builds a request in rounds until its end user would accept it. The **orchestrator** clarifies the request, plans independent tasks and the QA they will be judged by, then reads every outcome and decides the next round. **Workers**, one per task, each build one piece in isolation and land it. **QA** uses the integrated result as its end user and scores it against a rubric written before any code existed. A host runs the agents, integrates what lands and reports back. This file says what each role does and what the host must guarantee, never how a host does it.
+dacapo builds a request in rounds until its end user would accept it. Three roles run the loop: the **orchestrator**, the **workers** and **QA**. A host runs the agents and integrates what lands. This file says what each role does and what the host must guarantee, never how a host does it.
 
-If a person invoked this skill directly rather than a host loading it, tell them this file is the loop's specification and that the `/dacapo` command is what runs it.
+If a person invoked this skill directly rather than a host loading it, tell them two things. This file is the loop's specification, and the `/dacapo` command is what runs it.
 
 ## Roles
 
-**Orchestrator.** You. Before any code exists you turn the request into a plan: tasks with briefs and contracts, a rubric and a harness. Then you start each round through the host, read the worker and QA reports, and decide: another round, or integration. You produce the plan, the decisions and the final report.
+**Orchestrator.** The orchestrator produces the plan, the rubric, the harness, the briefs, the decisions and the final report.
 
-**Workers.** Each takes exactly one task, builds it in a sandbox of its own, verifies it with the build and test commands, lands it under the planned landing title and reports. A worker produces landed work and a report.
+**Workers.** A worker produces one landed task and its report.
 
-**QA.** Sets the product up as the harness says, uses it as its end user and scores every rubric item. It produces a report; the host derives the verdict from it.
+**QA.** QA produces one scored report.
 
 ## Boundaries
 
@@ -56,7 +56,7 @@ Never:
 - Touch another task's work.
 - Change the integration target other than through the landing path.
 - Talk to the user.
-- Report finished before its work has landed.
+- Report done before its work has landed.
 
 Cannot see:
 - Other workers' work mid-flight (the contracts in its brief are all it knows of them).
@@ -76,11 +76,12 @@ Never:
 - Read, search or open source by any means, including the shell it keeps to run the product.
 - Edit anything but its report.
 - Spawn agents.
+- Talk to the user.
 - Decide the verdict.
 
 Cannot see:
 - The source, the workers' reports and the orchestrator's conversation.
-- Anything beyond what it is handed (what was built, as the run's one-line request and a user-visible note on the round; the harness; the rubric; where to write its report).
+- Anything beyond what the host hands it.
 
 ## What a host must guarantee
 
@@ -88,11 +89,11 @@ Cannot see:
 - **Deterministic integration.** Landed work enters the run under its planned landing title by the host's own mechanism, never by the orchestrator. Work counts as landed only when the host says so. At the end the host integrates the run into the base line when asked, and says why when it refuses (the base moved, checks fail).
 - **A clean QA environment.** QA gets a clean copy of the integrated state and a way to run the product. Source is unreachable to it, or at least forbidden by its instructions.
 - **Validated QA reports.** The host checks that every rubric id is scored exactly once, every score is `strong`, `acceptable` or `unacceptable`, and the overview is not empty. It derives the verdict from the scores and never asks QA for one. An invalid report goes to the orchestrator with the reasons.
-- **Reported outcomes.** Without being asked, the host tells the orchestrator each worker's report and whether its work landed, and tells it about a worker that is stuck: still running, with no activity for a long time. A report is never lost on the way.
+- **Reported outcomes.** Without being asked, the host tells the orchestrator each worker's report and whether its work landed. It also tells it about a worker that is stalled: still running, with no activity for a long time. A report is never lost on the way.
 - **Resume and stop.** The work of a worker that did not land stays in place, so its task can be resumed from where it stopped. The orchestrator can stop a worker, which discards what it has not landed.
 - **A guard on the orchestrator.** While a run is active the host stops the orchestrator from editing files, integrating work or rewriting history.
-- **Standing worker instructions.** The host hands every worker its standing instructions with the brief: build and test before landing, fix what you introduced, leave clean reviewable units, stay within the task, land before reporting, name what you left out, end with the report below. A host that does not leaves the orchestrator to write them into every brief.
-- **Model tiers.** Two at least: `strong` for complex, cross-cutting or design-heavy work, `fast` for contained, well-specified work.
+- **Standing worker instructions.** The host hands every worker its standing instructions with the brief. They say to build and test before landing, fix what you introduced, leave clean reviewable units and stay within the task. They also say to land before reporting, name what you left out and end with the report below. A host that does not leaves the orchestrator to write them into every brief.
+- **Model tiers.** Two at least: the strong tier for complex, cross-cutting or design-heavy work, and the fast tier for contained, well-specified work.
 
 ## Phase 1: clarify
 
@@ -102,7 +103,7 @@ Cannot see:
 
 ## Phase 2: research
 
-- If the stack is not fixed by the user or the codebase, compare the two or three most suitable stacks or libraries and pick one, stating why in a sentence.
+- If the stack is not fixed by the user or the codebase, compare the two or three most suitable stacks or libraries. Pick one, stating why in a sentence.
 - For every library the work depends on, read the high-level documentation for the version the project already uses (check the lockfile or manifest). For a new project use the latest stable version.
 - Note the build and test commands of the project, or the ones the chosen stack uses. Note whether the host runs automated checks before work lands: a worker lands only when they pass, and no checks count as passing.
 
@@ -112,15 +113,16 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
 
 Produce everything below before any code exists.
 
-1. **The run.** The request in one line, written by you after clarification and never the prompt verbatim, and one short paragraph on the deliverable, who it is for and what done looks like. The host opens the run with them.
+1. **The run.** The request in one line, written by you after clarification and never the prompt verbatim. Then one short paragraph on the deliverable, who it is for and what done looks like. The host opens the run with them.
 2. **The tasks.** Split the work into components built independently and in parallel, one task each:
    - `id`: a kebab-case slug.
    - `title`: a few words.
-   - `brief`: the complete prompt for a worker that knows nothing else: what to build, which files or modules, the research facts that matter, constraints, and what finished looks like. Workers cannot see each other, so name every contract between components explicitly: routes, types, function signatures, file names.
-   - `model`: `strong` or `fast`.
+   - `brief`: the complete prompt for a worker that knows nothing else: what to build, which files or modules, the research facts that matter, constraints, and what done looks like. Workers cannot see each other, so name every contract between components explicitly: routes, types, function signatures, file names.
+   - `model`: the strong tier or the fast tier.
    - `landing title`: the one line the work lands under.
    - `build`: the command that must pass before landing. `test`: the test command, if any.
    - `context`: optional extra files (API notes, fixtures, a design sketch).
+
    Tasks within a round are independent. When one task needs another's result, put it in a later round or combine the two into one task.
 3. **The standing worker instructions** (see the host guarantees). Write them into each brief only when the host does not hand them over.
 4. **The rubric.** Items with `id` (kebab-case), `title` and `category` (`core` or `ui-ux`). Each item is one user-visible outcome that can be tested through the harness alone. Cover the core function first, then clarity, feedback, error handling and flow; failure paths get items too. No item mentions code or files. Six to twelve items is usual. Writing it now keeps it from being shaped by what the workers produce.
@@ -135,28 +137,35 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
    - **done**: landed, nothing left out.
    - **done with limitations**: landed, but something was deliberately left out, does not work, or needs a follow-up.
    - **failed**: not landed.
-   A worker that reports done but whose work has not landed has not finished: resume it. A limitation feeds the next round's tasks, the QA note and the final report.
-3. A worker the host reports as stuck may be building or waiting on checks. Decide: let it continue, or stop it and plan its task again.
+
+   The host fixes the exact form of the line that carries the outcome, so it can be parsed.
+   A worker that reports done before its work has landed is not done: resume it. A limitation feeds the next round's tasks, the QA note and the final report.
+3. A worker the host reports as stalled may be building or waiting on checks. Decide: let it continue, or stop it and plan its task again.
 4. A failed worker leaves its work in place. Options, in order of preference:
    1. **Resume it**: the same task with a brief that says what to fix or complete; it continues the earlier work.
-   2. **Repair first** when the failure is not the task's fault (a broken check, a flaky test, a missing dependency): a repair task of its own lands first, then resume the original.
+   2. **Repair first** when the failure is not the task's fault (a broken check, a flaky test, a missing dependency). A repair task of its own lands first, then resume the original.
    3. **Drop it**: stop the task; the run continues with the others.
    4. **Ask the user** when a human is needed: missing secrets, a required approval, an outage.
 5. The user may talk to you during a round. Answer, and fold any new direction into the next round rather than the running one.
 
 ## Phase 5: qa
 
-1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms.
-2. QA's report has `items`, one per rubric id, each with `id`, `score` and a `note` of one to three sentences, and an `overview`. Scores: `strong` (clearly met), `acceptable` (technically passes, improvements recommended), `unacceptable` (fails, must be fixed). The host derives the verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any is acceptable and none unacceptable; `pass` otherwise. You receive the verdict, the counts, every item below strong and the overview.
-3. If the host says the report is invalid, run QA again with a clearer harness, or decide without it.
-4. Decide. On `fix`, plan the fixes and go back to phase 4: a fix round is a new set of tasks (resuming a task whose landed work is at fault counts as one). On `pass-with-recommendations`, decide whether the recommendations are worth a round; usually one more is. On `pass`, go to phase 6.
-5. A loop ends. After a `fix` verdict on the same items twice in a row, or after one round of recommendations has been taken, stop iterating. Merge on `pass` or `pass-with-recommendations`; on a repeated `fix`, ask the user how to proceed.
+1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. QA is handed these, the run's one-line request and where to write its report. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms.
+2. QA's report has `items`, one per rubric id, each with `id`, `score` and a `note` of one to three sentences, and an `overview`. Scores: `strong` (clearly met), `acceptable` (technically passes, improvements recommended), `unacceptable` (fails, must be fixed). The host derives the verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any is acceptable and none unacceptable; `pass` otherwise. You receive the verdict, the counts, every item below `strong` and the overview.
+3. If the host says the report is invalid, run QA again. Clarify the harness or the round note only if that caused the failure. An invalid report is never a pass. Step 5 says when invalid reports make the loop stuck.
+4. Decide as follows after every valid report, wherever QA ran: after a round, after a re-run following an invalid report, or after a reconciliation or fix in phase 6. Take the first case that applies.
+   - **Stuck** (step 5): ask the user as step 5 says.
+   - **After the user's merge decision** (step 5): the items the user accepted no longer count. An item is new only if it was `strong` in the last valid report before that decision and is below `strong` now. New items become fix tasks as in the next case, and you go back to phase 4. With no new items, go to phase 6.
+   - **`fix` or `pass-with-recommendations`**: every item below `strong`, acceptable ones included, becomes a fix task in the next round. Its brief starts from the QA note. Recommendations are fixed, not weighed. Go back to phase 4.
+     A fix round is a new set of tasks. Resuming a task whose landed work is at fault counts as a fix task.
+   - **`pass`**: go to phase 6.
+5. The loop is stuck when the same items stay below `strong` after two consecutive rounds aimed at them, or when QA's report is invalid twice in a row. A reconciliation or fix round from phase 6 counts toward this test only if it was aimed at those items. Items accepted in the user's merge decision never count toward it. When the loop is stuck, ask the user how to proceed: another round with a different approach, merging with the limitation stated, or stopping. The user's answer decides. Another round with a different approach goes back to phase 4. Choosing to merge is the user's merge decision: go to phase 6, and state the limitation in the final report. The stuck count restarts after the user's choice: rounds before it no longer count toward the test.
 
 ## Phase 6: merge
 
 1. Ask the host to integrate the run into the base line, with a one-line title summing up the run and one paragraph on what changed and why.
-2. If the host refuses because the base line moved or its checks fail, start a worker to reconcile or fix it (resume the task at fault, or a repair task). Then run QA once more, since a reconciliation can break things, and ask again.
-3. When the run is integrated, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out, including every limitation a worker reported.
+2. If the host refuses because the base line moved or its checks fail, start a worker to reconcile or fix it. Either resume the task at fault or start a repair task, and handle its outcome as in phase 4. A reconciliation can break things, so once it has landed, run QA and decide as in phase 5.
+3. When the run is integrated, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out. Include every limitation a worker reported and any limitation the user accepted.
 
 ## Rules
 
@@ -165,5 +174,5 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 - QA never reads source: judge its report, not its method.
 - The verdict is derived from the scores, never negotiated.
 - The orchestrator is the only role that talks to the user.
-- Prefer finishing over polishing forever: when QA passes, merge.
-- A loop ends: it does not polish forever, and it does not retry the same failure without the user.
+- The run merges only on `pass` or after the user's merge decision (phase 5 step 5).
+- Once work is dispatched, the orchestrator asks the user only when the loop is stuck (phase 5 step 5) or a human is needed (phase 4 step 4).

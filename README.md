@@ -39,8 +39,8 @@ The orchestrator then walks six phases, and the pane shows which one it is in:
 1. **Clarify.** It restates the task and asks about anything material until nothing is open.
 2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, notes the build and test commands.
 3. **Plan.** It names the run, cuts a run branch from `main`, splits the work into independent tasks, and writes the QA rubric and harness before any code exists.
-4. **Implement.** One worker per task, in parallel. Each opens a draft pull request against the run branch, marks it ready when its build passes, waits for checks, and squash-merges with the planned title. A worker is finished only when its pull request is merged.
-5. **QA.** A fresh subagent uses the deliverable as the end user and scores every rubric item `strong`, `acceptable` or `unacceptable`. On a fix verdict the loop goes back to step 4.
+4. **Implement.** One worker per task, in parallel. Each opens a draft pull request against the run branch, marks it ready when its build passes, waits for checks, and squash-merges with the planned title. A worker's task is done only when its pull request is merged.
+5. **QA.** A fresh subagent uses the deliverable as the end user and scores every rubric item `strong`, `acceptable` or `unacceptable`. On any verdict below pass the loop goes back to step 4, with every item below `strong` becoming a task. The run merges only on pass. The one exception is a stuck loop, where the user may decide to merge with the limitation stated.
 6. **Merge.** The orchestrator opens the final pull request into `main`, written to the `clean-prs` rules, and the mod merges it once its checks are green.
 
 You can type while workers run. Your prompts become events in the timeline and are folded into the next round.
@@ -52,7 +52,7 @@ You can type while workers run. Your prompts become events in the timeline and a
 - **Clean history.** Commits follow the bundled `clean-commits` skill: Conventional Commit titles, one unit of work each, no bodies, no attribution lines. Pull requests follow `clean-prs`: the planned title, one paragraph on the contribution, a `Verified:` line.
 - **QA never reads source.** The QA subagent can only read the brief and rubric it was given and only write its report. The mod validates the report and derives the verdict.
 - **Nothing is fired and forgotten.** Report collection, pull request polling, the final merge and every wake-up run on the mod's own timer. A wake-up that does not arrive is sent again.
-- **Stale is not failed.** An agent silent for 30 minutes is marked stale and the orchestrator is told; after two idle hours it is stopped. Both are distinct from a failure.
+- **Stale is not failed.** An agent silent for 30 minutes is marked stale and the orchestrator is told; it keeps running. After two idle hours it is timed out: stopped and handled as a failure (resume, repair, drop or ask).
 
 ## The pane
 
