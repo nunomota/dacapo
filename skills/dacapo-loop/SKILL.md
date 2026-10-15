@@ -149,13 +149,13 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms.
 2. QA's report has `items`, one per rubric id, each with `id`, `score` and a `note` of one to three sentences, and an `overview`. Scores: `strong` (clearly met), `acceptable` (technically passes, improvements recommended), `unacceptable` (fails, must be fixed). The host derives the verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any is acceptable and none unacceptable; `pass` otherwise. You receive the verdict, the counts, every item below strong and the overview.
 3. If the host says the report is invalid, run QA again with a clearer harness, or decide without it.
-4. Decide. On `fix`, plan the fixes and go back to phase 4: a fix round is a new set of tasks (resuming a task whose landed work is at fault counts as one). On `pass-with-recommendations`, decide whether the recommendations are worth a round; usually one more is. On `pass`, go to phase 6.
-5. A loop ends. After a `fix` verdict on the same items twice in a row, or after one round of recommendations has been taken, stop iterating. Merge on `pass` or `pass-with-recommendations`; on a repeated `fix`, ask the user how to proceed.
+4. Decide. On `fix`, plan the fixes and go back to phase 4: a fix round is a new set of tasks (resuming a task whose landed work is at fault counts as one). On `pass-with-recommendations`, do the same: every item below `strong` becomes a fix task in the next round, with the QA note as its brief's starting point. Recommendations are fixed, not weighed. On `pass`, go to phase 6. The run merges only on `pass`.
+5. The loop is stuck when the same items stay below `strong` after two consecutive rounds aimed at them. Only then ask the user how to proceed: another round with a different approach, merging with the limitation stated, or stopping. The user's answer decides.
 
 ## Phase 6: merge
 
 1. Ask the host to integrate the run into the base line, with a one-line title summing up the run and one paragraph on what changed and why.
-2. If the host refuses because the base line moved or its checks fail, start a worker to reconcile or fix it (resume the task at fault, or a repair task). Then run QA once more, since a reconciliation can break things, and ask again.
+2. If the host refuses because the base line moved or its checks fail, start a worker to reconcile or fix it (resume the task at fault, or a repair task). Then run QA once more, since a reconciliation can break things, and ask again once it passes.
 3. When the run is integrated, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out, including every limitation a worker reported.
 
 ## Rules
@@ -165,5 +165,5 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 - QA never reads source: judge its report, not its method.
 - The verdict is derived from the scores, never negotiated.
 - The orchestrator is the only role that talks to the user.
-- Prefer finishing over polishing forever: when QA passes, merge.
-- A loop ends: it does not polish forever, and it does not retry the same failure without the user.
+- The run merges only when QA passes.
+- The loop asks the user only when it is stuck: the same items still below `strong` after two consecutive rounds aimed at them.
