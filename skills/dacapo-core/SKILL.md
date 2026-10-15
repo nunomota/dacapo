@@ -6,11 +6,11 @@ description: The host-agnostic dacapo loop - clarify, research, plan, parallel i
 
 # dacapo-core
 
-dacapo runs a task as a loop with three roles. The **orchestrator** (you) clarifies the task, researches the stack, plans the work, starts the workers, reads their outcomes and decides what happens next. **Workers**, one per task, each build one component in isolation and land it into the run; they never see each other's work mid-flight. The **QA agent** uses the deliverable as an end user, never reads source, and scores it against a rubric you wrote before any work began. You never edit files or integrate work yourself: workers change the codebase and the host integrates what they land.
+dacapo runs a request as a loop with three roles. The **orchestrator** (you) clarifies the request, researches the stack, plans the work, starts the workers, reads their outcomes and decides what happens next. **Workers**, one per task, each build one component in isolation and land it into the run. The **QA agent** uses the deliverable as an end user, never reads source, and scores it against a rubric you wrote before any work began. You never edit files or integrate work yourself: workers change the codebase and the host integrates what they land.
 
 ## What the host provides
 
-- `start`: open a run for the clarified task.
+- `start`: open a run for the clarified request.
 - `dispatch`: start one isolated worker per task, all in parallel.
 - `wait`: be woken when every worker has ended or one stalls; never poll.
 - `collect`: learn each worker's outcome and bring landed work into the run.
@@ -21,16 +21,16 @@ dacapo runs a task as a loop with three roles. The **orchestrator** (you) clarif
 
 The loaded binding describes how each operation is done in the host at hand. A worker's outcome is one of `landed`, `failed`, `stale`, `timed out` or `cancelled`.
 
-## Phase 1: clarify (loop until the task is clear)
+## Phase 1: clarify (loop until the request is clear)
 
 0. Call `phase` with `clarify`.
-1. Restate the task in your own words: the deliverable, who uses it, what "done" looks like.
+1. Restate the request in your own words: the deliverable, who uses it, what "done" looks like.
 2. If anything material is ambiguous (scope, stack, data, integration points, acceptance), ask. Offer options when they are enumerable, prose otherwise. Ask everything you need in one message.
 3. Wait for the answer, fold it in, and repeat until nothing material is open. Do not start research with an open question that changes the design.
 
 ## Phase 2: research
 
-Call `phase` with `research`. With the task clear, research the stack before planning:
+Call `phase` with `research`. With the request clear, research the stack before planning:
 
 - If the stack is not fixed by the user or the repository, compare the two or three most suitable stacks or libraries and pick one, stating why in a sentence.
 - For every library the work depends on, read the high-level documentation for the version the project already uses (check the lockfile or manifest). For a new project use the latest stable version.
@@ -40,7 +40,7 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
 
 ## Phase 3: start the run and plan
 
-1. Mark the phase (`plan`) with `phase` unless the host marks it itself. Call `start` with the task in one line (written by you after clarification, never the prompt verbatim) and one short paragraph on the deliverable, who it is for and what done looks like.
+1. Mark the phase (`plan`) with `phase` unless the host marks it itself. Call `start` with the request in one line (written by you after clarification, never the prompt verbatim) and one short paragraph on the deliverable, who it is for and what done looks like.
 2. Split the work into components that can be built independently and in parallel. Each component becomes one task, with the fields:
    - `id`: a kebab-case slug.
    - `title`: a few words.
@@ -49,7 +49,7 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
    - `landing title`: the one-line title the work lands under, in the form the host requires.
    - `build`: the command that must pass before the worker lands. `test`: the test command, if any.
    - `context`: optional extra files (API notes, fixtures, a design sketch).
-   The host hands every worker these standing instructions with its brief, so write them into each brief if your host does not: build, fix the errors and warnings you introduced unless expected, leave the work in clean commits, stay within the task, and land it before reporting finished.
+   Standing instructions for every worker: build, fix the errors and warnings you introduced unless expected, leave the work in clean commits, stay within the task, and land it before reporting finished. The host hands them to every worker with its brief; if your host does not, write them into each brief.
 3. Define the QA work now, so it does not get shaped by what the workers happen to produce:
    - A rubric: items with `id`, `title` (a user-visible outcome) and `category` (`core` or `ui-ux`). Cover the core function first, then clarity, feedback, error handling and flow.
    - A harness: how QA starts, reaches and uses the deliverable (install and run commands, URL or binary, accounts or fixtures, the flows a user walks). QA behaves as the end user and never reads source, so the harness must be enough on its own.

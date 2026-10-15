@@ -28,7 +28,7 @@ claude --plugin-dir ~/dacapo
 /dacapo <what you want built>
 ```
 
-The skill is three: `dacapo-core` is the loop itself, host-agnostic, so another orchestrator host with its own dispatch and merge can use it; `dacapo-claude` is the binding to this mod's tools and subagents; and the `/dacapo` entry loads both. The two parts are hidden from the slash menu.
+The skill comes in three parts: `dacapo-core` is the loop itself, host-agnostic, so another orchestrator host with its own dispatch and merge can use it; `dacapo-claude` is the binding to this mod's tools and subagents; and the `/dacapo` entry loads both. The two parts are hidden from the slash menu.
 
 The skill then runs in phases:
 
