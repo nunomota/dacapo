@@ -25,7 +25,7 @@ export type Actions = {
 export type Theme = { prices: Record<string, Price> }
 
 /** The collapsible progress rows of the badge. */
-export type Section = 'prs' | 'agents' | 'qa'
+export type Section = 'prs' | 'agents' | 'qa' | 'timeline'
 
 /** Every phase has a color of its own; the bar shows the ones reached in it and the current one's name. */
 export const PHASE_COLOR: Record<Phase, string> = { clarify: '#378ADD', research: '#7F77DD', plan: '#1D9E75', implement: '#D85A30', qa: '#EF9F27', release: '#639922' }
@@ -383,8 +383,8 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const total = spend(agents, theme.prices, run.orchestrator)
   const prs = [...run.prs].sort((a, b) => a.createdAt - b.createdAt)
   const entries = entriesOf(rows)
-  // the border and its padding take 4 columns, the logo column and its margin the rest
-  const textWidth = Math.max(16, width - 4 - LOGO_COLS - 2)
+  const textWidth = Math.max(16, width - LOGO_COLS - 2)
+  const isTimelineOpen = ui.openSections.includes('timeline')
 
   const models = new Map<string, number>()
   for (const a of agents) models.set(a.model, (models.get(a.model) ?? 0) + 1)
@@ -453,10 +453,12 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
             'qa',
             qaColor(q),
             `QA round ${q.round}${q.summary ? `: ${verdictWord(q)}` : ''}`,
-            <Text key={`qa-tail-${q.id}`} wrap="truncate-end">
-              <Text dimColor>{` · ${q.status === 'pending' ? 'waiting' : elapsed(q.at, isActive(q) ? now : (q.endedAt ?? now))} · ${q.model}${q.summary ? ' · ' : ''}`}</Text>
-              {q.summary ? scoreNumbers(els, q.summary, `qa-score-${q.id}`) : ''}
-            </Text>,
+            q.summary ? (
+              <Text key={`qa-tail-${q.id}`} wrap="truncate-end">
+                <Text dimColor> · </Text>
+                {scoreNumbers(els, q.summary, `qa-score-${q.id}`)}
+              </Text>
+            ) : undefined,
           ),
         ),
       ),
@@ -465,7 +467,6 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
 
   return (
     <Box flexDirection="column">
-      <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
       <Box flexDirection="row" alignItems="flex-start">
         {logo(els)}
         <Box flexDirection="column" width={textWidth} flexShrink={0}>
@@ -510,15 +511,24 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           </Text>
         </Box>
       )}
-      {sections.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          {sections}
-        </Box>
-      )}
-      </Box>
-      <Box marginTop={1} flexDirection="column">
-        {entries.length > 0 ? treeLead(els) : ''}
-        {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
+      <Box flexDirection="column" marginTop={1}>
+        {sections}
+        {sectionRow(
+          els,
+          act,
+          'timeline',
+          `Timeline (${entries.length})`,
+          isTimelineOpen,
+          [],
+          entries.length > 0 && isTimelineOpen
+            ? [
+                <Box key="tree" flexDirection="column" marginTop={1}>
+                  {treeLead(els)}
+                  {entries.map((entry, i) => drawEntry(els, entry, ui, act, width - 2, theme, now, run, i === entries.length - 1))}
+                </Box>,
+              ]
+            : [],
+        )}
       </Box>
     </Box>
   )

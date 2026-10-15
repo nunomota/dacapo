@@ -29,7 +29,7 @@ const runAtom = atom({ plugin: 'dacapo', key: 'run' } as const, null)
 const rowsAtom = atom({ plugin: 'dacapo', key: 'rows' } as const, [])
 const uiAtom = atom({ plugin: 'dacapo', key: 'ui' } as const, {
   expanded: [],
-  openSections: [],
+  openSections: ['timeline'],
   tick: 0,
   isBandHidden: false,
 })
@@ -152,7 +152,7 @@ async function openRun(task: string, baseBranch: string, at?: string): Promise<R
   }
   await io.setRun(() => run)
   await io.setRows(() => [])
-  await io.setUi(() => ({ expanded: [], openSections: [], tick: now, isBandHidden: false }))
+  await io.setUi(() => ({ expanded: [], openSections: ['timeline'], tick: now, isBandHidden: false }))
   return run
 }
 
