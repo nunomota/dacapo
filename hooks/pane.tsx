@@ -383,7 +383,8 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const total = spend(agents, theme.prices, run.orchestrator)
   const prs = [...run.prs].sort((a, b) => a.createdAt - b.createdAt)
   const entries = entriesOf(rows)
-  const textWidth = Math.max(16, width - LOGO_COLS - 4)
+  // the border and its padding take 4 columns, the logo column and its margin the rest
+  const textWidth = Math.max(16, width - 4 - LOGO_COLS - 2)
 
   const models = new Map<string, number>()
   for (const a of agents) models.set(a.model, (models.get(a.model) ?? 0) + 1)
@@ -464,6 +465,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
 
   return (
     <Box flexDirection="column">
+      <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
       <Box flexDirection="row" alignItems="flex-start">
         {logo(els)}
         <Box flexDirection="column" width={textWidth} flexShrink={0}>
@@ -513,6 +515,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           {sections}
         </Box>
       )}
+      </Box>
       <Box marginTop={1} flexDirection="column">
         {entries.length > 0 ? treeLead(els) : ''}
         {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
