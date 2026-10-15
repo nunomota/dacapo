@@ -63,7 +63,7 @@ If it answers that `gh` is missing, not logged in, or cannot reach the repositor
 
 Call `mcp__dacapo__dispatch` with `tasks` (and optionally a round `title` and `overview`, kept only in the run log). Map each task:
 - `id`, `title`: as given.
-- `prompt`: its brief. For a resumed task, what to fix or finish.
+- `prompt`: its brief. For a resumed task, the resume brief the loop's phase 4 describes.
 - `model`: `opus` for `strong`, `sonnet` for `fast`.
 - `commit`: the landing title. A Conventional Commit line: types feat, fix, docs, style, refactor, test, chore, perf, ci, revert only; no scope in parentheses; at most 72 characters.
 - `build`, `test`: the commands.
@@ -92,13 +92,13 @@ Call `mcp__dacapo__cancel` with `agentId` (from the wake-up or `status`) and an 
 
 ### qa
 
-Call `mcp__dacapo__qa` with `rubric` (items with `id`, `title`, `category: core | ui-ux`), `harness` (Markdown), and `brief` (the loop's user-visible note on what this round built or changed). The reply gives one `Agent` call: `subagent_type: "dacapo:qa"`, prompt `dacapo qa <round>-<n>`. Make it exactly as listed, then end your turn. The `[dacapo]` wake-up carries the verdict, the counts, every item below `strong` and the QA overview, or says the report was invalid and why.
+Call `mcp__dacapo__qa` with `rubric` (items with `id`, `title`, `category: core | ui-ux`), `harness` (Markdown), and `brief` (the round note of the loop's phase 5 step 1). The reply gives one `Agent` call: `subagent_type: "dacapo:qa"`, prompt `dacapo qa <round>-<n>`. Make it exactly as listed, then end your turn. The `[dacapo]` wake-up carries the verdict, the counts, every item below `strong` and the QA overview, or says the report was invalid and why.
 
 ### finish (the loop's merge)
 
 Call `mcp__dacapo__finish` with:
-- `title`: a Conventional Commit line summing up the run; it becomes the merge commit title.
-- `body`: to the `clean-prs` rules: one paragraph on what changed and why, a `Verified:` line, a `Notes:` line only if a reviewer must know something. No attribution lines of any kind.
+- `title`: the title of the loop's phase 6 step 1, as a Conventional Commit line; it becomes the merge commit title.
+- `body`: the paragraph of the loop's phase 6 step 1, to the `clean-prs` rules, with a `Verified:` line and an optional `Notes:` line. No attribution lines of any kind.
 
 Then end your turn. The run watches the pull request and merges it when green. It then prunes the worktrees and branches, and wakes you with `Merged into <base>`. Two wake-ups ask for more work first:
 - Conflicts with the base branch: `dispatch` one worker with `merge: "merge"`. It merges `origin/<base>` into its branch and resolves the conflicts, under the commit title `chore: merge <base> into <run branch>`. Then `sync`, `qa` once more, and `finish` again.
