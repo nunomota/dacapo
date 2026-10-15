@@ -327,7 +327,7 @@ function keyLine(els: Els, key: string, value: JSX.Element | string): JSX.Elemen
 }
 
 /** How many of the latest entries the timeline shows until "earlier" is pressed. */
-export const TIMELINE_LATEST = 8
+export const TIMELINE_LATEST = 5
 
 /**
  * Six blocks, one per phase: the ones done greyed out, the current one in its own color with its name beneath,
@@ -631,7 +631,7 @@ function drawTimeline(els: Els, entries: Entry[], ui: Ui, act: Actions, width: n
       </Box>
       {isOpen && (
         <Box borderStyle="single" borderDimColor paddingX={1} flexDirection="column">
-          {shown.length > 0 ? treeLead(els) : <Text dimColor>Nothing yet.</Text>}
+          {shown.length > 0 ? treeLead(els, hidden > 0) : <Text dimColor>Nothing yet.</Text>}
           {shown.map((entry, i) => drawEntry(els, entry, ui, act, width - 4, theme, now, run, i === shown.length - 1))}
         </Box>
       )}
@@ -656,12 +656,13 @@ const TREE_COLOR = '#6e7681'
 type Piece = 'branch' | 'last' | 'trunk' | 'tick' | 'none'
 
 /** A tree piece `rows` text rows tall, as one SVG: the trunk, a branch tick, or both. */
-function treeSvg(piece: Piece, rows: number): string {
+function treeSvg(piece: Piece, rows: number, dotted = false): string {
   const h = ROW_PX * rows
   const mid = ROW_PX / 2
   const x = 5
   const parts: string[] = []
-  if (piece === 'trunk' || piece === 'branch') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${h}"/>`)
+  const dash = dotted ? ' stroke-dasharray="1.5 3.5"' : ''
+  if (piece === 'trunk' || piece === 'branch') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${h}"${dash}/>`)
   if (piece === 'last') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${mid}"/>`)
   if (piece === 'branch' || piece === 'last' || piece === 'tick') parts.push(`<line x1="${x}" y1="${mid}" x2="14" y2="${mid}"/>`)
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 ${h}" fill="none" stroke="${TREE_COLOR}" stroke-width="1.5" stroke-linecap="round">${parts.join('')}</svg>`
@@ -686,21 +687,30 @@ function connector(els: Els, piece: Piece, rows = 1): JSX.Element {
 /** The trunk as tall as its parent, whatever the rows measure: an absolute box from top to bottom clipping a long SVG. */
 const TRUNK_ROWS = 120
 
-function trunk(els: Els): JSX.Element {
+function trunk(els: Els, dotted = false): JSX.Element {
   const { Box, Svg } = els
   return (
     <Box position="absolute" top={0} bottom={0} left={0} width={TREE_COLS} overflow="hidden" flexDirection="column">
-      {Svg ? <Svg source={treeSvg('trunk', TRUNK_ROWS)} alt="tree line" width={16} height={ROW_PX * TRUNK_ROWS} /> : ''}
+      {Svg ? <Svg source={treeSvg('trunk', TRUNK_ROWS, dotted)} alt="tree line" width={16} height={ROW_PX * TRUNK_ROWS} /> : ''}
     </Box>
   )
 }
 
-/** The lead-in above the first entry: one row of trunk. */
-export function treeLead(els: Els): JSX.Element {
-  const { Box } = els
-  return els.Svg ? (
-    <Box height={1} overflow="hidden">
-      {trunk(els)}
+/** The lead-in above the first entry: one row of trunk, dotted when earlier entries are folded away above it. */
+export function treeLead(els: Els, hasEarlier = false): JSX.Element {
+  const { Box, Text } = els
+  if (els.Svg) {
+    return (
+      <Box height={1} overflow="hidden">
+        {trunk(els, hasEarlier)}
+      </Box>
+    )
+  }
+  return hasEarlier ? (
+    <Box flexDirection="row">
+      <Box width={TREE_COLS} flexShrink={0}>
+        <Text dimColor>┆</Text>
+      </Box>
     </Box>
   ) : (
     <Box flexDirection="row">{connector(els, 'trunk')}</Box>
