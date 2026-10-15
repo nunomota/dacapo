@@ -278,31 +278,34 @@ function drawCard(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, t
   // because the desktop's column count is approximate for its font; without a bound the surface never truncates or wraps
   const iconCols = Svg ? 7 : 4
   const textWidth = Math.max(16, width - 4 - iconCols - 4)
+  // the icon is centered against the two header lines; the body opens underneath, indented to the text column
   return (
-    <Box key={`card-${card.id}`} borderStyle="round" borderColor={card.color} paddingX={1} flexDirection="row" marginBottom={1} overflow="hidden">
-      <Box flexDirection="column" width={iconCols - 1} flexShrink={0} marginRight={1}>
-        {Svg ? (
-          <Svg source={icon(card.kind, card.color)} alt={card.kind} width={34} height={34} />
-        ) : (
-          <Text color={card.color}>{GLYPH[card.kind]}</Text>
-        )}
-      </Box>
-      <Box flexDirection="column" width={textWidth} flexShrink={0}>
-        <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
-          <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
-          <Text bold color={card.color} wrap="truncate-end">
-            {card.title}
+    <Box key={`card-${card.id}`} borderStyle="round" borderColor={card.color} paddingX={1} flexDirection="column" marginBottom={1} overflow="hidden">
+      <Box flexDirection="row" alignItems="center">
+        <Box flexDirection="column" width={iconCols - 1} flexShrink={0} marginRight={1} justifyContent="center" alignItems="center">
+          {Svg ? (
+            <Svg source={icon(card.kind, card.color)} alt={card.kind} width={34} height={34} />
+          ) : (
+            <Text color={card.color}>{GLYPH[card.kind]}</Text>
+          )}
+        </Box>
+        <Box flexDirection="column" width={textWidth} flexShrink={0}>
+          <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
+            <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
+            <Text bold color={card.color} wrap="truncate-end">
+              {card.title}
+            </Text>
+          </Button>
+          <Text dimColor wrap="truncate-end">
+            {card.subline.replace(/\s+/g, ' ').trim()}
           </Text>
-        </Button>
-        <Text dimColor wrap="truncate-end">
-          {card.subline.replace(/\s+/g, ' ').trim()}
-        </Text>
-        {isOpen && card.body.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            {card.body}
-          </Box>
-        )}
+        </Box>
       </Box>
+      {isOpen && card.body.length > 0 && (
+        <Box flexDirection="column" marginTop={1} paddingLeft={iconCols} width={textWidth + iconCols}>
+          {card.body}
+        </Box>
+      )}
     </Box>
   )
 }

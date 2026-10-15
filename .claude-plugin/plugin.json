@@ -1,6 +1,6 @@
 {
   "name": "task-loop",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Orchestrated implementation loop: parallel worker subagents in git worktrees, squash merges into dev, an end-user QA subagent with a scored rubric, and a live timeline pane.",
   "types": "./types/index.d.ts",
   "author": {
