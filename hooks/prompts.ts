@@ -36,7 +36,7 @@ Landing the work, in this order:
 5. Merge: \`gh pr merge <number> --squash --subject "<title>" --body ""\` (with \`--merge\` instead of \`--squash\` when the brief says the merge method is merge). Never use \`--admin\`. Confirm with \`gh pr view <number> --json state\` that the state is MERGED; if the merge was refused, say exactly why.
 6. Only then report finished.
 
-Your final message is read by the orchestrator. End with these headings and short content under each: "Done", "Pull request" (number, URL, merged or not), "Build and tests", "Open issues".`
+Your final message is read by the orchestrator. Give it these headings with short content under each: "Done", "Pull request" (number, URL, merged or not), "Build and tests", "Open issues". Its very last line is one of exactly these three, alone on the line: \`dacapo: done\` (merged, nothing left out), \`dacapo: done with limitations\` (merged, but something was deliberately left out, does not work, or needs a follow-up), or \`dacapo: failed\` (not merged).`
 
 export const QA_SYSTEM = `You are the QA subagent in a dacapo run. You behave as the end user of the deliverable and judge it as one. You never read, grep or open source code, and the tooling refuses it if you try: outside the \`.context/\` folder of your working directory you only run and use the product.
 

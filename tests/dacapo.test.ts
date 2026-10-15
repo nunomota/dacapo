@@ -342,8 +342,8 @@ describe('the loop', () => {
     // a worker that finished while its pull request is still open has not landed
     const notLanded = await $.tool.call({ tool: 'mcp__dacapo__sync' } as never)
     expect('result' in notLanded && notLanded.result).toMatch(/Finished without landing/)
-    const qaTooEarly = await $.tool.call({ tool: 'mcp__dacapo__qa', rubric: RUBRIC, harness: 'npm start' } as never)
-    expect('isError' in qaTooEarly && qaTooEarly.isError).toBe(true)
+    const unlanded = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
+    expect('result' in unlanded && unlanded.result).toMatch(/login \[agent-1\] failed .*finished without landing/)
 
     // a finished agent that acts again is live again, and its next completion wakes the orchestrator once more
     await $.tool.call({ tool: 'Write', file_path: `/repo/.workspaces/${WORK}/src/y.ts`, content: 'y', agentId: 'agent-1' } as never)
@@ -351,7 +351,7 @@ describe('the loop', () => {
     expect('result' in revived && revived.result).toMatch(/login \[agent-1\] running \(restarted 1x\)/)
     const before = prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length
     prList[0] = workPr('MERGED', GREEN)
-    await $.turn.complete({ answer: 'Done again; merged.', durationMs: 1, isAborted: false, turnId: 't1b', agentId: 'agent-1', reason: 'answer' })
+    await $.turn.complete({ answer: 'Done again; merged.\n\ndacapo: done with limitations', durationMs: 1, isAborted: false, turnId: 't1b', agentId: 'agent-1', reason: 'answer' })
     await clock.advance(1_000)
     expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(before + 1)
     await $.turn.start({ text: `The dacapo plugin sent a message: ${prompts[prompts.length - 1]!}` } as never)
@@ -362,7 +362,7 @@ describe('the loop', () => {
     expect('result' in synced && synced.result).toMatch(/login: #3 feat: add login page \(merged\)/)
     expect('result' in synced && synced.result).toMatch(/fast-forwarded by 2 commit/)
     const afterSync = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
-    expect('result' in afterSync && afterSync.result).toMatch(/login \[agent-1\] merged/)
+    expect('result' in afterSync && afterSync.result).toMatch(/login \[agent-1\] merged with limitations/)
 
     const qa = await $.tool.call({
       tool: 'mcp__dacapo__qa',

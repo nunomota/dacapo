@@ -30,9 +30,13 @@ export type Section = 'prs' | 'agents' | 'qa' | 'timeline'
 /** Every phase has a color of its own; the bar shows the ones reached in it and the current one's name. */
 export const PHASE_COLOR: Record<Phase, string> = { clarify: '#378ADD', research: '#7F77DD', plan: '#1D9E75', implement: '#D85A30', qa: '#EF9F27', release: '#639922' }
 
-export const GREEN = 'green'
-export const YELLOW = 'yellow'
-export const RED = 'red'
+/** The state colors: teal in progress, green done, yellow done with limitations or recommendations, orange failed. */
+export const TEAL = '#39c5cf'
+export const GREEN = '#3fb950'
+export const YELLOW = '#e3b341'
+export const ORANGE = '#e8723a'
+/** The failure color; orange reads better than red beside the yellow. */
+export const RED = ORANGE
 
 export const PHASES: readonly Phase[] = ['clarify', 'research', 'plan', 'implement', 'qa', 'release']
 
@@ -137,38 +141,60 @@ const SEP = '  ·  '
 
 /** Entry colors: the person white, the orchestrator purple, QA cyan, a sub-agent by its status. */
 export const PURPLE = '#a855f7'
-export const CYAN = 'cyan'
+export const CYAN = TEAL
 
 /** A QA round's color: cyan while it runs, then green for a pass, yellow for recommendations, red for fix or a failure. */
 export function qaColor(row: QaRow): string {
-  if (row.status === 'running' || row.status === 'stale' || row.status === 'pending') return CYAN
+  if (row.status === 'running' || row.status === 'stale' || row.status === 'pending') return TEAL
   if (!row.summary) return RED
   return row.summary.verdict === 'pass' ? GREEN : row.summary.verdict === 'pass-with-recommendations' ? YELLOW : RED
 }
 
-export function cardColor(row: Row): string {
+/**
+ * A worker's color: teal while it waits or runs; green once it finished and its work landed; yellow when it finished
+ * with limitations; orange when it failed, timed out, was cancelled, or finished without its pull request merged.
+ * A worker that ended without the status line is judged by its pull request, so `run` is needed for that.
+ */
+export function workerColor(row: WorkerRow, run?: Run): string {
+  switch (row.status) {
+    case 'pending':
+    case 'running':
+    case 'stale':
+      return TEAL
+    case 'merged':
+      return row.outcome === 'limited' ? YELLOW : GREEN
+    case 'finished': {
+      if (row.outcome === 'limited') return YELLOW
+      if (row.outcome === 'done') return GREEN
+      const landed = run ? prsOf(run, row.branch).some(p => p.state === 'merged') : false
+      return landed ? GREEN : ORANGE
+    }
+    default:
+      return ORANGE
+  }
+}
+
+export function cardColor(row: Row, run?: Run): string {
   if (row.kind === 'user') return 'white'
   if (row.kind === 'orchestrator') return PURPLE
   if (row.kind === 'qa') return qaColor(row)
-  switch (row.status) {
-    case 'finished':
-    case 'merged':
-      return GREEN
-    case 'failed':
-    case 'timeout':
-    case 'cancelled':
-      return RED
-    default:
-      return YELLOW
-  }
+  return workerColor(row, run)
 }
+
+/** True while a worker or QA agent is still at work: its icon moves and is drawn in teal. */
+export const isInProgress = (row: Row): boolean => isAgentRow(row) && (row.status === 'pending' || row.status === 'running' || row.status === 'stale')
+
+/** The terminal's stand-in for a moving icon: a spinner that the ticker turns once a second. */
+export const spinner = (tick: number): string => ['◐', '◓', '◑', '◒'][Math.floor(tick / 1000) % 4]!
 
 /** The terminal's one-glyph stand-in for each icon. */
 export const GLYPH: Record<Row['kind'], string> = { worker: '⚒', qa: '⚖', user: '✎', orchestrator: '◆' }
 
 /** Vector icons for the surfaces that draw SVG (desktop, VS Code, mobile), in the entry's color. */
-export function icon(kind: Row['kind'], color: string): string {
-  const open = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">`
+export function icon(kind: Row['kind'], color: string, isLive = false): string {
+  // a live icon breathes: its opacity swings on a loop (SMIL, drawn when the surface runs the SVG as a frame)
+  const pulse = isLive ? '<animate attributeName="opacity" values="1;0.3;1" dur="1.6s" repeatCount="indefinite"/>' : ''
+  const open = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${pulse}`
   const close = '</svg>'
   switch (kind) {
     case 'worker':
@@ -233,7 +259,7 @@ function drawPr(els: Els, pr: Pr, key: string): JSX.Element {
       </Box>
       {pr.checks === 'failing' ? (
         <Box flexShrink={0} marginLeft={1}>
-          <Text color="error">✕</Text>
+          <Text color={ORANGE}>✕</Text>
         </Box>
       ) : (
         ''
@@ -354,12 +380,12 @@ function sectionRow(els: Els, act: Actions, name: Section, label: string, isOpen
 }
 
 /** One line of an expanded section: the entry's icon and its header text in the entry's color, plus a dim tail. */
-function sectionLine(els: Els, key: string, kind: Row['kind'], color: string, text: string, tail?: JSX.Element): JSX.Element {
+function sectionLine(els: Els, key: string, kind: Row['kind'], color: string, text: string, live: boolean, now: number, tail?: JSX.Element): JSX.Element {
   const { Box, Text, Svg } = els
   return (
     <Box key={key} flexDirection="row" alignItems="center" overflow="hidden">
       <Box width={ICON_COLS} flexShrink={0} alignItems="center">
-        {Svg ? <Svg source={icon(kind, color)} alt={kind} width={14} height={14} /> : <Text color={color}>{GLYPH[kind]}</Text>}
+        {Svg ? <Svg source={icon(kind, color, live)} alt={kind} width={14} height={14} isInteractive={live} /> : <Text color={color}>{live ? spinner(now) : GLYPH[kind]}</Text>}
       </Box>
       <Text color={color} wrap="truncate-end">
         {text}
@@ -406,15 +432,16 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   // the progress rows: pull requests by state, workers by status, QA rounds by verdict; empty counts are left out
   const prCounts = (['merged', 'open', 'draft', 'closed'] as const).map(st => [st, prs.filter(p => p.state === st).length] as const).filter(([, n]) => n > 0)
   const workerBuckets: Array<[string, string, WorkerRow[]]> = [
-    ['running', YELLOW, workers.filter(w => w.status === 'running' || w.status === 'stale' || w.status === 'pending')],
-    ['done', GREEN, workers.filter(w => w.status === 'finished' || w.status === 'merged')],
-    ['failed', RED, workers.filter(w => w.status === 'failed' || w.status === 'timeout' || w.status === 'cancelled')],
+    ['running', TEAL, workers.filter(w => workerColor(w, run) === TEAL)],
+    ['done', GREEN, workers.filter(w => workerColor(w, run) === GREEN)],
+    ['limited', YELLOW, workers.filter(w => workerColor(w, run) === YELLOW)],
+    ['failed', ORANGE, workers.filter(w => workerColor(w, run) === ORANGE)],
   ]
   const qaBuckets: Array<[string, string, QaRow[]]> = [
+    ['running', TEAL, qas.filter(q => qaColor(q) === TEAL)],
     ['pass', GREEN, qas.filter(q => qaColor(q) === GREEN)],
     ['recommendations', YELLOW, qas.filter(q => qaColor(q) === YELLOW)],
-    ['fix', RED, qas.filter(q => qaColor(q) === RED)],
-    ['running', CYAN, qas.filter(q => qaColor(q) === CYAN)],
+    ['fix', ORANGE, qas.filter(q => qaColor(q) === ORANGE)],
   ]
   const sections: JSX.Element[] = []
   if (prs.length > 0) {
@@ -439,7 +466,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
         `Agents (${workers.length})`,
         ui.openSections.includes('agents'),
         workerBuckets.filter(([, , list]) => list.length > 0).map(([name, color, list]) => countChip(els, `agents-${name}`, color, icon('worker', color), GLYPH.worker, list.length)),
-        [...workers].sort((a, b) => a.at - b.at).map(w => sectionLine(els, `agent-${w.id}`, 'worker', cardColor(w), w.title)),
+        [...workers].sort((a, b) => a.at - b.at).map(w => sectionLine(els, `agent-${w.id}`, 'worker', workerColor(w, run), w.title, isInProgress(w), now)),
       ),
     )
   }
@@ -459,6 +486,8 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
             'qa',
             qaColor(q),
             `QA round ${q.round}${q.summary ? `: ${verdictWord(q)}` : ''}`,
+            isInProgress(q),
+            now,
             q.summary ? (
               <Text key={`qa-tail-${q.id}`} wrap="truncate-end">
                 <Text dimColor> · </Text>
@@ -615,6 +644,7 @@ function drawEntry(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, 
   const textWidth = Math.max(16, width - TREE_COLS - ICON_COLS - 4)
   const card = entry.kind === 'agent' ? agentCard(els, entry.row, theme, now, run, textWidth) : messagesCard(els, entry.rows, textWidth)
   const isOpen = ui.expanded.includes(card.id)
+  const live = entry.kind === 'agent' && isInProgress(entry.row)
   // on the SVG surfaces the trunk is one piece behind the rows, so the rows' heights do not matter; the terminal's
   // rows are exact, so it draws a glyph per row
   const smooth = !!Svg
@@ -625,7 +655,11 @@ function drawEntry(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, 
       <Box flexDirection="row" alignItems="center">
         {connector(els, isLast ? 'last' : smooth ? 'tick' : 'branch')}
         <Box width={ICON_COLS} flexShrink={0} alignItems="center" justifyContent="center">
-          {Svg ? <Svg source={icon(card.kind, card.color)} alt={card.kind} width={16} height={16} /> : <Text color={card.color}>{GLYPH[card.kind]}</Text>}
+          {Svg ? (
+            <Svg source={icon(card.kind, card.color, live)} alt={card.kind} width={16} height={16} isInteractive={live} />
+          ) : (
+            <Text color={card.color}>{live ? spinner(now) : GLYPH[card.kind]}</Text>
+          )}
         </Box>
         <Box width={textWidth} flexShrink={0} marginLeft={1}>
           <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
@@ -704,13 +738,13 @@ function drawActivity(els: Els, items: readonly Activity[]): JSX.Element[] {
 function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, run: Run, textWidth: number): Card {
   const { Box, Text } = els
   const span = row.status === 'pending' ? 'waiting' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
-  const color = cardColor(row)
+  const color = cardColor(row, run)
   const feed = row.stats.activity.length > 0 ? [<Box key="feed" marginTop={1} flexDirection="column">{drawActivity(els, row.stats.activity)}</Box>] : []
   const feedRows = row.stats.activity.length > 0 ? 1 + row.stats.activity.length : 0
   if (row.kind === 'worker') {
     const prs = prsOf(run, row.branch)
     const latest = prs[0]
-    const lead = [span, row.model, ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')
+    const lead = [span, row.model, ...(row.outcome === 'limited' ? ['with limitations'] : []), ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')
     const subline = latest ? (
       <Box flexDirection="row" alignItems="center" overflow="hidden">
         <Box flexShrink={0}>
@@ -800,7 +834,7 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
             <Box key="items" flexDirection="column" marginTop={1}>
               {weak.map(i => (
                 <Text key={`item-${row.id}-${i.id}`} wrap="wrap">
-                  <Text color={i.score === 'unacceptable' ? 'error' : 'warning'}>{i.score}</Text>
+                  <Text color={i.score === 'unacceptable' ? ORANGE : YELLOW}>{i.score}</Text>
                   {` ${i.title}${i.note ? `: ${i.note}` : ''}`}
                 </Text>
               ))}

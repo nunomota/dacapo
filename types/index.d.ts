@@ -151,6 +151,8 @@ export type WorkerRow = {
   /** How the worker merges its pull request: squash (the rule) or a merge commit (for a branch that merges the base branch in). */
   mergeMethod: 'squash' | 'merge'
   status: WorkerStatus
+  /** What the worker said of its own work on its last line: done, done with limitations, or failed. */
+  outcome?: 'done' | 'limited' | 'failed'
   /** The worker's closing answer, or the failure reason. */
   note?: string
   stats: AgentStats

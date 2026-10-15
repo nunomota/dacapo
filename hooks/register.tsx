@@ -81,6 +81,8 @@ const pendingId = (kind: 'worker' | 'qa', iteration: number, key: string) => `pe
 /** The first line of every prompt the Agent hook hands a worker or QA agent; the spawn hook reads the worktree off it. */
 const WORKTREE_LINE = /^\[dacapo worktree: (.+)\]$/m
 const ASK_LINE = /^\s*dacapo (worker|qa) (\S+)\s*$/
+/** The last line of a worker's answer: `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`. */
+const STATUS_LINE = /^\s*dacapo:\s*(done with limitations|done|failed)\s*\.?\s*$/im
 
 const isAgent = (id: string) => (r: Row): r is WorkerRow | QaRow => isAgentRow(r) && r.id === id
 
@@ -266,7 +268,7 @@ function statusText(snap: Snapshot): string {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
         const pr = latestPr(run, row.branch)
         lines.push(
-          `  ${t} worker ${row.taskId} [${row.id}] ${statusWord[row.status]}${row.restarts ? ` (restarted ${row.restarts}x)` : ''} (${span}, ${row.model}, ${row.branch}${row.isResumed ? ', resumed' : ''}) PR: ${pr ? prText(pr) : 'none'}${row.note ? `: ${row.note.slice(0, 200)}` : ''}`,
+          `  ${t} worker ${row.taskId} [${row.id}] ${statusWord[row.status]}${row.outcome === 'limited' ? ' with limitations' : ''}${row.restarts ? ` (restarted ${row.restarts}x)` : ''} (${span}, ${row.model}, ${row.branch}${row.isResumed ? ', resumed' : ''}) PR: ${pr ? prText(pr) : 'none'}${row.note ? `: ${row.note.slice(0, 200)}` : ''}`,
         )
       } else {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
@@ -489,7 +491,8 @@ async function sync() {
       await patchWorker(w.id, r => ({ ...r, status: 'merged' }))
       landed.push(`${w.taskId}: ${prText(merged)}${notes.length ? ` [${notes.join('; ')}]` : ''}`)
     } else if (w.status === 'finished') {
-      waiting.push(`${w.taskId}: ${mine[0] ? prText(mine[0]) : 'no pull request'}. The worker reported finished but nothing landed: resume it (dispatch the task with resume: true and say what to do), or cancel it.`)
+      await patchWorker(w.id, r => ({ ...r, status: 'failed', note: `finished without landing: ${mine[0] ? prText(mine[0]) : 'no pull request'}${r.note ? ` — ${r.note}` : ''}` }))
+      waiting.push(`${w.taskId}: ${mine[0] ? prText(mine[0]) : 'no pull request'}. The worker reported finished but nothing landed, so it is marked failed: resume it (dispatch the task with resume: true and say what to do), or cancel it.`)
     } else if (await io.exists(w.worktree)) {
       kept.push(`${w.taskId} (${statusWord[w.status]}): ${mine[0] ? prText(mine[0]) : 'no pull request'}; branch and worktree kept at ${w.worktree}`)
     }
@@ -1313,9 +1316,14 @@ export const register: Register = (on, options) => {
           const note = failed
             ? `${e.reason}${e.reason === 'refusal' ? `: ${e.refusal.explanation ?? ''}` : ''}`
             : e.answer.replace(/\s+/g, ' ').trim().slice(0, 400)
-          // a worker that says it stopped after failing checks is a failure, however its turn ended
-          const saidFailed = !failed && /\bstatus:?\s*failed\b/i.test(e.answer)
-          await patchRow(row.id, r => ({ ...r, status: failed || saidFailed ? 'failed' : 'finished', endedAt: now, note }))
+          // the worker's last line says how it ended; without one, its pull request decides later
+          const said = STATUS_LINE.exec(e.answer)?.[1]?.toLowerCase()
+          const outcome = said === 'failed' ? 'failed' : said === 'done with limitations' ? 'limited' : said === 'done' ? 'done' : undefined
+          await patchRow(row.id, r =>
+            r.kind === 'worker'
+              ? { ...r, status: failed || outcome === 'failed' ? 'failed' : 'finished', endedAt: now, note, outcome }
+              : { ...r, status: failed ? 'failed' : 'finished', endedAt: now, note },
+          )
           // the wake-up carries the pull request state, so refresh it before the ticker wakes the orchestrator
           const run = await currentRun()
           if (run) await io.setRun(cur => (cur ? { ...cur, prsAt: 0 } : cur))
