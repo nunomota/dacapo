@@ -139,7 +139,7 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
    - **failed**: not landed.
 
    The host fixes the exact form of the line that carries the outcome, so it can be parsed.
-   A worker that reports done but whose work has not landed has not landed: resume it. A limitation feeds the next round's tasks, the QA note and the final report.
+   A worker that reports done before its work has landed is not done: resume it. A limitation feeds the next round's tasks, the QA note and the final report.
 3. A worker the host reports as stalled may be building or waiting on checks. Decide: let it continue, or stop it and plan its task again.
 4. A failed worker leaves its work in place. Options, in order of preference:
    1. **Resume it**: the same task with a brief that says what to fix or complete; it continues the earlier work.
@@ -172,5 +172,5 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 - QA never reads source: judge its report, not its method.
 - The verdict is derived from the scores, never negotiated.
 - The orchestrator is the only role that talks to the user.
-- The run merges only when QA passes, with one exception: a user who decides to merge after the loop is stuck. Then the final report states the limitation.
+- The run merges only when QA passes, or when the user decides to after the loop is stuck (phase 5 step 5).
 - Once work is dispatched, the loop asks the user only when stuck (defined in phase 5 step 5) or when a human is needed: secrets, approvals, outages.
