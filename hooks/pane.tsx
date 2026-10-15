@@ -331,44 +331,56 @@ export const TIMELINE_LATEST = 8
 
 /**
  * Six blocks, one per phase: the ones done greyed out, the current one in its own color with its name beneath,
- * the ones ahead hollow. One SVG on the remote surfaces so the label sits under its block whatever the font;
- * glyph rows in the terminal.
+ * the ones ahead hollow. A released run fills every block green and reads "released"; an aborted one stops on
+ * its phase in orange and reads "aborted". One SVG on the remote surfaces so the label sits under its block
+ * whatever the font; glyph rows in the terminal.
  */
-function drawBar(els: Els, current: Phase): JSX.Element {
+function drawBar(els: Els, current: Phase, status: Run['status']): JSX.Element {
   const { Box, Text, Svg } = els
   const at = PHASES.indexOf(current)
   const grey = '#6e7681'
+  const isReleased = status === 'done'
+  const isAborted = status === 'aborted'
+  const label = isReleased ? 'released' : isAborted ? 'aborted' : current
+  const labelColor = isReleased ? GREEN : isAborted ? ORANGE : PHASE_COLOR[current]
+  const labelAt = isReleased ? PHASES.length - 1 : at
+  // the fill of block i: a color, grey, or null for hollow
+  const fillOf = (p: Phase, i: number): string | null => (isReleased ? GREEN : i < at ? grey : i === at ? (isAborted ? ORANGE : PHASE_COLOR[p]) : null)
   if (Svg) {
     const w = 46
     const gap = 6
     const bar = 13
     const rects = PHASES.map((p, i) => {
       const x = i * (w + gap)
-      if (i < at) return `<rect x="${x}" y="0" width="${w}" height="${bar}" rx="3" fill="${grey}"/>`
-      if (i === at) return `<rect x="${x}" y="0" width="${w}" height="${bar}" rx="3" fill="${PHASE_COLOR[p]}"/>`
-      return `<rect x="${x + 0.5}" y="0.5" width="${w - 1}" height="${bar - 1}" rx="3" fill="none" stroke="${grey}" stroke-width="1"/>`
+      const fill = fillOf(p, i)
+      return fill
+        ? `<rect x="${x}" y="0" width="${w}" height="${bar}" rx="3" fill="${fill}"/>`
+        : `<rect x="${x + 0.5}" y="0.5" width="${w - 1}" height="${bar - 1}" rx="3" fill="none" stroke="${grey}" stroke-width="1"/>`
     })
-    const cx = at * (w + gap) + w / 2
+    const cx = labelAt * (w + gap) + w / 2
     const total = PHASES.length * (w + gap) - gap
-    const source = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${bar + 18}">${rects.join('')}<text x="${cx}" y="${bar + 14}" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="${PHASE_COLOR[current]}">${current}</text></svg>`
+    const source = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${bar + 18}">${rects.join('')}<text x="${cx}" y="${bar + 14}" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="${labelColor}">${label}</text></svg>`
     return (
       <Box>
-        <Svg source={source} alt={`phase ${current}`} width={total} height={bar + 18} />
+        <Svg source={source} alt={`phase ${label}`} width={total} height={bar + 18} />
       </Box>
     )
   }
   return (
     <Box flexDirection="column">
       <Text>
-        {PHASES.map((p, i) => (
-          <Text key={`bar-${p}`}>
-            {i > 0 ? ' ' : ''}
-            {i < at ? <Text dimColor>{'█'.repeat(BLOCK_COLS)}</Text> : i === at ? <Text color={PHASE_COLOR[p]}>{'█'.repeat(BLOCK_COLS)}</Text> : <Text dimColor>{'░'.repeat(BLOCK_COLS)}</Text>}
-          </Text>
-        ))}
+        {PHASES.map((p, i) => {
+          const fill = fillOf(p, i)
+          return (
+            <Text key={`bar-${p}`}>
+              {i > 0 ? ' ' : ''}
+              {fill === null ? <Text dimColor>{'░'.repeat(BLOCK_COLS)}</Text> : fill === grey ? <Text dimColor>{'█'.repeat(BLOCK_COLS)}</Text> : <Text color={fill}>{'█'.repeat(BLOCK_COLS)}</Text>}
+            </Text>
+          )
+        })}
       </Text>
-      <Box paddingLeft={at * (BLOCK_COLS + 1)}>
-        <Text color={PHASE_COLOR[current]}>{current}</Text>
+      <Box paddingLeft={labelAt * (BLOCK_COLS + 1)}>
+        <Text color={labelColor}>{label}</Text>
       </Box>
     </Box>
   )
@@ -549,7 +561,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           {keyLine(els, 'Branch', run.branch ? `${run.branch} → ${run.baseBranch}` : `not started (into ${run.baseBranch})`)}
           {keyLine(els, 'Models', modelsText)}
           {keyLine(els, 'Spend', spendText_)}
-          <Box marginTop={1}>{drawBar(els, run.phase)}</Box>
+          <Box marginTop={1}>{drawBar(els, run.phase, run.status)}</Box>
         </Box>
       </Box>
       {run.gh && !run.gh.ok && (
@@ -616,7 +628,7 @@ function drawTimeline(els: Els, entries: Entry[], ui: Ui, act: Actions, width: n
         </Box>
       </Box>
       {isOpen && (
-        <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
+        <Box borderStyle="single" borderDimColor paddingX={1} flexDirection="column">
           {shown.length > 0 ? treeLead(els) : <Text dimColor>Nothing yet.</Text>}
           {shown.map((entry, i) => drawEntry(els, entry, ui, act, width - 4, theme, now, run, i === shown.length - 1))}
         </Box>
