@@ -156,7 +156,7 @@ type ListedPr = {
 }
 
 describe('the loop', () => {
-  test('workers land through pull requests; sync, QA, resume, guards, stale marking and the release', async ($, on) => {
+  test('workers land through pull requests; sync, QA, resume, guards, stale marking and the final merge', async ($, on) => {
     const t0 = Date.UTC(2026, 9, 10, 12, 0, 0)
     const clock = mock.clock(on, { now: t0 })
     const files = new Map<string, string>()
@@ -233,7 +233,7 @@ describe('the loop', () => {
       statusCheckRollup: checks,
       createdAt: new Date(t0 + 60_000).toISOString(),
     })
-    const releasePr = (checks: Array<Record<string, string>>, mergeable = 'MERGEABLE'): ListedPr => ({
+    const finalPr = (checks: Array<Record<string, string>>, mergeable = 'MERGEABLE'): ListedPr => ({
       number: 9,
       url: 'https://github.com/x/y/pull/9',
       title: 'feat: add a login page',
@@ -436,33 +436,33 @@ describe('the loop', () => {
     expect(prompts.some(p => /Worker login \[agent-3\] timed out/.test(p))).toBe(true)
     expect(prompts.some(p => /Round 2: all 1 worker\(s\) have ended/.test(p) && /resume it: dispatch the same task id with resume: true/.test(p))).toBe(true)
 
-    // the release: a pull request from the run branch into main, merged by the run once green
+    // the end: a final pull request from the run branch into main, merged by the run once green
     const noTitle = await $.tool.call({ tool: 'mcp__dacapo__finish' } as never)
     expect('isError' in noTitle && noTitle.isError).toBe(true)
     const tainted = await $.tool.call({ tool: 'mcp__dacapo__finish', title: 'feat: add a login page', body: 'Adds login.\n\nCo-Authored-By: someone' } as never)
     expect('isError' in tainted && tainted.isError).toBe(true)
     const finished = await $.tool.call({ tool: 'mcp__dacapo__finish', title: 'feat: add a login page', body: 'Users can log in with email and password.\n\nVerified: npm run build, npm test' } as never)
-    expect('result' in finished && finished.result).toMatch(/Release pull request #9 opened: https:\/\/github.com\/x\/y\/pull\/9/)
+    expect('result' in finished && finished.result).toMatch(/Final pull request #9 opened: https:\/\/github.com\/x\/y\/pull\/9/)
     expect(ghCalls.some(c => c[1] === 'pr' && c[2] === 'create' && c.includes('--base') && c.includes('main') && c.includes('--head') && c.includes(RUN))).toBe(true)
     const stillBlocked = await $.tool.call({ tool: 'Write', file_path: '/repo/x.ts', content: 'x' })
     expect('deny' in stillBlocked && typeof stillBlocked.deny === 'string').toBe(true)
     // failing checks wake the orchestrator instead of merging
-    prList.push(releasePr(RED))
+    prList.push(finalPr(RED))
     await clock.advance(21_000)
-    expect(prompts.some(p => /release pull request #9 has failing checks/.test(p))).toBe(true)
+    expect(prompts.some(p => /final pull request #9 has failing checks/.test(p))).toBe(true)
     expect(ghCalls.some(c => c[1] === 'pr' && c[2] === 'merge')).toBe(false)
     // green and mergeable: merged with a merge commit titled as planned, then everything is pruned
-    prList[1] = releasePr(GREEN)
+    prList[1] = finalPr(GREEN)
     await clock.advance(21_000)
     const mergeCall = ghCalls.find(c => c[1] === 'pr' && c[2] === 'merge')
     expect(mergeCall).toBeDefined()
     expect(mergeCall).toContain('--merge')
     expect(mergeCall).toContain('feat: add a login page')
-    expect(prompts.some(p => /Released: pull request #9 "feat: add a login page" merged into main/.test(p))).toBe(true)
+    expect(prompts.some(p => /Merged into main: pull request #9 "feat: add a login page"/.test(p))).toBe(true)
     const after = await $.tool.call({ tool: 'Write', file_path: '/repo/x.ts', content: 'x' })
     expect('result' in after && after.result).toBe('written')
     const done = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in done && done.result).toMatch(/: done, /)
-    expect('result' in done && done.result).toMatch(/Release PR #9 .*: merged/)
+    expect('result' in done && done.result).toMatch(/Final PR #9 .*: merged/)
   })
 })

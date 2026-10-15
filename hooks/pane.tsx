@@ -29,7 +29,7 @@ export type Theme = { prices: Record<string, Price> }
 export type Section = 'prs' | 'agents' | 'qa' | 'timeline'
 
 /** Every phase has a color of its own; the bar shows the ones reached in it and the current one's name. */
-export const PHASE_COLOR: Record<Phase, string> = { clarify: '#378ADD', research: '#7F77DD', plan: '#1D9E75', implement: '#D85A30', qa: '#EF9F27', release: '#639922' }
+export const PHASE_COLOR: Record<Phase, string> = { clarify: '#378ADD', research: '#7F77DD', plan: '#1D9E75', implement: '#D85A30', qa: '#EF9F27', merge: '#639922' }
 
 /** The state colors: teal in progress, green done, yellow done with limitations or recommendations, orange failed. */
 export const TEAL = '#39c5cf'
@@ -39,7 +39,7 @@ export const ORANGE = '#e8723a'
 /** The failure color; orange reads better than red beside the yellow. */
 export const RED = ORANGE
 
-export const PHASES: readonly Phase[] = ['clarify', 'research', 'plan', 'implement', 'qa', 'release']
+export const PHASES: readonly Phase[] = ['clarify', 'research', 'plan', 'implement', 'qa', 'merge']
 
 const two = (n: number) => `${n}`.padStart(2, '0')
 
@@ -331,7 +331,7 @@ export const TIMELINE_LATEST = 8
 
 /**
  * Six blocks, one per phase: the ones done greyed out, the current one in its own color with its name beneath,
- * the ones ahead hollow. A released run fills every block green and reads "released"; an aborted one stops on
+ * the ones ahead hollow. A merged run fills every block green and reads "merged"; an aborted one stops on
  * its phase in orange and reads "aborted". One SVG on the remote surfaces so the label sits under its block
  * whatever the font; glyph rows in the terminal.
  */
@@ -339,13 +339,13 @@ function drawBar(els: Els, current: Phase, status: Run['status']): JSX.Element {
   const { Box, Text, Svg } = els
   const at = PHASES.indexOf(current)
   const grey = '#6e7681'
-  const isReleased = status === 'done'
+  const isMerged = status === 'done'
   const isAborted = status === 'aborted'
-  const label = isReleased ? 'released' : isAborted ? 'aborted' : current
-  const labelColor = isReleased ? GREEN : isAborted ? ORANGE : PHASE_COLOR[current]
-  const labelAt = isReleased ? PHASES.length - 1 : at
+  const label = isMerged ? 'merged' : isAborted ? 'aborted' : current
+  const labelColor = isMerged ? GREEN : isAborted ? ORANGE : PHASE_COLOR[current]
+  const labelAt = isMerged ? PHASES.length - 1 : at
   // the fill of block i: a color, grey, or null for hollow
-  const fillOf = (p: Phase, i: number): string | null => (isReleased ? GREEN : i < at ? grey : i === at ? (isAborted ? ORANGE : PHASE_COLOR[p]) : null)
+  const fillOf = (p: Phase, i: number): string | null => (isMerged ? GREEN : i < at ? grey : i === at ? (isAborted ? ORANGE : PHASE_COLOR[p]) : null)
   if (Svg) {
     const w = 46
     const gap = 6
@@ -464,7 +464,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const elapsedValue = (
     <Text wrap="truncate-end">
       {elapsed(run.startedAt, endAt)}
-      {run.status === 'aborted' ? <Text color={RED}>{'  ·  aborted'}</Text> : run.status === 'done' ? <Text color={GREEN}>{'  ·  released'}</Text> : ''}
+      {run.status === 'aborted' ? <Text color={RED}>{'  ·  aborted'}</Text> : run.status === 'done' ? <Text color={GREEN}>{'  ·  merged'}</Text> : ''}
     </Text>
   )
 
@@ -606,9 +606,11 @@ function drawTimeline(els: Els, entries: Entry[], ui: Ui, act: Actions, width: n
   const hidden = ui.isTimelineFull ? 0 : Math.max(0, entries.length - TIMELINE_LATEST)
   const shown = hidden > 0 ? entries.slice(hidden) : entries
   const bits = [`${entries.length} ${entries.length === 1 ? 'event' : 'events'}`, ...(running > 0 ? [`${running} running`] : [])]
+  // the band wears the phase bar's current color: the phase's own, green once merged, orange when aborted
+  const band = run.status === 'done' ? GREEN : run.status === 'aborted' ? ORANGE : PHASE_COLOR[run.phase]
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Box flexDirection="row" backgroundColor="claude" paddingX={1} justifyContent="space-between">
+      <Box flexDirection="row" backgroundColor={band} paddingX={1} justifyContent="space-between">
         <Text color="white" wrap="truncate-end">
           <Text bold>Timeline</Text>
           {` · ${bits.join(' · ')}`}
@@ -946,7 +948,7 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   const second: string[] = []
   if (workerBits.length > 0) second.push(`agents ${workerBits.join(', ')}`)
   if (openPrs > 0) second.push(`${openPrs} open PR${openPrs === 1 ? '' : 's'}`)
-  if (run.status === 'releasing' && run.release) second.push(`release PR #${run.release.number} waiting on checks`)
+  if (run.status === 'merging' && run.final) second.push(`final PR #${run.final.number} waiting on checks`)
   if (qa) second.push(`QA ${verdictWord(qa)}`)
   if (money) second.push(money)
 

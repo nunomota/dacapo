@@ -192,7 +192,7 @@ async function ensureSetup(run: Run, wantedBranch: string): Promise<{ run: Run; 
 
 async function currentRun(): Promise<Run | null> {
   const run = await io.getRun()
-  return run && (run.status === 'planning' || run.status === 'active' || run.status === 'releasing') ? run : null
+  return run && (run.status === 'planning' || run.status === 'active' || run.status === 'merging') ? run : null
 }
 
 /** A short argument for a tool call's activity line: the file, command, pattern or prompt it names. */
@@ -251,7 +251,7 @@ function statusText(snap: Snapshot): string {
   if (run.overview) lines.push(`  ${run.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
   if (run.gh && !run.gh.ok) lines.push(`gh: ${run.gh.problem} (${run.gh.detail})`)
   if (run.pushProblem) lines.push(`Push problem: ${run.pushProblem}`)
-  if (run.release) lines.push(`Release PR #${run.release.number} (${run.release.url}): ${run.prs.find(p => p.number === run.release!.number)?.state ?? 'not yet seen'}`)
+  if (run.final) lines.push(`Final PR #${run.final.number} (${run.final.url}): ${run.prs.find(p => p.number === run.final!.number)?.state ?? 'not yet seen'}`)
   for (const w of run.wakes.filter(w => !w.deliveredAt)) {
     lines.push(`Wake-up not yet delivered (sent ${elapsed(w.sentAt, ui.tick)} ago, try ${w.tries}/${WAKE_TRIES}): ${w.text.split('\n')[0]}`)
   }
@@ -330,7 +330,7 @@ async function start(a: Args) {
     [
       `Run ${run.id} ready on ${repo} (${run.root}).`,
       ...notes.map(n => `- ${n}`),
-      `- every worker branches from "${run.branch}" and lands through a pull request into it; the release pull request goes from "${run.branch}" into "${run.baseBranch}"`,
+      `- every worker branches from "${run.branch}" and lands through a pull request into it; the final pull request goes from "${run.branch}" into "${run.baseBranch}"`,
       `- run folder ${run.runDir}`,
       `Plan the work, then call ${tool('dispatch')}.`,
     ].join('\n'),
@@ -621,7 +621,7 @@ async function finish(a: Args) {
     return fail('finish: "title" must be the merge commit title, "<type>: <description>" with an allowed type, no scope, at most 72 characters')
   }
   const body = str(a.body).trim()
-  if (!body) return fail('finish: "body" is required: the release pull request body, written to the clean-prs rules')
+  if (!body) return fail('finish: "body" is required: the final pull request body, written to the clean-prs rules')
   if (ATTRIBUTION.test(body) || ATTRIBUTION.test(title)) return fail('finish: the title and body carry no Co-Authored-By, Signed-off-by or "Generated with" line (clean-prs)')
   if (!run.gh?.ok) return fail(`finish: gh is not usable (${run.gh?.detail ?? 'not checked'}); call ${tool('start')} to check it again`)
   await refreshPrs(run)
@@ -636,26 +636,26 @@ async function finish(a: Args) {
     ;({ number, url } = existing)
   } else {
     const created = await gh.createPr(io, fresh.worktree, { base: fresh.baseBranch, head: fresh.branch, title, body })
-    if (created.kind === 'error') return fail(`finish: the release pull request could not be opened: ${created.message}`)
+    if (created.kind === 'error') return fail(`finish: the final pull request could not be opened: ${created.message}`)
     ;({ number, url } = created)
   }
   const now = await io.now()
-  const attempt = (fresh.release?.attempt ?? 0) + 1
-  await io.setRun(cur => (cur ? { ...cur, status: 'releasing', phase: 'release', release: { number, url, title, openedAt: now, attempt } } : cur))
+  const attempt = (fresh.final?.attempt ?? 0) + 1
+  await io.setRun(cur => (cur ? { ...cur, status: 'merging', phase: 'merge', final: { number, url, title, openedAt: now, attempt } } : cur))
   return ok(
     [
-      `Release pull request #${number} ${existing ? 'updated' : 'opened'}: ${url} (${fresh.branch} into ${fresh.baseBranch}). ${pushed}`,
+      `Final pull request #${number} ${existing ? 'updated' : 'opened'}: ${url} (${fresh.branch} into ${fresh.baseBranch}). ${pushed}`,
       `The run watches its checks and merges it with a merge commit titled "${title}" once they pass and it is mergeable. A prompt wakes you when it is merged, when its checks fail, or when it conflicts with ${fresh.baseBranch}. End your turn now.`,
     ].join('\n'),
   )
 }
 
-// ---------- the release, watched by the ticker ----------
+// ---------- the final pull request, watched by the ticker ----------
 
-/** Release pull requests the ticker already tried to merge, by number and attempt, so a refusal is reported once. */
+/** Final pull requests the ticker already tried to merge, by number and attempt, so a refusal is reported once. */
 const mergeTried = new Set<string>()
 
-async function completeRelease(run: Run, pr: Pr, how: string) {
+async function completeMerge(run: Run, pr: Pr, how: string) {
   // polling stops once the run is done, so the merge the run just made (or saw) is written into the list itself
   await io.setRun(cur => (cur ? { ...cur, prs: cur.prs.map(p => (p.number === pr.number ? { ...p, state: 'merged', title: pr.title } : p)) } : cur))
   const notes: string[] = []
@@ -669,51 +669,51 @@ async function completeRelease(run: Run, pr: Pr, how: string) {
   // one last listing, so every pull request shows its final state
   const latest = await io.getRun()
   if (latest) await refreshPrs(latest)
-  await io.setRun(cur => (cur ? { ...cur, status: 'done', phase: 'release', prs: cur.prs.map(p => (p.number === pr.number ? { ...p, state: 'merged' } : p)) } : cur))
+  await io.setRun(cur => (cur ? { ...cur, status: 'done', phase: 'merge', prs: cur.prs.map(p => (p.number === pr.number ? { ...p, state: 'merged' } : p)) } : cur))
   await wake(
-    `released-${pr.number}`,
+    `merged-${pr.number}`,
     [
-      `Released: pull request #${pr.number} "${pr.title}" ${how} into ${run.baseBranch} (${pr.url}).`,
+      `Merged into ${run.baseBranch}: pull request #${pr.number} "${pr.title}" (${pr.url}, ${how}).`,
       ...notes.filter(Boolean).map(n => `- ${n}`),
       `Run ${run.id} finished; reports and briefs are under ${run.runDir}. Report to the user in a few lines: what shipped, the last QA verdict, and anything left out.`,
     ].join('\n'),
   )
 }
 
-async function watchRelease(run: Run) {
-  if (run.status !== 'releasing' || !run.release) return
-  const release = run.release
-  const pr = run.prs.find(p => p.number === release.number)
+async function watchFinal(run: Run) {
+  if (run.status !== 'merging' || !run.final) return
+  const final = run.final
+  const pr = run.prs.find(p => p.number === final.number)
   if (!pr) return
-  const key = (what: string) => `release-${what}-${pr.number}-${release.attempt}`
-  if (pr.state === 'merged') return completeRelease(run, pr, 'merged')
+  const key = (what: string) => `final-${what}-${pr.number}-${final.attempt}`
+  if (pr.state === 'merged') return completeMerge(run, pr, 'merged by hand')
   if (pr.state === 'closed') {
-    return wake(key('closed'), `The release pull request #${pr.number} was closed without merging. Call ${tool('finish')} again to open a new one, or finish with abort=true.`)
+    return wake(key('closed'), `The final pull request #${pr.number} was closed without merging. Call ${tool('finish')} again to open a new one, or finish with abort=true.`)
   }
   if (pr.mergeable === 'conflicting') {
     return wake(
       key('conflict'),
-      `The release pull request #${pr.number} conflicts with ${run.baseBranch}. Dispatch one worker with merge: "merge" whose task is to merge origin/${run.baseBranch} into its branch and resolve the conflicts (commit title "chore: merge ${run.baseBranch} into ${run.branch}"), then ${tool('sync')}, run ${tool('qa')} once more since a conflict resolution can break things, and call ${tool('finish')} again.`,
+      `The final pull request #${pr.number} conflicts with ${run.baseBranch}. Dispatch one worker with merge: "merge" whose task is to merge origin/${run.baseBranch} into its branch and resolve the conflicts (commit title "chore: merge ${run.baseBranch} into ${run.branch}"), then ${tool('sync')}, run ${tool('qa')} once more since a conflict resolution can break things, and call ${tool('finish')} again.`,
     )
   }
   if (pr.checks === 'failing') {
     return wake(
       key('checks'),
-      `The release pull request #${pr.number} has failing checks (${pr.url}). Dispatch a worker to fix them (resume the task at fault, or a repair task), then ${tool('sync')}, ${tool('qa')} once more, and ${tool('finish')} again.`,
+      `The final pull request #${pr.number} has failing checks (${pr.url}). Dispatch a worker to fix them (resume the task at fault, or a repair task), then ${tool('sync')}, ${tool('qa')} once more, and ${tool('finish')} again.`,
     )
   }
   if (pr.checks === 'pending' || pr.mergeable === 'unknown') return
-  const tried = `${pr.number}-${release.attempt}`
+  const tried = `${pr.number}-${final.attempt}`
   if (mergeTried.has(tried)) return
   mergeTried.add(tried)
-  const merged = await gh.mergePr(io, run.worktree, pr.number, 'merge', release.title)
+  const merged = await gh.mergePr(io, run.worktree, pr.number, 'merge', final.title)
   if (merged.ok) {
-    await completeRelease(run, { ...pr, state: 'merged', title: release.title }, 'merged')
+    await completeMerge(run, { ...pr, state: 'merged', title: final.title }, 'merged by the run')
     return
   }
   await wake(
     key('merge-failed'),
-    `The release pull request #${pr.number} is green but GitHub refused the merge: ${(merged.err || merged.out).split('\n').filter(Boolean).slice(-1)[0] ?? 'no reason given'}. Either the user merges it on GitHub (the run finishes when it sees it merged), or fix the cause and call ${tool('finish')} again.`,
+    `The final pull request #${pr.number} is green but GitHub refused the merge: ${(merged.err || merged.out).split('\n').filter(Boolean).slice(-1)[0] ?? 'no reason given'}. Either the user merges it on GitHub (the run finishes when it sees it merged), or fix the cause and call ${tool('finish')} again.`,
   )
 }
 
@@ -774,7 +774,7 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
       checked.overview,
       s.verdict === 'fix'
         ? `Next: plan the fixes and call ${tool('dispatch')} (a new round starts), then ${tool('sync')} and ${tool('qa')} again.`
-        : `Next: call ${tool('finish')} with the release pull request's title and body (clean-prs rules) to open it from ${run.branch} into ${run.baseBranch}, or dispatch improvements first if the recommendations are worth another round.`,
+        : `Next: call ${tool('finish')} with the final pull request's title and body (clean-prs rules) to open it from ${run.branch} into ${run.baseBranch}, or dispatch improvements first if the recommendations are worth another round.`,
     ].join('\n'),
   )
   await git.removeWorktree(io, run.root, row.worktree)
@@ -849,7 +849,7 @@ async function touch(agentId: string) {
   }
 }
 
-// ---------- the ticker: spinner, elapsed, stale and timeout, pull requests, the release ----------
+// ---------- the ticker: spinner, elapsed, stale and timeout, pull requests, the final merge ----------
 
 async function tick() {
   const run = await io.getRun()
@@ -884,14 +884,14 @@ async function tick() {
       }
     }
   }
-  // the pull requests of the run, and the release once it is open
-  const hasBranches = run.worktree && (rows.some(r => r.kind === 'worker') || run.release)
+  // the pull requests of the run, and the final pull request once it is open
+  const hasBranches = run.worktree && (rows.some(r => r.kind === 'worker') || run.final)
   if (run.gh?.ok && hasBranches && !polling && now - (run.prsAt ?? 0) >= POLL_MS) {
     polling = true
     try {
       await refreshPrs(run)
       const fresh = await io.getRun()
-      if (fresh) await watchRelease(fresh)
+      if (fresh) await watchFinal(fresh)
     } finally {
       polling = false
     }
@@ -953,7 +953,7 @@ export const register: Register = (on, options) => {
             task: { type: 'string', description: 'The task in one line: the heading of the run.' },
             overview: { type: 'string', description: 'One short paragraph on the whole task: deliverable, who it is for, what done looks like. Shown under the heading.' },
             branch: { type: 'string', description: 'The run branch, named after the change (kebab-case, e.g. "add-login"); default a slug of the task. Every worker pull request targets it.' },
-            baseBranch: { type: 'string', description: 'The branch the run is cut from and released into; default "main".' },
+            baseBranch: { type: 'string', description: 'The branch the run is cut from and merged into; default "main".' },
             root: { type: 'string', description: 'Absolute path inside the repository to run in; default the session working directory.' },
           },
           required: ['task'],
@@ -1041,11 +1041,11 @@ export const register: Register = (on, options) => {
       }),
       $.tool.register({
         name: 'phase',
-        description: 'Marks where the orchestrator is: clarify, research, plan, implement, qa or release. start, dispatch, qa and finish set the later phases themselves; call this for clarify and research.',
+        description: 'Marks where the orchestrator is: clarify, research, plan, implement, qa or merge. start, dispatch, qa and finish set the later phases themselves; call this for clarify and research.',
         isDeferred: false,
         inputSchema: {
           type: 'object',
-          properties: { phase: { type: 'string', enum: ['clarify', 'research', 'plan', 'implement', 'qa', 'release'] } },
+          properties: { phase: { type: 'string', enum: ['clarify', 'research', 'plan', 'implement', 'qa', 'merge'] } },
           required: ['phase'],
         },
       }),
@@ -1068,14 +1068,14 @@ export const register: Register = (on, options) => {
       $.tool.register({
         name: 'finish',
         description:
-          'Opens the release pull request from the run branch into the base branch with the given title and body (clean-prs rules). The run then watches its checks, merges it with a merge commit when green, prunes the worktrees and wakes you; failing checks or conflicts wake you instead.',
+          'Opens the final pull request from the run branch into the base branch with the given title and body (clean-prs rules). The run then watches its checks, merges it with a merge commit when green, prunes the worktrees and wakes you; failing checks or conflicts wake you instead.',
         isDeferred: false,
         inputSchema: {
           type: 'object',
           properties: {
             title: { type: 'string', description: 'The merge commit title, a Conventional Commit line summing up the run, e.g. "feat: add login to the CLI".' },
             body: { type: 'string', description: 'The pull request body to the clean-prs rules: one paragraph on what changed and why, a Verified line, an optional Notes line.' },
-            abort: { type: 'boolean', description: 'true ends the run without a release pull request.' },
+            abort: { type: 'boolean', description: 'true ends the run without a final pull request.' },
           },
         },
       }),
@@ -1255,7 +1255,7 @@ export const register: Register = (on, options) => {
 
   on('turn.step', async function* ($, e, next) {
     const run = await io.getRun()
-    const active = !!run && (run.status === 'planning' || run.status === 'active' || run.status === 'releasing')
+    const active = !!run && (run.status === 'planning' || run.status === 'active' || run.status === 'merging')
     const row = active && e.agentId ? (await io.getRows()).find(isAgent(e.agentId)) : undefined
     if (!active || (e.agentId && !row)) return yield* next(e)
     if (row && isTerminal(row)) await revive(row, await io.now())

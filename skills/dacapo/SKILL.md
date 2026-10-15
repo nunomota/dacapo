@@ -1,6 +1,6 @@
 ---
 name: dacapo
-description: Runs a handed-over task as an orchestrated loop - clarify, research, plan, dispatch parallel worker subagents in git worktrees that land their work through GitHub pull requests into a run branch, end-user QA with a scored rubric, iterate, then release the run branch into main through a pull request. Invoked by the user via /dacapo <task>.
+description: Runs a handed-over task as an orchestrated loop - clarify, research, plan, dispatch parallel worker subagents in git worktrees that land their work through GitHub pull requests into a run branch, end-user QA with a scored rubric, iterate, then merge the run branch into main through a final pull request. Invoked by the user via /dacapo <task>.
 ---
 
 # dacapo
@@ -15,7 +15,7 @@ You are the orchestrator. You never edit files, touch git, or open and merge pul
 - Every worker gets its own branch and worktree under `.workspaces/<run branch>--<id>` and lands through a draft pull request against the run branch: ready when its build passes, conflicts rebased away, checks waited for and fixed (three rounds at most; no CI counts as green), then squash-merged with the planned title.
 - Commits follow the bundled `clean-commits` skill; pull requests follow the bundled `clean-prs` skill.
 - QA tests the run branch in a fresh worktree.
-- The release is a pull request from the run branch into the base branch, merged with a merge commit.
+- The run ends with a final pull request from the run branch into the base branch, merged with a merge commit.
 
 ## Clarify, research and plan in this host
 
@@ -32,7 +32,7 @@ Call `mcp__dacapo__start` once the request is clear:
 - `task`: one line, written after clarification, never the prompt verbatim.
 - `overview`: one short paragraph.
 - `branch`: named after the change (`add-login`, `fix-export-crash`).
-- `baseBranch`: only when the repository releases from another branch than `main`.
+- `baseBranch`: only when the run should merge into another branch than `main`.
 
 If it answers that `gh` is missing, not logged in, or cannot reach the repository on GitHub, stop. Tell the user the install command for their system and that they must run `gh auth login` in a terminal themselves. Call `start` again once they say it is done. Every change lands through a pull request, so do not plan around it.
 
@@ -74,17 +74,17 @@ Call `mcp__dacapo__cancel` with `agentId` (from the wake-up or `status`) and an 
 
 Call `mcp__dacapo__qa` with `rubric` (items with `id`, `title`, `category: core | ui-ux`), `harness` (Markdown), and `brief` (what this round built or changed). The reply gives one `Agent` call: `subagent_type: "dacapo:qa"`, prompt `dacapo qa <round>-<n>`. Make it exactly as listed, then end your turn. The `[dacapo]` wake-up carries the verdict, the counts, every item below `strong` and the QA overview.
 
-### release
+### merge
 
 Call `mcp__dacapo__finish` with:
 - `title`: a Conventional Commit line summing up the run; it becomes the merge commit title.
 - `body`: to the `clean-prs` rules: one paragraph on what changed and why, a `Verified:` line, a `Notes:` line only if a reviewer must know something. No attribution lines of any kind.
 
-Then end your turn. The run watches the pull request, merges it when green, prunes the worktrees and branches, and wakes you with `Released`. Two wake-ups ask for more work first:
+Then end your turn. The run watches the pull request, merges it when green, prunes the worktrees and branches, and wakes you with `Merged into <base>`. Two wake-ups ask for more work first:
 - Conflicts with the base branch: `dispatch` one worker with `merge: "merge"` that merges `origin/<base>` into its branch and resolves the conflicts, commit title `chore: merge <base> into <run branch>`. Then `sync`, `qa` once more, and `finish` again.
-- Failing checks on the release pull request: `dispatch` the fix, then `sync`, `qa` and `finish` again.
+- Failing checks on the final pull request: `dispatch` the fix, then `sync`, `qa` and `finish` again.
 
-`abort: true` ends the run without a release.
+`abort: true` ends the run without a final pull request.
 
 ### phase
 

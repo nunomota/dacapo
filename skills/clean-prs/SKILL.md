@@ -1,6 +1,6 @@
 ---
 name: clean-prs
-description: Writes a pull request title and body that let a person understand the core contribution in under a minute - the planned Conventional Commit title, one short paragraph on what changed and why, a Verified line, an optional Notes line, nothing else. The rules every dacapo worker and release pull request follows. Invoked by the user via /clean-prs.
+description: Writes a pull request title and body that let a person understand the core contribution in under a minute - the planned Conventional Commit title, one short paragraph on what changed and why, a Verified line, an optional Notes line, nothing else. The rules every dacapo worker and the final pull request of a run follow. Invoked by the user via /clean-prs.
 ---
 
 ## Why
@@ -30,4 +30,4 @@ Three parts, in this order, and nothing else:
 
 ## In a dacapo run
 
-Every worker opens its pull request to these rules, as a draft after its first commit and ready when its build and tests pass, and merges it with the planned title. The release pull request from the run branch into the base branch follows the same rules: the orchestrator writes its title and body and hands them to `finish`, which refuses a body that breaks the last rule.
+Every worker opens its pull request to these rules, as a draft after its first commit and ready when its build and tests pass, and merges it with the planned title. The final pull request from the run branch into the base branch follows the same rules: the orchestrator writes its title and body and hands them to `finish`, which refuses a body that breaks the last rule.

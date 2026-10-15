@@ -1,6 +1,6 @@
-export type RunStatus = 'planning' | 'active' | 'releasing' | 'done' | 'aborted'
+export type RunStatus = 'planning' | 'active' | 'merging' | 'done' | 'aborted'
 
-export type Phase = 'clarify' | 'research' | 'plan' | 'implement' | 'qa' | 'release'
+export type Phase = 'clarify' | 'research' | 'plan' | 'implement' | 'qa' | 'merge'
 
 /** Token counts as the API reports them, summed over model steps. */
 export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number }
@@ -49,7 +49,7 @@ export type Run = {
   branch: string
   /** Absolute path of the worktree that has `branch` checked out, `.workspaces/<branch>`. Empty until start. */
   worktree: string
-  /** The branch the run was cut from and is released into through the release pull request. */
+  /** The branch the run was cut from and is merged into through the final pull request. */
   baseBranch: string
   /** Absolute path of the run log folder, `.workspaces/.dacapo/<id>`. */
   runDir: string
@@ -67,8 +67,8 @@ export type Run = {
   prs: Pr[]
   /** When `prs` was last refreshed. */
   prsAt?: number
-  /** The release pull request from the run branch into the base branch, once finish opened it. */
-  release?: { number: number; url: string; title: string; openedAt: number; attempt: number }
+  /** The final pull request from the run branch into the base branch, once finish opened it. */
+  final?: { number: number; url: string; title: string; openedAt: number; attempt: number }
 }
 
 /** A prompt the run queued for the orchestrator; `deliveredAt` is set when its turn starts, else the ticker resends it. */

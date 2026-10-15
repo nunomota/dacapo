@@ -1,6 +1,6 @@
 ---
 name: dacapo-loop
-description: The dacapo loop - clarify, research, plan, parallel isolated workers, end-user QA with a scored rubric, iterate, release. Any orchestrator host can follow it with its own way to dispatch agents and merge their work. Invoked by the user via /dacapo-loop <task>.
+description: The dacapo loop - clarify, research, plan, parallel isolated workers, end-user QA with a scored rubric, iterate, merge. Any orchestrator host can follow it with its own way to dispatch agents and merge their work. Invoked by the user via /dacapo-loop <task>.
 ---
 
 # dacapo-loop
@@ -17,8 +17,8 @@ The request is everything after `/dacapo-loop` in the prompt that invoked this s
 - `collect`: learn each worker's outcome and bring landed work into the run.
 - `cancel`: stop a worker and discard what it has not landed.
 - `qa`: start the QA agent on the current state of the run with the rubric and harness; receive the scored report.
-- `release`: integrate the run into the base line.
-- `phase`: mark where the loop stands (clarify, research, plan, implement, qa, release). Mark each later phase (plan, implement, qa, release) as you enter it, unless the host marks it itself.
+- `merge`: integrate the run into the base line.
+- `phase`: mark where the loop stands (clarify, research, plan, implement, qa, merge). Mark each later phase (plan, implement, qa, merge) as you enter it, unless the host marks it itself.
 
 The host you run in says how each operation is done: its own tools, agents and integration. A worker's outcome is one of `landed`, `failed`, `stale`, `timed out` or `cancelled`.
 
@@ -71,15 +71,15 @@ Show the plan (tasks, models, landing titles; rubric and harness) in a compact f
 5. **Decide.** On `fix`, plan the fixes as new tasks and go back to step 1: the next dispatch starts a new round. On `pass-with-recommendations`, decide whether the recommendations are worth a round; usually one more is. On `pass`, go to phase 5.
 6. The user may type while workers run. Answer them, and fold any new direction into the next round rather than into the running one.
 
-## Phase 5: release
+## Phase 5: merge
 
-1. Mark `release`. Call `release` with a one-line title summing up the run and one paragraph on what changed and why, then `wait`.
-2. If the integration is refused because the base line moved or its checks fail, dispatch a worker to reconcile or fix it (resume the task at fault, or a repair task), `collect`, run `qa` once more (a reconciliation can break things), and call `release` again.
-3. When the run is released, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out.
+1. Mark `merge`. Call `merge` with a one-line title summing up the run and one paragraph on what changed and why, then `wait`.
+2. If the integration is refused because the base line moved or its checks fail, dispatch a worker to reconcile or fix it (resume the task at fault, or a repair task), `collect`, run `qa` once more (a reconciliation can break things), and call `merge` again.
+3. When the run is merged, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out.
 
 ## Rules
 
 - Only workers change the codebase.
 - Workers never see each other's work mid-flight: contracts go in each task's `brief`.
 - QA never reads source: judge its report, not its method.
-- Prefer finishing the loop over polishing forever: when QA says pass, release.
+- Prefer finishing the loop over polishing forever: when QA says pass, merge.
