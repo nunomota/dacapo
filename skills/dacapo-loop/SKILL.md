@@ -11,11 +11,11 @@ If a person invoked this skill directly rather than a host loading it, tell them
 
 ## Roles
 
-**Orchestrator.** You. You turn the request into a plan, start each round through the host and decide what follows from the reports. You produce the plan, the decisions and the final report.
+**Orchestrator.** You turn the request into a plan, start each round through the host and decide what follows from the reports. You produce the plan, the decisions and the final report.
 
 **Workers.** Each builds one task in a sandbox of its own and lands it. A worker produces landed work and a report.
 
-**QA.** Uses the integrated product as its end user and scores it against the rubric. It produces a report; the host derives the verdict from it.
+**QA.** It uses the integrated product as its end user and scores it against the rubric. It produces a report; the host derives the verdict from it.
 
 ## Boundaries
 
@@ -155,9 +155,9 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 3. If the host says the report is invalid, run QA again with a clearer harness. A second invalid report in a row counts as the loop being stuck, and the stuck rule applies. An invalid report is never a pass.
 4. Decide:
    - On `fix` or `pass-with-recommendations`, every item below `strong`, acceptable ones included, becomes a fix task in the next round, with the QA note as its brief's starting point. Recommendations are fixed, not weighed. Go back to phase 4, unless the loop is stuck (step 5).
-     A fix round is a new set of tasks. Resuming a task whose landed work is at fault counts as one.
+     A fix round is a new set of tasks. Resuming a task whose landed work is at fault counts as a fix task.
    - On `pass`, go to phase 6.
-5. The loop is stuck when the same items stay below `strong` after two consecutive rounds aimed at them, or when QA's report is invalid twice in a row. Then ask the user how to proceed: another round with a different approach, merging with the limitation stated, or stopping. The user's answer decides.
+5. The loop is stuck when the same items stay below `strong` after two consecutive rounds aimed at them, or when QA's report is invalid twice in a row. Then ask the user how to proceed: another round with a different approach, merging with the limitation stated, or stopping. Merging goes to phase 6, with the limitation in the final report. The user's answer decides.
 
 ## Phase 6: merge
 
@@ -173,5 +173,4 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 - The verdict is derived from the scores, never negotiated.
 - The orchestrator is the only role that talks to the user.
 - The run merges only when QA passes, with one exception: a user who decides to merge after the loop is stuck. Then the final report states the limitation.
-- Once work is dispatched, the loop asks the user only when stuck or when a human is needed.
-  Stuck: the same items stay below `strong` after two consecutive rounds aimed at them, or QA's report is invalid twice in a row. A human is needed: secrets, approvals, outages.
+- Once work is dispatched, the loop asks the user only when stuck (defined in phase 5 step 5) or when a human is needed: secrets, approvals, outages.

@@ -52,7 +52,7 @@ The worker's report ends with `dacapo: done`, `dacapo: done with limitations` or
 ### start
 
 Call `mcp__dacapo__start` once the request is clear, as you enter the loop's phase 3:
-- `task`: the run's one line, written after clarification, never the prompt verbatim.
+- `task`: the run's one line.
 - `overview`: one short paragraph.
 - `branch`: named after the change (`add-login`, `fix-export-crash`).
 - `baseBranch`: only when the run should merge into another branch than `main`.
