@@ -135,6 +135,8 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
    - **done**: landed, nothing left out.
    - **done with limitations**: landed, but something was deliberately left out, does not work, or needs a follow-up.
    - **failed**: not landed.
+
+   The host fixes the exact form of the line that carries the outcome, so it can be parsed.
    A worker that reports done but whose work has not landed has not finished: resume it. A limitation feeds the next round's tasks, the QA note and the final report.
 3. A worker the host reports as stuck may be building or waiting on checks. Decide: let it continue, or stop it and plan its task again.
 4. A failed worker leaves its work in place. Options, in order of preference:
@@ -153,7 +155,7 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
    - On `fix`, plan the fixes and go back to phase 4. A fix round is a new set of tasks (resuming a task whose landed work is at fault counts as one).
    - On `pass-with-recommendations`, do the same: every item below `strong` becomes a fix task in the next round, with the QA note as its brief's starting point. Recommendations are fixed, not weighed.
    - On `pass`, go to phase 6. The run merges only on `pass`.
-5. The loop is stuck when the same items stay below `strong` after two consecutive rounds aimed at them. Only then ask the user how to proceed: another round with a different approach, merging with the limitation stated, or stopping. The user's answer decides.
+5. The loop is stuck when the same items stay below `strong` after two consecutive rounds aimed at them. Then ask the user how to proceed: another round with a different approach, merging with the limitation stated, or stopping. The user's answer decides.
 
 ## Phase 6: merge
 
@@ -168,5 +170,6 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 - QA never reads source: judge its report, not its method.
 - The verdict is derived from the scores, never negotiated.
 - The orchestrator is the only role that talks to the user.
-- The run merges only when QA passes.
-- The loop asks the user only when it is stuck: the same items still below `strong` after two consecutive rounds aimed at them.
+- The run merges only when QA passes, with one exception: a user who decides to merge after the loop is stuck. Then the final report states the limitation.
+- Once work is dispatched, the loop asks the user only when stuck or when a human is needed.
+  Stuck: the same items stay below `strong` after two consecutive rounds aimed at them. A human is needed: secrets, approvals, outages.
