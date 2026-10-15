@@ -189,7 +189,7 @@ export const isInProgress = (row: Row): boolean => isAgentRow(row) && (row.statu
 export const spinner = (tick: number): string => ['◐', '◓', '◑', '◒'][Math.floor(tick / 1000) % 4]!
 
 /** The terminal's one-glyph stand-in for each icon. */
-export const GLYPH: Record<Row['kind'], string> = { worker: '⚒', qa: '⚖', user: '✎', orchestrator: '◆' }
+export const GLYPH: Record<Row['kind'], string> = { worker: '⚒', qa: '⚖', user: '✎', orchestrator: '⟲' }
 
 /** Vector icons for the surfaces that draw SVG (desktop, VS Code, mobile), in the entry's color. */
 export function icon(kind: Row['kind'], color: string, isLive = false): string {
@@ -205,8 +205,8 @@ export function icon(kind: Row['kind'], color: string, isLive = false): string {
       // a person: head and shoulders
       return `${open}<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7.5 8-7.5s8 3.1 8 7.5"/>${close}`
     case 'orchestrator':
-      // a hub with three spokes: the one that coordinates the others
-      return `${open}<circle cx="12" cy="12" r="3" fill="${color}" stroke="none"/><circle cx="12" cy="3.5" r="1.8"/><circle cx="4.5" cy="18" r="1.8"/><circle cx="19.5" cy="18" r="1.8"/><line x1="12" y1="9" x2="12" y2="5.3"/><line x1="9.6" y1="13.8" x2="6" y2="16.8"/><line x1="14.4" y1="13.8" x2="18" y2="16.8"/>${close}`
+      // the repeat sign in a thin rounded frame: da capo, from the top, again
+      return `${open}<rect x="1.75" y="1.75" width="20.5" height="20.5" rx="5" stroke-width="1.5"/><g fill="${color}" stroke="none"><rect x="6.2" y="6" width="2.6" height="12" rx="0.7"/><rect x="10.4" y="6" width="1.2" height="12" rx="0.5"/><circle cx="15.6" cy="9.8" r="1.5"/><circle cx="15.6" cy="14.2" r="1.5"/></g>${close}`
     case 'qa':
       // a clipboard with a check mark
       return `${open}<rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3" rx="1" fill="${color}" stroke="none"/><path d="M8.5 13l2.5 2.5 4.5-5"/>${close}`
@@ -290,19 +290,20 @@ const LOGO_COLS = 9
 const KEY_COLS = 9
 const BLOCK_COLS = 5
 
-/** The hub-and-spokes mark, drawn large beside the key lines. */
+/** The dacapo mark, the framed repeat sign, drawn large beside the key lines. */
 function logo(els: Els): JSX.Element {
   const { Box, Text, Svg } = els
   if (Svg) {
     return (
-      <Box width={LOGO_COLS} flexShrink={0} alignSelf="stretch" alignItems="center" justifyContent="center" marginRight={1}>
+      <Box width={LOGO_COLS} flexShrink={0} alignItems="center" justifyContent="center" marginRight={1}>
         <Svg source={icon('orchestrator', PHASE_COLOR.implement)} alt="dacapo" width={64} height={64} />
       </Box>
     )
   }
-  const art = ['  ●  ', '  │  ', '●─┼─●', ' ╱ ╲ ', '●   ●']
+  // the repeat sign, framed: thick bar, thin bar, two dots
+  const art = ['╭─────╮', '│ ┃│ ●│', '│ ┃│  │', '│ ┃│ ●│', '╰─────╯']
   return (
-    <Box width={LOGO_COLS} flexShrink={0} flexDirection="column" alignSelf="stretch" alignItems="center" justifyContent="center" marginRight={1}>
+    <Box width={LOGO_COLS} flexShrink={0} flexDirection="column" alignItems="center" justifyContent="center" marginRight={1}>
       {art.map((line, i) => (
         <Text key={`logo-${i}`} color={PHASE_COLOR.implement}>
           {line}
@@ -541,7 +542,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
 
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row" alignItems="flex-start">
+      <Box flexDirection="row" alignItems="stretch">
         {logo(els)}
         <Box flexDirection="column" width={textWidth} flexShrink={0}>
           {keyLine(

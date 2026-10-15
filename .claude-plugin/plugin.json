@@ -1,6 +1,6 @@
 {
   "name": "dacapo",
-  "version": "0.15.2",
+  "version": "0.15.3",
   "description": "Da capo: an orchestrated implementation loop that runs the piece again until it is right. Parallel worker subagents in git worktrees that land their work through GitHub pull requests, an end-user QA subagent with a scored rubric, a final pull request into main, and a live timeline pane. The loop itself is described by a host-agnostic dacapo-loop skill that other orchestrators can follow.",
   "types": "./types/index.d.ts",
   "author": {
