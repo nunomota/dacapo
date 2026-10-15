@@ -84,16 +84,22 @@ export const statusWord: Record<WorkerRow['status'] | QaRow['status'], string> =
 export const verdictWord = (row: QaRow | undefined): string | undefined =>
   !row ? undefined : row.summary ? (row.summary.verdict === 'fix' ? 'fix needed' : row.summary.verdict === 'pass' ? 'pass' : 'pass, recommendations') : statusWord[row.status]
 
-/** `7 · 2 · 0` in green, yellow and red: the counts of strong, acceptable and unacceptable items. */
+/** The counts of strong, acceptable and unacceptable items in green, yellow and red; a zero count is left out. */
 export function scoreNumbers(els: Els, s: QaSummary, key: string): JSX.Element {
   const { Text } = els
+  const parts = ([
+    [s.strong, GREEN],
+    [s.acceptable, YELLOW],
+    [s.unacceptable, RED],
+  ] as const).filter(([n]) => n > 0)
   return (
     <Text key={key}>
-      <Text color={GREEN}>{`${s.strong}`}</Text>
-      <Text dimColor> · </Text>
-      <Text color={YELLOW}>{`${s.acceptable}`}</Text>
-      <Text dimColor> · </Text>
-      <Text color={RED}>{`${s.unacceptable}`}</Text>
+      {parts.map(([n, color], i) => (
+        <Text key={`${key}-${color}`}>
+          {i > 0 ? <Text dimColor> · </Text> : ''}
+          <Text color={color}>{`${n}`}</Text>
+        </Text>
+      ))}
     </Text>
   )
 }
