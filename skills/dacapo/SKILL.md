@@ -1,6 +1,6 @@
 ---
 name: dacapo
-description: Runs a handed-over task as an orchestrated loop - clarify, research, plan, dispatch parallel worker subagents in git worktrees that land their work through GitHub pull requests into a run branch, end-user QA with a scored rubric, iterate, then merge the run branch into main through a final pull request. Invoked by the user via /dacapo <task>.
+description: Runs a handed-over task as an orchestrated loop: clarify, research, plan, dispatch parallel worker subagents in git worktrees, end-user QA with a scored rubric, iterate, merge. Workers land their work through GitHub pull requests into a run branch, and the run branch merges into main through a final pull request. Invoked by the user via /dacapo <task>.
 ---
 
 # dacapo
@@ -11,7 +11,6 @@ The loop's boundaries are enforced here. While a run is active the tools refuse 
 
 ## The loop on these tools
 
-- Clarify and research: `phase`, as you enter each.
 - Opening the run: `start`, as you begin planning.
 - Starting a round: `dispatch`, then the Agent calls its reply lists.
 - Learning outcomes: `wait` for the `[dacapo]` wake-up, then `sync`.
@@ -19,12 +18,12 @@ The loop's boundaries are enforced here. While a run is active the tools refuse 
 - Stopping a worker, or dropping its task: `cancel`.
 - QA: `qa`, then its Agent call.
 - Integrating into the base line: `finish`.
-- The state of everything as text: `status`, once, never in a loop.
+- The state of everything as text: `status`.
 
 ## How work lands here
 
 - The base branch is `main` unless told otherwise. `start` pulls it from origin, then cuts the run branch from it in its own worktree under `.workspaces/<branch>` and pushes it.
-- Every worker gets its own branch and worktree under `.workspaces/<run branch>--<id>` and lands through a draft pull request against the run branch: ready when its build passes, conflicts rebased away, checks waited for and fixed (three rounds at most; no CI counts as green), then squash-merged with the planned title.
+- Every worker gets its own branch and worktree under `.workspaces/<run branch>--<id>` and lands through a draft pull request against the run branch. It marks the pull request ready when its build passes, rebases conflicts away, and waits for and fixes the checks (three rounds at most; no CI counts as green). Then it squash-merges the pull request with the planned title.
 - Commits follow the bundled `clean-commits` skill; pull requests follow the bundled `clean-prs` skill.
 - QA tests the run branch in a fresh worktree.
 - The run ends with a final pull request from the run branch into the base branch, merged with a merge commit.
@@ -32,7 +31,7 @@ The loop's boundaries are enforced here. While a run is active the tools refuse 
 ## Outcomes here
 
 A worker's status in the wake-up, `status` and the pane is one of:
-- `finished`: the worker ended and said what it said in its report, ending `dacapo: done` or `dacapo: done with limitations`. This is its claim, not yet a fact.
+- `finished`: the worker ended with a report whose last line is `dacapo: done` or `dacapo: done with limitations`. This is its claim, not yet a fact.
 - `merged` (landed): what `sync` confirms from the pull request's merged state. Only then has the work landed.
 - `failed`: the worker's own `dacapo: failed` line, or the agent ending in error. Its branch and pull request stay in place. `sync` also marks a `finished` worker `failed` when its pull request did not merge.
 - `stale`: no tool call or model step for 30 minutes; it still runs. This is the loop's stuck worker. A worker waiting on checks can look stale.
@@ -52,7 +51,7 @@ The worker's report ends with `dacapo: done`, `dacapo: done with limitations` or
 
 ### start
 
-Call `mcp__dacapo__start` once the request is clear, as you enter the loop's phase 3 (marks plan):
+Call `mcp__dacapo__start` once the request is clear, as you enter the loop's phase 3:
 - `task`: the run's one line, written after clarification, never the prompt verbatim.
 - `overview`: one short paragraph.
 - `branch`: named after the change (`add-login`, `fix-export-crash`).
@@ -72,21 +71,20 @@ Call `mcp__dacapo__dispatch` with `tasks` (and optionally a round `title` and `o
 - `resume: true`: continue the earlier worker of the same `id` on its branch, worktree and pull request.
 - `merge: "merge"`: only for a branch that merges the base branch into the run branch. Otherwise leave it out (squash).
 
-This host already gives every worker its standing instructions with the brief it writes: build and test, fix what you introduced, clean commits, land through the pull request, the report and its last line. Do not copy them into the task `prompt`. Put only the task itself and its contracts there.
+This host already gives every worker its standing instructions with the brief it writes. They cover building and testing, fixing what it introduced, clean commits, landing through the pull request, and the report and its last line. Do not copy them into the task `prompt`. Put only the task itself and its contracts there.
 
 The reply lists one `Agent` call per task. Make them yourself, all in one message, exactly as listed: `subagent_type: "dacapo:worker"`, the listed description, and the prompt `dacapo worker <id>`. Never write the prompts yourself; the run fills in the brief, model, worktree and background mode. Then end your turn, saying in one line that the workers run. Each worker opens its draft pull request after its first commit.
 
 ### wait
 
 `wait` is not a tool: it means doing nothing. A prompt starting with `[dacapo]` wakes you when every worker has ended, when one goes stale, or when one times out. The wake-up names every worker's status, agent id and pull request.
-- Do not poll. Do not call `status` in a loop.
+- Do not poll; see `status` for when to call it.
 - Ignore background-agent notifications and hand-backs about single workers.
 - The `[dacapo]` wake-up can take up to a minute after the last hand-back, and one that does not start a turn is sent again.
-- If none has arrived two minutes after a hand-back, or a worker goes stale, call `status` once.
 
-### sync (the loop's collect)
+### sync
 
-When every worker has ended, call `mcp__dacapo__sync`. It lists the pull requests through `gh`, marks the merged ones as landed, prunes their worktrees and branches, and fast-forwards the run worktree. Call it before `qa`, and after a repair task before resuming the original.
+`sync` is how the loop learns each worker's outcome and brings landed work into the run. When every worker has ended, call `mcp__dacapo__sync`. It lists the pull requests through `gh`, marks the merged ones as landed, prunes their worktrees and branches, and fast-forwards the run worktree. Call it before `qa`, and after a repair task before resuming the original.
 
 ### cancel
 
