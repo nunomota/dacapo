@@ -144,8 +144,8 @@ export function icon(kind: Row['kind'], color: string): string {
       // a person: head and shoulders
       return `${open}<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7.5 8-7.5s8 3.1 8 7.5"/>${close}`
     case 'orchestrator':
-      // a conductor's baton over a stand
-      return `${open}<path d="M12 3l3.5 4.5L12 12 8.5 7.5z" fill="${color}" stroke="none"/><line x1="12" y1="12" x2="12" y2="21"/><line x1="12" y1="15" x2="6" y2="21"/><line x1="12" y1="15" x2="18" y2="21"/>${close}`
+      // a hub with three spokes: the one that coordinates the others
+      return `${open}<circle cx="12" cy="12" r="3" fill="${color}" stroke="none"/><circle cx="12" cy="3.5" r="1.8"/><circle cx="4.5" cy="18" r="1.8"/><circle cx="19.5" cy="18" r="1.8"/><line x1="12" y1="9" x2="12" y2="5.3"/><line x1="9.6" y1="13.8" x2="6" y2="16.8"/><line x1="14.4" y1="13.8" x2="18" y2="16.8"/>${close}`
     case 'qa':
       // a clipboard with a check mark
       return `${open}<rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3" rx="1" fill="${color}" stroke="none"/><path d="M8.5 13l2.5 2.5 4.5-5"/>${close}`
