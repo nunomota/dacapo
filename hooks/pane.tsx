@@ -562,8 +562,10 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           {keyLine(els, 'Branch', run.branch ? `${run.branch} → ${run.baseBranch}` : `not started (into ${run.baseBranch})`)}
           {keyLine(els, 'Models', modelsText)}
           {keyLine(els, 'Spend', spendText_)}
-          <Box marginTop={1}>{drawBar(els, run.phase, run.status)}</Box>
         </Box>
+      </Box>
+      <Box marginTop={1} paddingLeft={LOGO_COLS + 1}>
+        {drawBar(els, run.phase, run.status)}
       </Box>
       {run.gh && !run.gh.ok && (
         <Box marginTop={1}>
