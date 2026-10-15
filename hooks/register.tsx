@@ -1164,7 +1164,7 @@ export const register: Register = (on, options) => {
     // only what the person typed is a row: not a subagent's hand-back, a notification or another session's message
     const isTyped = ['composer', 'bridge', 'sdk', 'channel'].includes(e.origin.kind) && !/^\s*<agent-message\b/.test(text)
     if (!isTyped) return next(e)
-    const starts = /^\s*\/(?:dacapo:)?core(\s|$)/.exec(text)
+    const starts = /^\s*\/dacapo:core(\s|$)/.exec(text)
     let run = await currentRun()
     if (starts) {
       // the run has no heading yet: the prompt is the person's words, the title and overview come from `start` once the task is clear
