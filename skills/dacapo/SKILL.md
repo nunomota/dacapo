@@ -34,7 +34,7 @@ A worker's status in the wake-up, `status` and the pane is one of:
 - `finished`: the worker ended with a report whose last line is `dacapo: done` or `dacapo: done with limitations`. This is its claim, not yet a fact.
 - `merged` (landed): what `sync` confirms from the pull request's merged state. Only then has the work landed.
 - `failed`: the worker's own `dacapo: failed` line, or the agent ending in error. Its branch and pull request stay in place. `sync` also marks a `finished` worker `failed` when its pull request did not merge.
-- `stale`: no tool call or model step for 30 minutes; it still runs. This is the loop's stuck worker. A worker waiting on checks can look stale.
+- `stale`: no tool call or model step for 30 minutes; it still runs. This is the loop's stalled worker. A worker waiting on checks can look stale.
 - `timed out`: stopped by the run after two idle hours. Treat it as failed.
 - `cancelled`: stopped by you; its open pull request is closed.
 
