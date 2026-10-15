@@ -5,7 +5,7 @@ description: The dacapo loop as a specification for any orchestrator that runs a
 
 # dacapo-loop
 
-dacapo builds a request in rounds until its end user would accept it. The **orchestrator** clarifies the request, plans independent tasks and the QA they will be judged by, then reads every outcome and decides the next round. **Workers**, one per task, each build one piece in isolation and land it. **QA** uses the integrated result as its end user and scores it against a rubric written before any code existed. A host runs the agents, integrates what lands and reports back. This file says what each role does and what the host must guarantee, never how a host does it.
+dacapo builds a request in rounds until its end user would accept it. Three roles run the loop: the **orchestrator**, the **workers** and **QA**. A host runs the agents and integrates what lands. This file says what each role does and what the host must guarantee, never how a host does it.
 
 If a person invoked this skill directly rather than a host loading it, tell them two things. This file is the loop's specification, and the `/dacapo` command is what runs it.
 
@@ -56,7 +56,7 @@ Never:
 - Touch another task's work.
 - Change the integration target other than through the landing path.
 - Talk to the user.
-- Report finished before its work has landed.
+- Report done before its work has landed.
 
 Cannot see:
 - Other workers' work mid-flight (the contracts in its brief are all it knows of them).
@@ -76,11 +76,12 @@ Never:
 - Read, search or open source by any means, including the shell it keeps to run the product.
 - Edit anything but its report.
 - Spawn agents.
+- Talk to the user.
 - Decide the verdict.
 
 Cannot see:
 - The source, the workers' reports and the orchestrator's conversation.
-- Anything beyond what it is handed. It is handed what was built (the run's one-line request and a user-visible note on the round), the harness, the rubric and where to write its report.
+- Anything beyond what the host hands it.
 
 ## What a host must guarantee
 
@@ -121,6 +122,7 @@ Produce everything below before any code exists.
    - `landing title`: the one line the work lands under.
    - `build`: the command that must pass before landing. `test`: the test command, if any.
    - `context`: optional extra files (API notes, fixtures, a design sketch).
+
    Tasks within a round are independent. When one task needs another's result, put it in a later round or combine the two into one task.
 3. **The standing worker instructions** (see the host guarantees). Write them into each brief only when the host does not hand them over.
 4. **The rubric.** Items with `id` (kebab-case), `title` and `category` (`core` or `ui-ux`). Each item is one user-visible outcome that can be tested through the harness alone. Cover the core function first, then clarity, feedback, error handling and flow; failure paths get items too. No item mentions code or files. Six to twelve items is usual. Writing it now keeps it from being shaped by what the workers produce.
@@ -137,7 +139,7 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
    - **failed**: not landed.
 
    The host fixes the exact form of the line that carries the outcome, so it can be parsed.
-   A worker that reports done but whose work has not landed has not finished: resume it. A limitation feeds the next round's tasks, the QA note and the final report.
+   A worker that reports done but whose work has not landed has not landed: resume it. A limitation feeds the next round's tasks, the QA note and the final report.
 3. A worker the host reports as stalled may be building or waiting on checks. Decide: let it continue, or stop it and plan its task again.
 4. A failed worker leaves its work in place. Options, in order of preference:
    1. **Resume it**: the same task with a brief that says what to fix or complete; it continues the earlier work.
@@ -148,11 +150,11 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 
 ## Phase 5: qa
 
-1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms.
+1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. QA is handed these, the run's one-line request and where to write its report. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms.
 2. QA's report has `items`, one per rubric id, each with `id`, `score` and a `note` of one to three sentences, and an `overview`. Scores: `strong` (clearly met), `acceptable` (technically passes, improvements recommended), `unacceptable` (fails, must be fixed). The host derives the verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any is acceptable and none unacceptable; `pass` otherwise. You receive the verdict, the counts, every item below strong and the overview.
 3. If the host says the report is invalid, run QA again with a clearer harness. A second invalid report in a row counts as the loop being stuck, and the stuck rule applies. An invalid report is never a pass.
 4. Decide:
-   - On `fix` or `pass-with-recommendations`, every item below `strong`, acceptable ones included, becomes a fix task in the next round, with the QA note as its brief's starting point. Recommendations are fixed, not weighed. Go back to phase 4.
+   - On `fix` or `pass-with-recommendations`, every item below `strong`, acceptable ones included, becomes a fix task in the next round, with the QA note as its brief's starting point. Recommendations are fixed, not weighed. Go back to phase 4, unless the loop is stuck (step 5).
      A fix round is a new set of tasks. Resuming a task whose landed work is at fault counts as one.
    - On `pass`, go to phase 6.
 5. The loop is stuck when the same items stay below `strong` after two consecutive rounds aimed at them, or when QA's report is invalid twice in a row. Then ask the user how to proceed: another round with a different approach, merging with the limitation stated, or stopping. The user's answer decides.
