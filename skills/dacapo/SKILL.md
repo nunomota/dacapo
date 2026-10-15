@@ -38,7 +38,7 @@ A worker's status in the wake-up, `status` and the pane is one of:
 - `timed out`: stopped by the run after two idle hours. Treat it as failed.
 - `cancelled`: stopped by you; its open pull request is closed.
 
-The worker's report ends with `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`: the loop's three outcomes. A worker whose last line is `dacapo: done` but whose pull request is still open has not landed, whatever it said. Resume it.
+The worker's report ends with `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`: the loop's three outcomes. A worker whose last line is `dacapo: done` but whose pull request is still open has not landed (what `sync` reports); the loop says what follows.
 
 ## Clarify, research and plan in this host
 

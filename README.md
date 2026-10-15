@@ -40,7 +40,7 @@ The orchestrator then walks six phases, and the pane shows which one it is in:
 2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, notes the build and test commands.
 3. **Plan.** It names the run, cuts a run branch from `main`, splits the work into independent tasks, and writes the QA rubric and harness before any code exists.
 4. **Implement.** One worker per task, in parallel. Each opens a draft pull request against the run branch, marks it ready when its build passes, waits for checks, and squash-merges with the planned title. A worker is finished only when its pull request is merged.
-5. **QA.** A fresh subagent uses the deliverable as the end user and scores every rubric item `strong`, `acceptable` or `unacceptable`. On a fix verdict the loop goes back to step 4.
+5. **QA.** A fresh subagent uses the deliverable as the end user and scores every rubric item `strong`, `acceptable` or `unacceptable`. On any verdict below pass the loop goes back to step 4, with every item below `strong` becoming a task; the run merges only on pass.
 6. **Merge.** The orchestrator opens the final pull request into `main`, written to the `clean-prs` rules, and the mod merges it once its checks are green.
 
 You can type while workers run. Your prompts become events in the timeline and are folded into the next round.
