@@ -1,6 +1,6 @@
 import type { Elements } from 'claude-code'
 
-import type { Activity, AgentStats, OrchestratorRow, Phase, Pr, PrState, QaRow, Row, Run, Ui, UserRow, WorkerRow } from '../types'
+import type { Activity, AgentStats, OrchestratorRow, Phase, Pr, PrState, QaRow, QaSummary, Row, Run, Ui, UserRow, WorkerRow } from '../types'
 import { ZERO, addUsage, costOf, fmtCost, fmtTokens, totalTokens, type Price } from './cost'
 
 /** The elements every surface has; the hook resolves the table and hands these in. */
@@ -17,12 +17,22 @@ export type Snapshot = { run: Run | null; rows: Row[]; ui: Ui }
 
 export type Actions = {
   toggleRow: (id: string) => void
-  togglePrList: () => void
+  toggleSection: (name: Section) => void
   openPane: () => void
   hideBand: () => void
 }
 
 export type Theme = { prices: Record<string, Price> }
+
+/** The collapsible progress rows of the badge. */
+export type Section = 'prs' | 'agents' | 'qa'
+
+/** Every phase has a color of its own; the bar shows the ones reached in it and the current one's name. */
+export const PHASE_COLOR: Record<Phase, string> = { clarify: '#378ADD', research: '#7F77DD', plan: '#1D9E75', implement: '#D85A30', qa: '#EF9F27', release: '#639922' }
+
+export const GREEN = 'green'
+export const YELLOW = 'yellow'
+export const RED = 'red'
 
 export const PHASES: readonly Phase[] = ['clarify', 'research', 'plan', 'implement', 'qa', 'release']
 
@@ -74,6 +84,20 @@ export const statusWord: Record<WorkerRow['status'] | QaRow['status'], string> =
 export const verdictWord = (row: QaRow | undefined): string | undefined =>
   !row ? undefined : row.summary ? (row.summary.verdict === 'fix' ? 'fix needed' : row.summary.verdict === 'pass' ? 'pass' : 'pass, recommendations') : statusWord[row.status]
 
+/** `7 · 2 · 0` in green, yellow and red: the counts of strong, acceptable and unacceptable items. */
+export function scoreNumbers(els: Els, s: QaSummary, key: string): JSX.Element {
+  const { Text } = els
+  return (
+    <Text key={key}>
+      <Text color={GREEN}>{`${s.strong}`}</Text>
+      <Text dimColor> · </Text>
+      <Text color={YELLOW}>{`${s.acceptable}`}</Text>
+      <Text dimColor> · </Text>
+      <Text color={RED}>{`${s.unacceptable}`}</Text>
+    </Text>
+  )
+}
+
 export function scoreLine(row: QaRow): string {
   if (!row.summary) return row.status === 'running' || row.status === 'stale' || row.status === 'pending' ? 'report not ready' : 'no report'
   const s = row.summary
@@ -109,20 +133,27 @@ const SEP = '  ·  '
 export const PURPLE = '#a855f7'
 export const CYAN = 'cyan'
 
+/** A QA round's color: cyan while it runs, then green for a pass, yellow for recommendations, red for fix or a failure. */
+export function qaColor(row: QaRow): string {
+  if (row.status === 'running' || row.status === 'stale' || row.status === 'pending') return CYAN
+  if (!row.summary) return RED
+  return row.summary.verdict === 'pass' ? GREEN : row.summary.verdict === 'pass-with-recommendations' ? YELLOW : RED
+}
+
 export function cardColor(row: Row): string {
   if (row.kind === 'user') return 'white'
   if (row.kind === 'orchestrator') return PURPLE
-  if (row.kind === 'qa') return CYAN
+  if (row.kind === 'qa') return qaColor(row)
   switch (row.status) {
     case 'finished':
     case 'merged':
-      return 'green'
+      return GREEN
     case 'failed':
     case 'timeout':
     case 'cancelled':
-      return 'red'
+      return RED
     default:
-      return 'yellow'
+      return YELLOW
   }
 }
 
@@ -222,8 +253,118 @@ export function entriesOf(rows: readonly Row[]): Entry[] {
 
 // ---------- the pane ----------
 
-export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number, theme: Theme): JSX.Element {
+const LOGO_COLS = 9
+const KEY_COLS = 9
+const BLOCK_COLS = 5
+
+/** The hub-and-spokes mark, drawn large beside the key lines. */
+function logo(els: Els): JSX.Element {
+  const { Box, Text, Svg } = els
+  if (Svg) {
+    return (
+      <Box width={LOGO_COLS} flexShrink={0} alignItems="center" justifyContent="center" marginRight={1}>
+        <Svg source={icon('orchestrator', PHASE_COLOR.implement)} alt="dacapo" width={64} height={64} />
+      </Box>
+    )
+  }
+  const art = ['  ●  ', '  │  ', '●─┼─●', ' ╱ ╲ ', '●   ●']
+  return (
+    <Box width={LOGO_COLS} flexShrink={0} flexDirection="column" alignItems="center" marginRight={1}>
+      {art.map((line, i) => (
+        <Text key={`logo-${i}`} color={PHASE_COLOR.implement}>
+          {line}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+function keyLine(els: Els, key: string, value: JSX.Element | string): JSX.Element {
+  const { Box, Text } = els
+  return (
+    <Box key={`key-${key}`} flexDirection="row">
+      <Box width={KEY_COLS} flexShrink={0}>
+        <Text color="claude">{key}</Text>
+      </Box>
+      <Box flexGrow={1} flexShrink={1} overflow="hidden">
+        {typeof value === 'string' ? <Text wrap="truncate-end">{value}</Text> : value}
+      </Box>
+    </Box>
+  )
+}
+
+/** Six blocks, one per phase in its own color up to the current one, the ones ahead grey; the current phase's name under its block. */
+function drawBar(els: Els, current: Phase): JSX.Element {
+  const { Box, Text } = els
+  const at = PHASES.indexOf(current)
+  const blank = ' '.repeat(BLOCK_COLS)
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row">
+        {PHASES.map((p, i) => (
+          <Box key={`bar-${p}`} width={BLOCK_COLS} marginRight={1} backgroundColor={i <= at ? PHASE_COLOR[p] : '#5c6370'}>
+            <Text>{blank}</Text>
+          </Box>
+        ))}
+      </Box>
+      <Box flexDirection="row" paddingLeft={at * (BLOCK_COLS + 1)}>
+        <Text color={PHASE_COLOR[current]}>{current}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+/** A count beside an icon in one color: `◆ 3` on the terminal, the SVG icon on the others. */
+function countChip(els: Els, key: string, color: string, svg: string | null, glyph: string, n: number): JSX.Element {
+  const { Box, Text, Svg } = els
+  return (
+    <Box key={key} flexDirection="row" alignItems="center" marginRight={2}>
+      {Svg && svg ? <Svg source={svg} alt={key} width={14} height={14} /> : <Text color={color}>{glyph}</Text>}
+      <Text color={color}>{` ${n}`}</Text>
+    </Box>
+  )
+}
+
+function sectionRow(els: Els, act: Actions, name: Section, label: string, isOpen: boolean, chips: JSX.Element[], lines: JSX.Element[]): JSX.Element {
   const { Box, Text, Button } = els
+  return (
+    <Box key={`section-${name}`} flexDirection="column">
+      <Box flexDirection="row" alignItems="center">
+        <Box width={14} flexShrink={0}>
+          <Button key={`section-${name}`} plain onPress={() => act.toggleSection(name)}>
+            <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
+            <Text color="claude">{label}</Text>
+          </Button>
+        </Box>
+        {chips}
+      </Box>
+      {isOpen && lines.length > 0 && (
+        <Box flexDirection="column" paddingLeft={2}>
+          {lines}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+/** One line of an expanded section: the entry's icon and its header text in the entry's color, plus a dim tail. */
+function sectionLine(els: Els, key: string, kind: Row['kind'], color: string, text: string, tail?: JSX.Element): JSX.Element {
+  const { Box, Text, Svg } = els
+  return (
+    <Box key={key} flexDirection="row" alignItems="center" overflow="hidden">
+      <Box width={ICON_COLS} flexShrink={0} alignItems="center">
+        {Svg ? <Svg source={icon(kind, color)} alt={kind} width={14} height={14} /> : <Text color={color}>{GLYPH[kind]}</Text>}
+      </Box>
+      <Text color={color} wrap="truncate-end">
+        {text}
+      </Text>
+      {tail ?? ''}
+    </Box>
+  )
+}
+
+export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number, theme: Theme): JSX.Element {
+  const { Box, Text } = els
   const { run, rows, ui } = snap
   if (!run) {
     return (
@@ -237,121 +378,146 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const isOver = run.status === 'done' || run.status === 'aborted'
   const endAt = isOver ? (rows[rows.length - 1]?.at ?? now) : now
   const agents = rows.filter(isAgentRow)
+  const workers = rows.filter((r): r is WorkerRow => r.kind === 'worker')
+  const qas = rows.filter((r): r is QaRow => r.kind === 'qa').sort((a, b) => a.round - b.round)
   const total = spend(agents, theme.prices, run.orchestrator)
   const prs = [...run.prs].sort((a, b) => a.createdAt - b.createdAt)
-  const counts = (['merged', 'open', 'draft', 'closed'] as const).map(s => [s, prs.filter(p => p.state === s).length] as const).filter(([, n]) => n > 0)
   const entries = entriesOf(rows)
+  const textWidth = Math.max(16, width - LOGO_COLS - 4)
+
+  const models = new Map<string, number>()
+  for (const a of agents) models.set(a.model, (models.get(a.model) ?? 0) + 1)
+  const modelsText = [...models.entries()].map(([m, n]) => `${m} ×${n}`).join(' · ') || 'none yet'
+  const spendText_ = total.tokens === 0 ? 'nothing yet' : `${fmtTokens(total.tokens)} tokens${total.cost !== undefined ? ` · ~${fmtCost(total.cost)}` : ''}`
+  const elapsedValue = (
+    <Text wrap="truncate-end">
+      {elapsed(run.startedAt, endAt)}
+      {run.status === 'aborted' ? <Text color={RED}>{'  ·  aborted'}</Text> : run.status === 'done' ? <Text color={GREEN}>{'  ·  released'}</Text> : ''}
+    </Text>
+  )
+
+  // the progress rows: pull requests by state, workers by status, QA rounds by verdict; empty counts are left out
+  const prCounts = (['merged', 'open', 'draft', 'closed'] as const).map(st => [st, prs.filter(p => p.state === st).length] as const).filter(([, n]) => n > 0)
+  const workerBuckets: Array<[string, string, WorkerRow[]]> = [
+    ['running', YELLOW, workers.filter(w => w.status === 'running' || w.status === 'stale' || w.status === 'pending')],
+    ['done', GREEN, workers.filter(w => w.status === 'finished' || w.status === 'merged')],
+    ['failed', RED, workers.filter(w => w.status === 'failed' || w.status === 'timeout' || w.status === 'cancelled')],
+  ]
+  const qaBuckets: Array<[string, string, QaRow[]]> = [
+    ['pass', GREEN, qas.filter(q => qaColor(q) === GREEN)],
+    ['recommendations', YELLOW, qas.filter(q => qaColor(q) === YELLOW)],
+    ['fix', RED, qas.filter(q => qaColor(q) === RED)],
+    ['running', CYAN, qas.filter(q => qaColor(q) === CYAN)],
+  ]
+  const sections: JSX.Element[] = []
+  if (prs.length > 0) {
+    sections.push(
+      sectionRow(
+        els,
+        act,
+        'prs',
+        `PRs (${prs.length})`,
+        ui.openSections.includes('prs'),
+        prCounts.map(([st, n]) => countChip(els, `prs-${st}`, PR_COLOR[st], prIcon(st), PR_GLYPH[st], n)),
+        prs.map(pr => drawPr(els, pr, `top-pr-${pr.number}`)),
+      ),
+    )
+  }
+  if (workers.length > 0) {
+    sections.push(
+      sectionRow(
+        els,
+        act,
+        'agents',
+        `Agents (${workers.length})`,
+        ui.openSections.includes('agents'),
+        workerBuckets.filter(([, , list]) => list.length > 0).map(([name, color, list]) => countChip(els, `agents-${name}`, color, icon('worker', color), GLYPH.worker, list.length)),
+        [...workers].sort((a, b) => a.at - b.at).map(w => sectionLine(els, `agent-${w.id}`, 'worker', cardColor(w), w.title)),
+      ),
+    )
+  }
+  if (qas.length > 0) {
+    sections.push(
+      sectionRow(
+        els,
+        act,
+        'qa',
+        `QA (${qas.length})`,
+        ui.openSections.includes('qa'),
+        qaBuckets.filter(([, , list]) => list.length > 0).map(([name, color, list]) => countChip(els, `qa-${name}`, color, icon('qa', color), GLYPH.qa, list.length)),
+        qas.map(q =>
+          sectionLine(
+            els,
+            `qa-line-${q.id}`,
+            'qa',
+            qaColor(q),
+            `QA round ${q.round}${q.summary ? `: ${verdictWord(q)}` : ''}`,
+            <Text key={`qa-tail-${q.id}`} wrap="truncate-end">
+              <Text dimColor>{` · ${q.status === 'pending' ? 'waiting' : elapsed(q.at, isActive(q) ? now : (q.endedAt ?? now))} · ${q.model}${q.summary ? ' · ' : ''}`}</Text>
+              {q.summary ? scoreNumbers(els, q.summary, `qa-score-${q.id}`) : ''}
+            </Text>,
+          ),
+        ),
+      ),
+    )
+  }
 
   return (
     <Box flexDirection="column">
-      <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
-        {run.task ? (
-          <Text bold wrap="truncate-end">
-            {run.task.replace(/\s+/g, ' ').trim()}
-          </Text>
-        ) : (
-          <Text dimColor italic wrap="truncate-end">
-            Clarifying the task…
-          </Text>
-        )}
-        <Text wrap="truncate-end">
-          {run.status === 'aborted' ? (
-            <Text>
-              <Text color="error">Aborted</Text>
-              <Text dimColor>{SEP}</Text>
-            </Text>
-          ) : (
-            ''
+      <Box flexDirection="row" alignItems="flex-start">
+        {logo(els)}
+        <Box flexDirection="column" width={textWidth} flexShrink={0}>
+          {keyLine(
+            els,
+            'Task',
+            run.task ? (
+              <Text bold wrap="truncate-end">
+                {run.task.replace(/\s+/g, ' ').trim()}
+              </Text>
+            ) : (
+              <Text dimColor italic wrap="truncate-end">
+                Clarifying the task…
+              </Text>
+            ),
           )}
-          {elapsed(run.startedAt, endAt)}
-          <Text dimColor>{SEP}</Text>
-          {`${agents.length}`}
-          <Text dimColor>{agents.length === 1 ? ' agent' : ' agents'}</Text>
-          <Text dimColor>{SEP}</Text>
-          {fmtTokens(total.tokens)}
-          <Text dimColor> tokens</Text>
-          {total.cost !== undefined ? (
-            <Text>
-              <Text dimColor>{`${SEP}~`}</Text>
-              {fmtCost(total.cost)}
-            </Text>
-          ) : (
-            ''
-          )}
-          {prs.length > 0 ? (
-            <Text>
-              <Text dimColor>{SEP}</Text>
-              {`${prs.length}`}
-              <Text dimColor>{prs.length === 1 ? ' PR' : ' PRs'}</Text>
-            </Text>
-          ) : (
-            ''
-          )}
-        </Text>
-        {drawPhases(els, run.phase, width - 4)}
+          {keyLine(els, 'Elapsed', elapsedValue)}
+          {keyLine(els, 'Branch', run.branch ? `${run.branch} → ${run.baseBranch}` : `not started (into ${run.baseBranch})`)}
+          {keyLine(els, 'Models', modelsText)}
+          {keyLine(els, 'Spend', spendText_)}
+          <Box marginTop={1}>{drawBar(els, run.phase)}</Box>
+        </Box>
       </Box>
+      {run.gh && !run.gh.ok && (
+        <Box marginTop={1}>
+          <Text color="warning" wrap="wrap">
+            {`gh: ${run.gh.detail}`}
+          </Text>
+        </Box>
+      )}
       {run.pushProblem && (
-        <Box paddingX={1} marginTop={1}>
+        <Box marginTop={1}>
           <Text color="warning" wrap="wrap">
             {run.pushProblem}
           </Text>
         </Box>
       )}
       {run.overview && (
-        <Box paddingX={1} marginTop={1}>
+        <Box marginTop={1}>
           <Text dimColor wrap="wrap">
             {run.overview}
           </Text>
         </Box>
       )}
-      {prs.length > 0 && (
-        <Box flexDirection="column" paddingX={1} marginTop={1}>
-          <Button key="pr-list" plain onPress={() => act.togglePrList()}>
-            <Text dimColor>{ui.isPrListOpen ? '▾ ' : '▸ '}</Text>
-            <Text wrap="truncate-end">
-              {`${prs.length} pull request${prs.length === 1 ? '' : 's'}`}
-              <Text dimColor>{counts.map(([s, n]) => ` · ${n} ${s}`).join('')}</Text>
-            </Text>
-          </Button>
-          {ui.isPrListOpen && (
-            <Box flexDirection="column" paddingLeft={2}>
-              {prs.map(pr => drawPr(els, pr, `top-pr-${pr.number}`))}
-            </Box>
-          )}
+      {sections.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          {sections}
         </Box>
       )}
-      <Box marginTop={1}>
-        <Text dimColor wrap="truncate-end">
-          {'─'.repeat(Math.max(10, width - 12))}
-        </Text>
+      <Box marginTop={1} flexDirection="column">
+        {entries.length > 0 ? treeLead(els) : ''}
+        {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
       </Box>
-      {entries.length > 0 ? treeLead(els) : ''}
-      {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
     </Box>
-  )
-}
-
-function drawPhases(els: Els, current: Phase, width: number): JSX.Element {
-  const { Text } = els
-  const at = PHASES.indexOf(current)
-  const sep = width < 56 ? ' › ' : '  ›  '
-  return (
-    <Text wrap="truncate-end">
-      {PHASES.map((p, i) => (
-        <Text key={`phase-${p}`}>
-          {i > 0 ? <Text dimColor>{sep}</Text> : ''}
-          {i < at ? (
-            <Text dimColor>{p}</Text>
-          ) : i === at ? (
-            <Text color="claude" bold>
-              {p}
-            </Text>
-          ) : (
-            <Text color="inactive">{p}</Text>
-          )}
-        </Text>
-      ))}
-    </Text>
   )
 }
 
@@ -579,17 +745,32 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
     color,
     title: `QA round ${row.round}${row.summary ? `: ${verdictWord(row)}` : ''}`,
     subline: (
-      <Text dimColor wrap="truncate-end">
-        {[span, row.model, row.summary ? scoreLine(row) : statusWord[row.status], ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')}
+      <Text wrap="truncate-end">
+        <Text dimColor>{`${[span, row.model, ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')} · `}</Text>
+        {row.summary ? (
+          <Text>
+            {scoreNumbers(els, row.summary, `score-${row.id}`)}
+            <Text dimColor>{` → ${verdictWord(row)}`}</Text>
+          </Text>
+        ) : (
+          <Text dimColor>{statusWord[row.status]}</Text>
+        )}
       </Text>
     ),
     body: [
       <Text key="stats" dimColor wrap="truncate-end">
         {statsLine(row.stats, row.model, theme.prices)}
       </Text>,
-      <Text key="score" wrap="wrap">
-        {scoreLine(row)}
-      </Text>,
+      row.summary ? (
+        <Text key="score" wrap="wrap">
+          {scoreNumbers(els, row.summary, `score-body-${row.id}`)}
+          <Text dimColor>{` → ${verdictWord(row)}`}</Text>
+        </Text>
+      ) : (
+        <Text key="score" dimColor>
+          {scoreLine(row)}
+        </Text>
+      ),
       <Box key="overview" marginTop={1}>
         <Text wrap="wrap" dimColor={!row.overview}>
           {overviewText}

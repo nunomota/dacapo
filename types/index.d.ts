@@ -190,8 +190,8 @@ export type Row = UserRow | OrchestratorRow | WorkerRow | QaRow
 export type Ui = {
   /** Ids of rows whose body is shown. */
   expanded: string[]
-  /** The pull request list in the top card is unfolded. */
-  isPrListOpen: boolean
+  /** The badge's progress rows that are unfolded: 'prs', 'agents', 'qa'. */
+  openSections: string[]
   /** The clock as of the last tick, for spinners and elapsed times. */
   tick: number
   /** The pane is hidden from the band's point of view. */

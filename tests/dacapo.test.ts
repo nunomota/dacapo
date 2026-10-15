@@ -318,8 +318,8 @@ describe('the loop', () => {
       expect(await ui.find({ text: /Login page/ })).toBeDefined()
       expect(await ui.find({ type: 'Link' })).toBeDefined()
       expect(await ui.find({ text: /feat: add login page/ })).toBeDefined()
-      expect(await ui.find({ text: /1 pull request/ })).toBeDefined()
-      expect(await ui.find({ text: /1 draft/ })).toBeDefined()
+      expect(await ui.find({ text: /PRs \(1\)/ })).toBeDefined()
+      expect(await ui.find({ text: /Agents \(1\)/ })).toBeDefined()
       await ui.unmount()
     }
 
@@ -398,7 +398,8 @@ describe('the loop', () => {
       expect(await ui.find({ text: /QA round 1: fix needed/ })).toBeDefined()
       expect(await ui.find({ text: /error copy needs words/ })).toBeUndefined()
       await ui.press({ plugin: 'dacapo', key: 'qa-agent-2' })
-      expect(await ui.find({ text: /1 strong · 0 acceptable · 1 unacceptable → fix needed/ })).toBeDefined()
+      expect(await ui.find({ text: /→ fix needed/ })).toBeDefined()
+      expect(await ui.find({ text: /QA \(1\)/ })).toBeDefined()
       expect(await ui.find({ text: /error copy needs words/ })).toBeDefined()
       await ui.press({ plugin: 'dacapo', key: 'qa-agent-2' })
       expect(await ui.find({ text: /error copy needs words/ })).toBeUndefined()
