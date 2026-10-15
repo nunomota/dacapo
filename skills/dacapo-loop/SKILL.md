@@ -1,11 +1,11 @@
 ---
 name: dacapo-loop
-description: The dacapo loop as a host-agnostic specification - three roles (orchestrator, workers, QA) and their boundaries, what a host must guarantee, the inputs written before any code exists, the worker and QA report contracts, and the decision rules of each phase (clarify, research, plan, implement, qa, merge). Loaded by /dacapo here, and readable by any other orchestrator that runs agents and lands their work its own way.
+description: The dacapo loop as a specification for any orchestrator that runs agents and lands their work its own way: three roles (orchestrator, workers, QA) and their boundaries, what a host must guarantee, the inputs written before any code exists, the worker and QA report contracts, and the decision rules of each phase (clarify, research, plan, implement, qa, merge).
 ---
 
 # dacapo-loop
 
-dacapo builds a request in rounds until its end user would accept it. The **orchestrator** clarifies the request, plans independent tasks and the QA they will be judged by, then reads every outcome and decides the next round. **Workers**, one per task, each build one piece in isolation and land it. **QA** uses the integrated result as its end user and scores it against a rubric written before any code existed. A host runs the agents, integrates what lands and reports back; this file says what each role does and what the host must guarantee, never how a host does it.
+dacapo builds a request in rounds until its end user would accept it. The **orchestrator** clarifies the request, plans independent tasks and the QA they will be judged by, then reads every outcome and decides the next round. **Workers**, one per task, each build one piece in isolation and land it. **QA** uses the integrated result as its end user and scores it against a rubric written before any code existed. A host runs the agents, integrates what lands and reports back. This file says what each role does and what the host must guarantee, never how a host does it.
 
 If a person invoked this skill directly rather than a host loading it, tell them this file is the loop's specification and that the `/dacapo` command is what runs it.
 
@@ -22,44 +22,44 @@ If a person invoked this skill directly rather than a host loading it, tell them
 ### Orchestrator
 
 Responsible for:
-- Clarifying the request with the user; it is the only role in conversation with the user.
+- Clarifying the request with the user, the only role in conversation with the user.
 - Researching the stack, its versions and its build and test commands.
 - Splitting the work into independent tasks with explicit contracts.
 - Writing every input before code exists: briefs, landing titles, build and test commands, rubric, harness.
 - Reading outcomes and reports, and deciding each next round.
-- Asking the host to integrate the run, and the final report.
+- Asking the host to integrate the run, and writing the final report.
 
 Never:
-- Edits files, writes code, or integrates landed work itself.
-- Writes the system instructions of workers or QA; the host provides them.
-- Copies the standing worker instructions into briefs when the host already hands them over.
-- Asks the host for news over and over; the host reports outcomes unasked.
-- Re-scores, argues with or overrides a QA verdict.
-- Reshapes the rubric after seeing what was built.
+- Edit files, write code or integrate landed work itself.
+- Write the system instructions of workers or QA (the host provides them).
+- Copy the standing worker instructions into briefs when the host already hands them over.
+- Ask the host for news over and over (the host reports outcomes unasked).
+- Re-score, argue with or override a QA verdict.
+- Reshape the rubric after seeing what was built.
 
 Cannot see:
-- A worker's work before it lands: only its report and the host's landed or not landed fact.
-- QA's method: only its report.
+- A worker's work before it lands (only its report and the host's landed or not landed fact).
+- QA's method (only its report).
 
 ### Workers
 
 Responsible for:
-- Exactly one task, inside the sandbox the host prepared.
+- Building exactly one task, inside the sandbox the host prepared.
 - Building and testing before landing; fixing the errors and warnings it introduced, and leaving alone those the brief marks as expected.
 - Leaving the work in clean, reviewable units under the planned landing title.
 - Reconciling its own work when landing is refused because the base moved, and fixing failing checks, within a bounded number of fix rounds.
 - Landing before reporting, and naming what it deliberately left out.
 
 Never:
-- Spawns agents.
-- Leaves its sandbox or changes where it works.
-- Touches another task's work.
-- Changes the integration target other than through the landing path.
-- Talks to the user.
-- Reports finished before its work has landed.
+- Spawn agents.
+- Leave its sandbox or change where it works.
+- Touch another task's work.
+- Change the integration target other than through the landing path.
+- Talk to the user.
+- Report finished before its work has landed.
 
 Cannot see:
-- Other workers' work mid-flight: the contracts in its brief are all it knows of them.
+- Other workers' work mid-flight (the contracts in its brief are all it knows of them).
 - The orchestrator's conversation with the user.
 - The rubric and the harness.
 
@@ -73,14 +73,14 @@ Responsible for:
 - Stopping every process it started.
 
 Never:
-- Reads, searches or opens source by any means, including the shell it keeps to run the product.
-- Edits anything but its report.
-- Spawns agents.
-- Decides the verdict.
+- Read, search or open source by any means, including the shell it keeps to run the product.
+- Edit anything but its report.
+- Spawn agents.
+- Decide the verdict.
 
 Cannot see:
-- The source, the workers' reports, the orchestrator's conversation.
-- Anything beyond what it is handed: what was built (the run's one-line request and a user-visible note on the round), the harness, the rubric, and where to write its report.
+- The source, the workers' reports and the orchestrator's conversation.
+- Anything beyond what it is handed (what was built, as the run's one-line request and a user-visible note on the round; the harness; the rubric; where to write its report).
 
 ## What a host must guarantee
 
@@ -150,6 +150,7 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 2. QA's report has `items`, one per rubric id, each with `id`, `score` and a `note` of one to three sentences, and an `overview`. Scores: `strong` (clearly met), `acceptable` (technically passes, improvements recommended), `unacceptable` (fails, must be fixed). The host derives the verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any is acceptable and none unacceptable; `pass` otherwise. You receive the verdict, the counts, every item below strong and the overview.
 3. If the host says the report is invalid, run QA again with a clearer harness, or decide without it.
 4. Decide. On `fix`, plan the fixes and go back to phase 4: a fix round is a new set of tasks (resuming a task whose landed work is at fault counts as one). On `pass-with-recommendations`, decide whether the recommendations are worth a round; usually one more is. On `pass`, go to phase 6.
+5. A loop ends. After a `fix` verdict on the same items twice in a row, or after one round of recommendations has been taken, stop iterating. Merge on `pass` or `pass-with-recommendations`; on a repeated `fix`, ask the user how to proceed.
 
 ## Phase 6: merge
 
@@ -165,3 +166,4 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 - The verdict is derived from the scores, never negotiated.
 - The orchestrator is the only role that talks to the user.
 - Prefer finishing over polishing forever: when QA passes, merge.
+- A loop ends: it does not polish forever, and it does not retry the same failure without the user.
