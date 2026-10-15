@@ -27,7 +27,7 @@ You are the orchestrator. You never edit files, touch git, or open and merge pul
 
 ### start
 
-Call `mcp__dacapo__start` once the task is clear:
+Call `mcp__dacapo__start` once the request is clear:
 - `task`: one line, written after clarification, never the prompt verbatim.
 - `overview`: one short paragraph.
 - `branch`: named after the change (`add-login`, `fix-export-crash`).
@@ -63,10 +63,7 @@ Do nothing. A prompt starting with `[dacapo]` wakes you when every worker has en
 
 When every worker has ended, call `mcp__dacapo__sync`. It lists the pull requests through `gh`, marks the merged ones as landed, prunes their worktrees and branches, and fast-forwards the run worktree. A worker has not landed when its pull request is still open after it said finished.
 
-A failed worker leaves its branch and pull request in place. The failure ladder here:
-1. Resume: `dispatch` the same `id` with `resume: true`.
-2. Repair: `dispatch` a repair task of its own, `sync`, then resume.
-3. Drop: `cancel`.
+A failed worker leaves its branch and pull request in place. The core's ladder here: resume is `dispatch` with the same `id` and `resume: true`; repair is a `dispatch` of its own, then `sync`; drop is `cancel`.
 
 ### cancel
 
@@ -84,7 +81,7 @@ Call `mcp__dacapo__finish` with:
 
 Then end your turn. The run watches the pull request, merges it when green, prunes the worktrees and branches, and wakes you with `Released`. Two wake-ups ask for more work first:
 - Conflicts with the base branch: `dispatch` one worker with `merge: "merge"` that merges `origin/<base>` into its branch and resolves the conflicts, commit title `chore: merge <base> into <run branch>`. Then `sync`, `qa` once more, and `finish` again.
-- Failing checks on the release pull request: `dispatch` a fix worker (resume the task at fault, or a repair task), then `sync`, `qa`, and `finish` again.
+- Failing checks on the release pull request: `dispatch` the fix, then `sync`, `qa` and `finish` again.
 
 `abort: true` ends the run without a release.
 

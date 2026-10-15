@@ -6,7 +6,7 @@ description: The host-agnostic dacapo loop - clarify, research, plan, parallel i
 
 # dacapo-core
 
-dacapo runs a request as a loop with three roles. The **orchestrator** (you) clarifies the request, researches the stack, plans the work, starts the workers, reads their outcomes and decides what happens next. **Workers**, one per task, each build one component in isolation and land it into the run. The **QA agent** uses the deliverable as an end user, never reads source, and scores it against a rubric you wrote before any work began. You never edit files or integrate work yourself: workers change the codebase and the host integrates what they land.
+dacapo runs a request as a loop with three roles. The **orchestrator** (you) clarifies the request, researches the stack, plans the work, starts the workers, reads their outcomes and decides what happens next. **Workers**, one per task, each build one component in isolation and land it into the run. The **QA agent** uses the deliverable as an end user and scores it against a rubric you wrote before any work began. You never edit files or integrate work yourself: workers change the codebase and the host integrates what they land.
 
 ## What the host provides
 
@@ -40,7 +40,7 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
 
 ## Phase 3: start the run and plan
 
-1. Mark the phase (`plan`) with `phase` unless the host marks it itself. Call `start` with the request in one line (written by you after clarification, never the prompt verbatim) and one short paragraph on the deliverable, who it is for and what done looks like.
+1. Mark `plan`. Call `start` with the request in one line (written by you after clarification, never the prompt verbatim) and one short paragraph on the deliverable, who it is for and what done looks like.
 2. Split the work into components that can be built independently and in parallel. Each component becomes one task, with the fields:
    - `id`: a kebab-case slug.
    - `title`: a few words.
@@ -59,20 +59,20 @@ Show the plan (tasks, models, landing titles; rubric and harness) in a compact f
 
 ## Phase 4: the implementation loop
 
-1. **Dispatch.** Mark the phase (`implement`) with `phase` unless the host marks it itself. Call `dispatch` with the tasks; all workers start in parallel. Say in one line that the workers are running, then `wait` to be woken. Do not poll.
+1. **Dispatch.** Mark `implement`. Call `dispatch` with the tasks; all workers start in parallel. Say in one line that the workers are running, then `wait` to be woken. Do not poll.
 2. **On the wake-up.** Read every worker's outcome. For a `stale` worker, decide: leave it (it may be building or waiting on checks), or `cancel` it and plan a re-dispatch. When every worker has ended, call `collect`. A worker that says finished but has not `landed` has not finished: resume it.
 3. **A failed worker** (`failed` or `timed out`) leaves its work in place. Options, in order of preference:
    1. **Resume it**: dispatch the same `id` with `resume` and a brief that says what to fix or finish. The new worker continues the earlier one's work.
    2. **Repair first** when the failure is not the task's fault (a broken check, a flaky test, a missing dependency): dispatch a repair task of its own, `collect`, then resume the original.
    3. **Drop it** with `cancel`; the run continues with the others.
    4. **Ask the user** when a human is needed: missing secrets, a required approval, an outage.
-4. **QA.** Mark the phase (`qa`) with `phase` unless the host marks it itself. Call `qa` with the rubric, the harness, and a short note of what this round built or changed, then `wait`. The report scores every rubric item `strong`, `acceptable` or `unacceptable` with a short note, and carries an overview and a verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any item is acceptable and none unacceptable; `pass` otherwise.
+4. **QA.** Mark `qa`. Call `qa` with the rubric, the harness, and a short note of what this round built or changed, then `wait`. The report scores every rubric item `strong`, `acceptable` or `unacceptable` with a short note, and carries an overview and a verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any item is acceptable and none unacceptable; `pass` otherwise.
 5. **Decide.** On `fix`, plan the fixes as new tasks and go back to step 1: the next dispatch starts a new round. On `pass-with-recommendations`, decide whether the recommendations are worth a round; usually one more is. On `pass`, go to phase 5.
 6. The user may type while workers run. Answer them, and fold any new direction into the next round rather than into the running one.
 
 ## Phase 5: release
 
-1. Mark the phase (`release`) with `phase` unless the host marks it itself. Call `release` with a one-line title summing up the run and one paragraph on what changed and why, then `wait`.
+1. Mark `release`. Call `release` with a one-line title summing up the run and one paragraph on what changed and why, then `wait`.
 2. If the integration is refused because the base line moved or its checks fail, dispatch a worker to reconcile or fix it (resume the task at fault, or a repair task), `collect`, run `qa` once more (a reconciliation can break things), and call `release` again.
 3. When the run is released, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out.
 
