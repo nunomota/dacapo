@@ -9,5 +9,5 @@
       "source": "./"
     }
   ],
-  "description": "dacapo: an orchestrated implementation loop for Claude Code with worker worktrees, squash merges and end-user QA"
+  "description": "dacapo: an orchestrated build loop for Claude Code with parallel worker worktrees, GitHub pull requests and end-user QA"
 }
