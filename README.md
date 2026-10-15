@@ -78,7 +78,7 @@ The orchestrator calls these; the `dacapo` skill says when.
 | Skill | Purpose |
 | --- | --- |
 | `/dacapo` | The entry point: loads the loop and binds it to this mod's tools and subagents. |
-| `/dacapo-loop` | The loop itself, host-agnostic, for any orchestrator that has its own way to dispatch agents and merge their work. |
+| `/dacapo-loop` | The loop's specification: roles, boundaries, host guarantees, report contracts and decision rules, for other orchestrators to follow with their own way to run agents and land work. |
 | `/clean-commits` | The commit rules workers follow. |
 | `/clean-prs` | The pull request rules workers and the final pull request follow. |
 
