@@ -58,10 +58,6 @@ You can type while workers run. Your prompts become events in the timeline and a
 
 The header reads like fastfetch: the task, elapsed time, branch, models and spend, then a phase bar whose done phases are grey, current phase colored and named, phases ahead hollow. Three rows count pull requests by state, agents by outcome and QA rounds by verdict, each expanding to its items. Below them the timeline is a tree of everything that happened: your messages, the orchestrator's answers, every worker with a link to its pull request, every QA round with its scores. It shows the latest five events and folds the rest behind `earlier`.
 
-<p align="center">
-  <img src="docs/pane-collapsed.png" alt="The pane with the timeline folded" width="620">
-</p>
-
 One color code throughout: teal in progress, green done, yellow done with limitations or recommendations, orange failed.
 
 ## Tools
