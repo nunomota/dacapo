@@ -64,14 +64,14 @@ If it answers that `gh` is missing, not logged in, or cannot reach the repositor
 Call `mcp__dacapo__dispatch` with `tasks` (and optionally a round `title` and `overview`, kept only in the run log). Map each task:
 - `id`, `title`: as given.
 - `prompt`: its brief. For a resumed task, the resume brief the loop's phase 4 describes.
-- `model`: `opus` for `strong`, `sonnet` for `fast`.
+- `model`: `opus` for the strong tier, `sonnet` for the fast tier.
 - `commit`: the landing title. A Conventional Commit line: types feat, fix, docs, style, refactor, test, chore, perf, ci, revert only; no scope in parentheses; at most 72 characters.
 - `build`, `test`: the commands.
 - `context`: a list of `{ name, text }` files placed under `.context/`.
 - `resume: true`: continue the earlier worker of the same `id` on its branch, worktree and pull request.
 - `merge: "merge"`: only for a branch that merges the base branch into the run branch. Otherwise leave it out (squash).
 
-This host already gives every worker its standing instructions with the brief it writes. They cover building and testing, fixing what it introduced, clean commits, landing through the pull request, and the report and its last line. Do not copy them into the task `prompt`. Put only the task itself and its contracts there.
+This host already gives every worker its standing instructions with the brief it writes. They cover building and testing, fixing what it introduced, clean commits, landing through the pull request, and the report and its last line. Put only the task itself and its contracts in the task `prompt`.
 
 The reply lists one `Agent` call per task. Make them yourself, all in one message, exactly as listed: `subagent_type: "dacapo:worker"`, the listed description, and the prompt `dacapo worker <id>`. Never write the prompts yourself; the run fills in the brief, model, worktree and background mode. Then end your turn, saying in one line that the workers run. Each worker opens its draft pull request after its first commit.
 
@@ -84,7 +84,7 @@ The reply lists one `Agent` call per task. Make them yourself, all in one messag
 
 ### sync
 
-`sync` is how the loop learns each worker's outcome and brings landed work into the run. When every worker has ended, call `mcp__dacapo__sync`. It lists the pull requests through `gh`, marks the merged ones as landed, prunes their worktrees and branches, and fast-forwards the run worktree. Call it before `qa`, and after a repair task before resuming the original.
+`sync` is how the loop learns each worker's outcome and brings landed work into the run. When every worker has ended, call `mcp__dacapo__sync`. It lists the pull requests through `gh`, marks the merged ones as landed, prunes their worktrees and branches, and fast-forwards the run worktree. Call it before `qa`.
 
 ### cancel
 
@@ -101,8 +101,8 @@ Call `mcp__dacapo__finish` with:
 - `body`: the paragraph of the loop's phase 6 step 1, to the `clean-prs` rules, with a `Verified:` line and an optional `Notes:` line. No attribution lines of any kind.
 
 Then end your turn. The run watches the pull request and merges it when green. It then prunes the worktrees and branches, and wakes you with `Merged into <base>`. Two wake-ups ask for more work first:
-- Conflicts with the base branch: `dispatch` one worker with `merge: "merge"`. It merges `origin/<base>` into its branch and resolves the conflicts, under the commit title `chore: merge <base> into <run branch>`. Then `sync`, `qa` once more, and `finish` again.
-- Failing checks on the final pull request: `dispatch` the fix, then `sync`, `qa` and `finish` again.
+- Conflicts with the base branch: `dispatch` one worker with `merge: "merge"`. It merges `origin/<base>` into its branch and resolves the conflicts, under the commit title `chore: merge <base> into <run branch>`. Then `sync`, then `qa`, then decide as the loop's phase 6 step 2 says. Call `finish` again only when that decision sends you there.
+- Failing checks on the final pull request: `dispatch` the fix, then `sync`, then `qa`, then decide as the loop's phase 6 step 2 says. Call `finish` again only when that decision sends you there.
 
 `abort: true` ends the run without a final pull request.
 
