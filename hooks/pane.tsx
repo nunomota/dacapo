@@ -320,11 +320,18 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           </Text>
         </Box>
       )}
-      <Box marginY={1}>
+      <Box marginTop={1}>
         <Text dimColor wrap="truncate-end">
           {'─'.repeat(Math.max(10, width - 12))}
         </Text>
       </Box>
+      {entries.length > 0 ? (
+        <Box width={ICON_COLS} flexShrink={0} alignItems="center" flexDirection="column">
+          <Text dimColor>│</Text>
+        </Box>
+      ) : (
+        ''
+      )}
       {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
     </Box>
   )
@@ -370,8 +377,9 @@ function drawEntry(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, 
   const textWidth = Math.max(16, width - ICON_COLS - 3)
   const card = entry.kind === 'agent' ? agentCard(els, entry.row, theme, now, run, textWidth) : messagesCard(els, entry.rows, textWidth)
   const isOpen = ui.expanded.includes(card.id)
-  // the line covers the subline, the body when open, and the blank row before the next entry
-  const lineRows = 1 + (isOpen ? card.bodyRows : 0) + (isLast ? 0 : 1)
+  // the line joins this icon to the next one: it covers the subline, the body when open, and the blank row before
+  // the next entry; after the last entry there is nothing to join
+  const lineRows = isLast ? 0 : 1 + (isOpen ? card.bodyRows : 0) + 1
   return (
     <Box key={`entry-${card.id}`} flexDirection="row" alignItems="flex-start" overflow="hidden">
       <Box flexDirection="column" width={ICON_COLS} flexShrink={0} alignItems="center">
