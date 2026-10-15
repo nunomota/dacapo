@@ -1,13 +1,13 @@
 ---
-name: dacapo-loop
+name: loop
 description: The dacapo loop as a specification for any orchestrator that runs agents and lands their work its own way. It covers three roles (orchestrator, workers, QA) and their boundaries, what a host must guarantee, and the inputs written before any code exists. It also gives the worker and QA report contracts, the decision rules of each phase (clarify, research, plan, implement, qa, merge), and what keeps rounds repeatable: the hazards research must find, the evidence briefs ask for, and the decision record a run leaves behind.
 ---
 
-# dacapo-loop
+# loop
 
 dacapo builds a request in rounds until its end user would accept it. Three roles run the loop: the **orchestrator**, the **workers** and **QA**. A host runs the agents and integrates what lands. This file says what each role does and what the host must guarantee, never how a host does it.
 
-If a person invoked this skill directly rather than a host loading it, tell them two things. This file is the loop's specification, and the `/dacapo` command is what runs it.
+If a person invoked this skill directly rather than a host loading it, tell them two things. This file is the loop's specification, and the `/dacapo:core` command is what runs it.
 
 ## Roles
 

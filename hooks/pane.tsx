@@ -442,7 +442,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   if (!run) {
     return (
       <Box flexDirection="column">
-        <Text dimColor>No dacapo run in this session. Start one with /dacapo.</Text>
+        <Text dimColor>No dacapo run in this session. Start one with /dacapo:core.</Text>
       </Box>
     )
   }

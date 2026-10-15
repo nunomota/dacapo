@@ -116,7 +116,7 @@ describe('the pane', () => {
     }
   })
 
-  test('the /dacapo prompt opens a run and becomes the first row', async ($, on) => {
+  test('the /dacapo:core prompt opens a run and becomes the first row', async ($, on) => {
     mock.clock(on, { now: Date.UTC(2026, 9, 10, 12, 0, 0) })
     on('session.start', (_, e) => ({ cwd: e.cwd }))
     on('prompt.submit', (_, e) => ({ text: e.text }))
@@ -127,7 +127,7 @@ describe('the pane', () => {
     on('ui.open', () => ({ value: { isPlaced: true as const } }))
     on('process.run', () => ({ value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }))
     await $.session.start({ cwd: '/tmp/dacapo-test', surface: 'terminal', isInteractive: true })
-    await $.prompt.submit({ text: '/dacapo build a todo app', wait: false, origin: { kind: 'composer' } })
+    await $.prompt.submit({ text: '/dacapo:core build a todo app', wait: false, origin: { kind: 'composer' } })
     await $.prompt.submit({ text: 'also keep it tiny', wait: false, origin: { kind: 'composer' } })
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
@@ -249,7 +249,7 @@ describe('the loop', () => {
     const RED = [{ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'FAILURE' }]
 
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-    await $.prompt.submit({ text: '/dacapo build a login page', wait: false, origin: { kind: 'composer' } })
+    await $.prompt.submit({ text: '/dacapo:core build a login page', wait: false, origin: { kind: 'composer' } })
 
     // without gh the run cannot start, and the orchestrator is told how to help
     const noGh = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page' } as never)
