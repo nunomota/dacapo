@@ -17,7 +17,7 @@ dacapo runs a task as a loop with three roles. The **orchestrator** (you) clarif
 - `cancel`: stop a worker and discard what it has not landed.
 - `qa`: start the QA agent on the current state of the run with the rubric and harness; receive the scored report.
 - `release`: integrate the run into the base line.
-- `phase`: mark where the loop stands (clarify, research, plan, implement, qa, release).
+- `phase`: mark where the loop stands (clarify, research, plan, implement, qa, release). Mark each later phase (plan, implement, qa, release) as you enter it unless the host marks it itself; the binding says which ones this host marks.
 
 The loaded binding describes how each operation is done in the host at hand. A worker's outcome is one of `landed`, `failed`, `stale`, `timed out` or `cancelled`.
 
@@ -40,13 +40,13 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
 
 ## Phase 3: start the run and plan
 
-1. Call `start` with the task in one line (written by you after clarification, never the prompt verbatim) and one short paragraph on the deliverable, who it is for and what done looks like. If the host cannot open the run because a prerequisite is missing, stop and help the user fix it, then call `start` again. Do not plan around it.
+1. Call `start` with the task in one line (written by you after clarification, never the prompt verbatim) and one short paragraph on the deliverable, who it is for and what done looks like.
 2. Split the work into components that can be built independently and in parallel. Each component becomes one task brief:
    - `id`: a kebab-case slug.
    - `title`: a few words.
-   - `brief`: the complete prompt for a subagent that knows nothing else: what to build, which files or modules, the interfaces it must expose or consume, the research facts that matter, constraints, and what finished looks like. Workers cannot see each other's work, so name the contracts between components explicitly (routes, types, function signatures, file names).
+   - `brief`: the complete prompt for a worker that knows nothing else: what to build, which files or modules, the interfaces it must expose or consume, the research facts that matter, constraints, and what finished looks like. Workers cannot see each other's work, so name the contracts between components explicitly (routes, types, function signatures, file names).
    - `model`: `strong` for complex, cross-cutting or design-heavy work; `fast` for contained, well-specified work.
-   - `landing title`: the Conventional Commit line the work lands under, such as `feat: add login endpoint`. Allowed types: feat, fix, docs, style, refactor, test, chore, perf, ci, revert. No scope in parentheses, at most 72 characters.
+   - `landing title`: the one-line title the work lands under, in the form the host requires.
    - `build`: the command that must pass before the worker lands. `test`: the test command, if any.
    - `context`: optional extra files (API notes, fixtures, a design sketch).
    Every worker is told to build, to fix errors and warnings it introduced unless expected, to keep its work in clean commits, and to land it before it reports finished.
@@ -72,7 +72,7 @@ Show the plan (tasks, models, landing titles; rubric and harness) in a compact f
 
 ## Phase 5: release
 
-1. Call `release` with a Conventional Commit line summing up the run and one paragraph on what changed and why, then `wait`.
+1. Call `release` with a one-line title summing up the run and one paragraph on what changed and why, then `wait`.
 2. If the integration is refused because the base line moved or its checks fail, dispatch a worker to reconcile or fix it (resume the task at fault, or a repair task), `collect`, run `qa` once more (a reconciliation can break things), and call `release` again.
 3. When the run is released, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out.
 
