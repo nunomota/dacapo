@@ -1,13 +1,13 @@
 {
-  "name": "claude-task-loop",
+  "name": "dacapo",
   "owner": {
     "name": "Nuno Mota"
   },
   "plugins": [
     {
-      "name": "task-loop",
+      "name": "dacapo",
       "source": "./"
     }
   ],
-  "description": "task-loop: an orchestrated implementation loop for Claude Code with worker worktrees, squash merges and end-user QA"
+  "description": "dacapo: an orchestrated implementation loop for Claude Code with worker worktrees, squash merges and end-user QA"
 }

@@ -175,7 +175,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   if (!run) {
     return (
       <Box flexDirection="column">
-        <Text dimColor>No task-loop run in this session. Start one with /task-loop.</Text>
+        <Text dimColor>No dacapo run in this session. Start one with /dacapo.</Text>
       </Box>
     )
   }
@@ -460,7 +460,7 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   if (qa) second.push(`QA ${verdictWord(qa)}`)
   if (money) second.push(money)
 
-  const first = `task-loop${SEP}${run.phase}`
+  const first = `dacapo${SEP}${run.phase}`
   const buttons = (
     <Box flexDirection="row" flexShrink={0}>
       <Button key="open-pane" plain onPress={() => act.openPane()}>
@@ -489,7 +489,7 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
     <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
       <Text wrap="truncate-end">
         <Text color="claude" bold>
-          task-loop
+          dacapo
         </Text>
         <Text dimColor>{SEP}</Text>
         <Text bold>{run.phase}</Text>

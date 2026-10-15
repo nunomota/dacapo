@@ -9,22 +9,22 @@ import { PHASES, drawBand, drawPane, elapsed, hhmm, isAgentRow, scoreLine, spend
 import { QA_SYSTEM, WORKER_SYSTEM, qaBrief, workerBrief } from './prompts'
 import { validateReport, validateRubric, type RubricItem } from './report'
 
-const PANE = 'task-loop'
-const WORKER_AGENT = 'task-loop:worker'
-const QA_AGENT = 'task-loop:qa'
-const tool = (name: string) => `mcp__task-loop__${name}`
+const PANE = 'dacapo'
+const WORKER_AGENT = 'dacapo:worker'
+const QA_AGENT = 'dacapo:qa'
+const tool = (name: string) => `mcp__dacapo__${name}`
 
 const STALE_MS = 30 * 60_000
 const TIMEOUT_MS = 2 * 60 * 60_000
 const TICK_MS = 1_000
-const WAKE_PREFIX = '[task-loop]'
+const WAKE_PREFIX = '[dacapo]'
 /** A wake-up whose turn has not started after this long is sent again, up to WAKE_TRIES times. */
 const WAKE_RETRY_MS = 30_000
 const WAKE_TRIES = 3
 
-const runAtom = atom({ plugin: 'task-loop', key: 'run' } as const, null)
-const rowsAtom = atom({ plugin: 'task-loop', key: 'rows' } as const, [])
-const uiAtom = atom({ plugin: 'task-loop', key: 'ui' } as const, {
+const runAtom = atom({ plugin: 'dacapo', key: 'run' } as const, null)
+const rowsAtom = atom({ plugin: 'dacapo', key: 'rows' } as const, [])
+const uiAtom = atom({ plugin: 'dacapo', key: 'ui' } as const, {
   collapsed: [],
   expanded: [],
   tick: 0,
@@ -76,8 +76,8 @@ const isLive = (row: WorkerRow | QaRow) => row.status === 'running' || row.statu
 const isTerminal = (row: WorkerRow | QaRow) => !isLive(row) && row.status !== 'pending'
 const pendingId = (kind: 'worker' | 'qa', iteration: number, key: string) => `pending-${kind}-${iteration}-${key}`
 /** The first line of every prompt the Agent hook hands a worker or QA agent; the spawn hook reads the worktree off it. */
-const WORKTREE_LINE = /^\[task-loop worktree: (.+)\]$/m
-const ASK_LINE = /^\s*task-loop (worker|qa) (\S+)\s*$/
+const WORKTREE_LINE = /^\[dacapo worktree: (.+)\]$/m
+const ASK_LINE = /^\s*dacapo (worker|qa) (\S+)\s*$/
 
 const isAgent = (id: string) => (r: Row): r is WorkerRow | QaRow => isAgentRow(r) && r.id === id
 
@@ -105,7 +105,7 @@ async function wake(key: string, text: string) {
   void io.submit(full).catch(() => undefined)
 }
 
-/** A wake-up counts as delivered when a turn starts whose text holds it; the engine may wrap the prompt ("The task-loop plugin sent a message: ..."). */
+/** A wake-up counts as delivered when a turn starts whose text holds it; the engine may wrap the prompt ("The dacapo plugin sent a message: ..."). */
 async function markDelivered(text: string) {
   const squash = (t: string) => t.replace(/\s+/g, ' ').trim()
   const seen = squash(text)
@@ -139,7 +139,7 @@ async function openRun(task: string, devBranch: string, mainBranch: string, at?:
     root,
     devBranch,
     mainBranch,
-    runDir: `${root}/.workspaces/.task-loop/${id}`,
+    runDir: `${root}/.workspaces/.dacapo/${id}`,
     devWorktree: '',
     phase: 'clarify',
     iterations: [],
@@ -199,7 +199,7 @@ function grow(stats: AgentStats, usage: Partial<AgentStats['usage']> | null, too
 
 function statusText(snap: Snapshot): string {
   const { run, rows, ui } = snap
-  if (!run) return 'No task-loop run.'
+  if (!run) return 'No dacapo run.'
   const lines = [`Run ${run.id}: ${run.status}, iteration ${run.iteration}, dev=${run.devBranch}, main=${run.mainBranch}`]
   const total = spendText(spend(rows.filter(isAgentRow), prices, run.orchestrator))
   lines[0] += `, phase ${run.phase}${total ? `, ${total}` : ''}`
@@ -247,7 +247,7 @@ async function start(a: Args) {
   }
   else if (root && !run.devWorktree) {
     const top = (await git.repoRoot(io, root)) ?? root
-    const moved: Run = { ...run, root: top, runDir: `${top}/.workspaces/.task-loop/${run.id}` }
+    const moved: Run = { ...run, root: top, runDir: `${top}/.workspaces/.dacapo/${run.id}` }
     await io.setRun(() => moved)
     run = moved
   }
@@ -359,7 +359,7 @@ async function dispatch(a: Args) {
     ...(started.length > 0
       ? [
           'Now start the workers: call the Agent tool once per task, all in one message, with exactly these arguments (the run fills in the brief, model, worktree and background mode):',
-          ...started.map(s => `- Agent({ subagent_type: "${WORKER_AGENT}", description: "${s.title.replace(/"/g, "'")}", prompt: "task-loop worker ${s.taskId}" })`),
+          ...started.map(s => `- Agent({ subagent_type: "${WORKER_AGENT}", description: "${s.title.replace(/"/g, "'")}", prompt: "dacapo worker ${s.taskId}" })`),
           'Then end your turn. A prompt wakes you when every worker has ended, or when one goes stale.',
         ]
       : ['Nothing to start.']),
@@ -467,7 +467,7 @@ async function qa(a: Args) {
     [
       `QA round ${round} for iteration ${iteration} prepared at ${worktree}.`,
       'Now start it: call the Agent tool with exactly these arguments (the run fills in the brief, model, worktree and background mode):',
-      `- Agent({ subagent_type: "${QA_AGENT}", description: "QA round ${round}", prompt: "task-loop qa ${iteration}-${round}" })`,
+      `- Agent({ subagent_type: "${QA_AGENT}", description: "QA round ${round}", prompt: "dacapo qa ${iteration}-${round}" })`,
       'Then end your turn; a prompt wakes you with the verdict and overview.',
     ].join('\n'),
   )
@@ -635,7 +635,7 @@ async function pushAfter(cwd: string, branch: string): Promise<string> {
   }
   const problem = out.kind === 'no-remote' ? `${branch} was not pushed: the repository has no origin remote.` : `${branch} was not pushed to origin: ${out.message}`
   await io.setRun(cur => (cur ? { ...cur, pushProblem: problem } : cur))
-  io.toast(`task-loop: ${problem} Work continues; push by hand when you can.`)
+  io.toast(`dacapo: ${problem} Work continues; push by hand when you can.`)
   return `${problem} Work continues; push by hand when convenient.`
 }
 
@@ -723,7 +723,7 @@ export const register: Register = (on, options) => {
       cwd: () => $.session.cwd(),
       stop: agentId => $.tool.call({ tool: 'TaskStop', task_id: agentId }),
       submit: text => $.prompt.submit({ text }),
-      openPane: focus => $.ui.open(focus ? { id: PANE, title: 'Task loop', focus: true } : { id: PANE, title: 'Task loop' }),
+      openPane: focus => $.ui.open(focus ? { id: PANE, title: 'Da capo', focus: true } : { id: PANE, title: 'Da capo' }),
       toast: text => $.ui.toast(text, { timeoutMs: 8_000 }),
       getRun: () => read($, runAtom),
       setRun: fn => update($, runAtom, fn),
@@ -737,7 +737,7 @@ export const register: Register = (on, options) => {
       $.tool.register({
         name: 'start',
         description:
-          'Begins (or confirms) the task-loop run for the task handed over: records the repository, creates the dev branch and its worktree if missing, and opens the timeline pane. Call once, after the task is clear.',
+          'Begins (or confirms) the dacapo run for the task handed over: records the repository, creates the dev branch and its worktree if missing, and opens the timeline pane. Call once, after the task is clear.',
         isDeferred: false,
         inputSchema: {
           type: 'object',
@@ -866,18 +866,18 @@ export const register: Register = (on, options) => {
       }),
       $.agent.register({
         name: 'worker',
-        description: 'task-loop worker: implements one planned task inside its own worktree. Spawned by the task-loop tools only.',
+        description: 'dacapo worker: implements one planned task inside its own worktree. Spawned by the dacapo tools only.',
         prompt: WORKER_SYSTEM,
         disallowedTools: ['Agent', 'EnterWorktree', 'ExitWorktree'],
       }),
       $.agent.register({
         name: 'qa',
-        description: 'task-loop QA: uses the deliverable as the end user and scores a rubric. Spawned by the task-loop tools only.',
+        description: 'dacapo QA: uses the deliverable as the end user and scores a rubric. Spawned by the dacapo tools only.',
         prompt: QA_SYSTEM,
         disallowedTools: ['Agent', 'Edit', 'NotebookEdit', 'EnterWorktree', 'ExitWorktree'],
         omitClaudeMd: true,
       }),
-      $.command.register({ name: 'task-loop-pane', description: 'Opens the task-loop timeline pane.' }),
+      $.command.register({ name: 'dacapo-pane', description: 'Opens the dacapo timeline pane.' }),
     ])
 
     $.clock.every(TICK_MS, () => void tick())
@@ -892,7 +892,7 @@ export const register: Register = (on, options) => {
     const ask = ASK_LINE.exec(str(a.prompt))
     if (!ask || e.agentId !== undefined) return next(e)
     const run = await currentRun()
-    if (!run) return { deny: 'task-loop: no active run; call mcp__task-loop__start first' }
+    if (!run) return { deny: 'dacapo: no active run; call mcp__dacapo__start first' }
     const rows = await io.getRows()
     const kind = ask[1] as 'worker' | 'qa'
     const key = ask[2]!
@@ -901,10 +901,10 @@ export const register: Register = (on, options) => {
     const row = rows.find((r): r is WorkerRow | QaRow => r.kind === kind && r.id === wanted)
     if (!row) {
       const expected = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && r.status === 'pending').map(r => (r.kind === 'worker' ? `worker ${r.taskId}` : `qa ${r.iteration}-${r.round}`))
-      return { deny: `task-loop: nothing pending for "${ask[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(kind === 'worker' ? 'dispatch' : 'qa')} first.` }
+      return { deny: `dacapo: nothing pending for "${ask[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(kind === 'worker' ? 'dispatch' : 'qa')} first.` }
     }
     const brief = row.kind === 'worker' ? await io.read(`${row.worktree}/.context/brief.md`) : qaPrompt(row.worktree)
-    const prompt = `[task-loop worktree: ${row.worktree}]\n\n${brief}\n\nStart now. Your working directory is the worktree above; every path you touch is under it.`
+    const prompt = `[dacapo worktree: ${row.worktree}]\n\n${brief}\n\nStart now. Your working directory is the worktree above; every path you touch is under it.`
     const ran = await next({
       ...e,
       prompt,
@@ -923,7 +923,7 @@ export const register: Register = (on, options) => {
       await patchRow(row.id, r => ({ ...r, note: `not started: ${note.slice(0, 300)}` }))
     }
     return ran
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'task-loop: the Agent call could not be prepared' }))
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'dacapo: the Agent call could not be prepared' }))
 
   on('agent.spawn', async ($, e, next) => {
     const line = WORKTREE_LINE.exec(e.prompt)
@@ -931,13 +931,13 @@ export const register: Register = (on, options) => {
     return next({ ...e, cwd: line[1]! })
   }).catch(($, e, next) => next(e))
 
-  on('command.run', { command: 'task-loop-pane' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Task loop', focus: true })
+  on('command.run', { command: 'dacapo-pane' }, async $ => {
+    await $.ui.open({ id: PANE, title: 'Da capo', focus: true })
     await update($, uiAtom, ui => ({ ...ui, isBandHidden: false }))
     return { text: 'Task-loop timeline opened.' }
   })
 
-  // ----- prompts: the /task-loop prompt opens a run; every later prompt during a run is a row -----
+  // ----- prompts: the /dacapo prompt opens a run; every later prompt during a run is a row -----
 
   on('prompt.submit', async ($, e, next) => {
     const text = e.text
@@ -949,12 +949,12 @@ export const register: Register = (on, options) => {
     // only what the person typed is a row: not a subagent's hand-back, a notification or another session's message
     const isTyped = ['composer', 'bridge', 'sdk', 'channel'].includes(e.origin.kind) && !/^\s*<agent-message\b/.test(text)
     if (!isTyped) return next(e)
-    const starts = /^\s*\/task-loop(?::task-loop)?(\s|$)/.exec(text)
+    const starts = /^\s*\/dacapo(?::dacapo)?(\s|$)/.exec(text)
     let run = await currentRun()
     if (starts) {
       const task = text.slice(starts[0].length).trim() || '(task to be clarified)'
       run = await openRun(task, 'dev', 'main')
-      void $.ui.open({ id: PANE, title: 'Task loop' })
+      void $.ui.open({ id: PANE, title: 'Da capo' })
     }
     if (run) {
       const now = await $.clock.now()
@@ -966,20 +966,20 @@ export const register: Register = (on, options) => {
 
   // ----- the tools -----
 
-  on('tool.call', { tool: 'mcp__task-loop__start' }, ($, e) => start(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__task-loop__dispatch' }, ($, e) => dispatch(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__task-loop__merge' }, () => merge()).catch(crashed)
-  on('tool.call', { tool: 'mcp__task-loop__qa' }, ($, e) => qa(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__task-loop__cancel' }, ($, e) => cancel(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__task-loop__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__task-loop__phase' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__dacapo__start' }, ($, e) => start(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__dispatch' }, ($, e) => dispatch(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__merge' }, () => merge()).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__qa' }, ($, e) => qa(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__cancel' }, ($, e) => cancel(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__phase' }, async ($, e) => {
     const phase = str((e as unknown as Args).phase) as Phase
     if (!PHASES.includes(phase)) return fail(`phase: one of ${PHASES.join(', ')}`)
     if (!(await currentRun())) return fail('phase: no active run')
     await setPhase(phase)
     return ok(`Phase: ${phase}.`)
   }).catch(crashed)
-  on('tool.call', { tool: 'mcp__task-loop__status' }, async () => {
+  on('tool.call', { tool: 'mcp__dacapo__status' }, async () => {
     const snap = await snapshot()
     return ok(statusText(snap))
   }).catch(crashed)
@@ -992,12 +992,12 @@ export const register: Register = (on, options) => {
     const a = e as unknown as Args
     if (e.agentId === undefined) {
       if (e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') {
-        return { deny: `task-loop: the orchestrator does not change files; only worker subagents do, through ${tool('dispatch')}.` }
+        return { deny: `dacapo: the orchestrator does not change files; only worker subagents do, through ${tool('dispatch')}.` }
       }
       if (e.tool === 'Bash') {
         const cmd = str(a.command)
         if (/\bgit\s+(-C\s+\S+\s+)?(commit|merge|rebase|push|checkout|switch|reset|worktree|cherry-pick|am|apply|stash|branch\s+(-[dDmM]|--delete|--move))\b/.test(cmd)) {
-          return { deny: 'task-loop: git history is changed only by the task-loop tools (merge, finish) and by worker subagents.' }
+          return { deny: 'dacapo: git history is changed only by the dacapo tools (merge, finish) and by worker subagents.' }
         }
       }
       return next(e)
@@ -1009,7 +1009,7 @@ export const register: Register = (on, options) => {
     if (row.kind === 'worker') {
       const target = str(a.file_path) || str(a.notebook_path)
       if ((e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') && target && !isUnder(target, row.worktree, row.worktree)) {
-        return { deny: `task-loop: write only inside your worktree ${row.worktree}` }
+        return { deny: `dacapo: write only inside your worktree ${row.worktree}` }
       }
       return next(e)
     }
@@ -1017,21 +1017,21 @@ export const register: Register = (on, options) => {
     if (e.tool === 'Read' || e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') {
       const target = str(a.file_path) || str(a.notebook_path)
       if (!isUnder(target, contextDir, row.worktree)) {
-        return { deny: `task-loop QA: you judge the deliverable as its user and never open source. Only ${contextDir} is readable or writable.` }
+        return { deny: `dacapo QA: you judge the deliverable as its user and never open source. Only ${contextDir} is readable or writable.` }
       }
       if ((e.tool === 'Write' || e.tool === 'Edit') && normalize(target, row.worktree) !== row.reportPath) {
-        return { deny: `task-loop QA: the only file you write is ${row.reportPath}` }
+        return { deny: `dacapo QA: the only file you write is ${row.reportPath}` }
       }
     }
     const name: string = e.tool
     if (name === 'Glob' || name === 'Grep') {
       const target = str(a.path) || row.worktree
       if (!isUnder(target, contextDir, row.worktree)) {
-        return { deny: `task-loop QA: searching the checkout is not allowed; use the product instead. Only ${contextDir} may be searched.` }
+        return { deny: `dacapo QA: searching the checkout is not allowed; use the product instead. Only ${contextDir} may be searched.` }
       }
     }
     return next(e)
-  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'task-loop: guard failed closed' }))
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: 'dacapo: guard failed closed' }))
 
   // ----- activity and completion of the agents -----
 

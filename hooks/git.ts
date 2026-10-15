@@ -35,7 +35,7 @@ export async function ensureExclude(io: Io, root: string): Promise<void> {
   const missing = wanted.filter(w => !lines.some(l => l.trim() === w || l.trim() === w.replace(/\/$/, '')))
   if (missing.length === 0) return
   const sep = had.length === 0 || had.endsWith('\n') ? '' : '\n'
-  await io.write(file, `${had}${sep}# task-loop\n${missing.join('\n')}\n`)
+  await io.write(file, `${had}${sep}# dacapo\n${missing.join('\n')}\n`)
 }
 
 /** Creates `dev` from `main` (or HEAD when `main` is missing) if it does not exist yet. */

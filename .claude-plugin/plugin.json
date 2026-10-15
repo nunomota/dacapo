@@ -1,12 +1,12 @@
 {
-  "name": "task-loop",
-  "version": "0.6.2",
-  "description": "Orchestrated implementation loop: parallel worker subagents in git worktrees, squash merges into dev, an end-user QA subagent with a scored rubric, and a live timeline pane.",
+  "name": "dacapo",
+  "version": "0.7.0",
+  "description": "Da capo: an orchestrated implementation loop that runs the piece again until it is right. Parallel worker subagents in git worktrees, squash merges into dev, an end-user QA subagent with a scored rubric, and a live timeline pane.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Nuno Mota"
   },
-  "repository": "https://github.com/nunomota/claude-task-loop",
+  "repository": "https://github.com/nunomota/dacapo",
   "license": "MIT",
   "userConfig": {
     "prices": {

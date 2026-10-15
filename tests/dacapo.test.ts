@@ -78,34 +78,34 @@ describe('timeline formatting', () => {
 
 const PANE = {
   component: 'Pane' as const,
-  requestId: 'task-loop',
-  props: { title: 'Task loop', isFocused: false, bodyColumns: 80, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  requestId: 'dacapo',
+  props: { title: 'Da capo', isFocused: false, bodyColumns: 80, placement: 'dock' as const, scroll: { offset: 0, bodyRows: 30 }, view: {} },
 }
 
 describe('the pane', () => {
   test('with no run it says so on every surface', async $ => {
     for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'task-loop', surface, ...PANE })
-      expect(await ui.find({ type: 'Text', text: /No task-loop run/ })).toBeDefined()
+      const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
+      expect(await ui.find({ type: 'Text', text: /No dacapo run/ })).toBeDefined()
       await ui.unmount()
     }
   })
 
-  test('the /task-loop prompt opens a run and becomes the first row', async ($, on) => {
+  test('the /dacapo prompt opens a run and becomes the first row', async ($, on) => {
     mock.clock(on, { now: Date.UTC(2026, 9, 10, 12, 0, 0) })
     on('session.start', (_, e) => ({ cwd: e.cwd }))
     on('prompt.submit', (_, e) => ({ text: e.text }))
-    on('session.cwd', () => ({ value: '/tmp/task-loop-test' }))
-    on('tool.register', (_, e) => ({ value: { tool: `mcp__task-loop__${e.name}` } }))
-    on('agent.register', (_, e) => ({ value: { agent: `task-loop:${e.name}` } }))
+    on('session.cwd', () => ({ value: '/tmp/dacapo-test' }))
+    on('tool.register', (_, e) => ({ value: { tool: `mcp__dacapo__${e.name}` } }))
+    on('agent.register', (_, e) => ({ value: { agent: `dacapo:${e.name}` } }))
     on('command.register', (_, e) => ({ value: { command: e.name } }))
     on('ui.open', () => ({ value: { isPlaced: true as const } }))
     on('process.run', () => ({ value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }))
-    await $.session.start({ cwd: '/tmp/task-loop-test', surface: 'terminal', isInteractive: true })
-    await $.prompt.submit({ text: '/task-loop build a todo app', wait: false, origin: { kind: 'composer' } })
+    await $.session.start({ cwd: '/tmp/dacapo-test', surface: 'terminal', isInteractive: true })
+    await $.prompt.submit({ text: '/dacapo build a todo app', wait: false, origin: { kind: 'composer' } })
     await $.prompt.submit({ text: 'also keep it tiny', wait: false, origin: { kind: 'composer' } })
     for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'task-loop', surface, ...PANE })
+      const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
       expect(await ui.find({ type: 'Text', text: /build a todo app/ })).toBeDefined()
       expect(await ui.find({ text: /User messages \(2\)/ })).toBeDefined()
       expect(await ui.find({ text: /also keep it tiny/ })).toBeDefined()
@@ -128,8 +128,8 @@ describe('the loop', () => {
       return { text: e.text }
     })
     on('session.cwd', () => ({ value: '/repo' }))
-    on('tool.register', (_, e) => ({ value: { tool: `mcp__task-loop__${e.name}` } }))
-    on('agent.register', (_, e) => ({ value: { agent: `task-loop:${e.name}` } }))
+    on('tool.register', (_, e) => ({ value: { tool: `mcp__dacapo__${e.name}` } }))
+    on('agent.register', (_, e) => ({ value: { agent: `dacapo:${e.name}` } }))
     on('command.register', (_, e) => ({ value: { command: e.name } }))
     on('ui.open', () => ({ value: { isPlaced: true as const } }))
     on('fs.write', (_, e) => {
@@ -164,50 +164,50 @@ describe('the loop', () => {
       nextAgent += 1
       return { result: { agentId: `agent-${nextAgent}`, content: [{ type: 'text' as const, text: 'started' }] } }
     })
-    const startAgent = (prompt: string) => $.tool.call({ tool: 'Agent', prompt, description: 'x', subagent_type: 'task-loop:worker' })
+    const startAgent = (prompt: string) => $.tool.call({ tool: 'Agent', prompt, description: 'x', subagent_type: 'dacapo:worker' })
 
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-    await $.prompt.submit({ text: '/task-loop build a login page', wait: false, origin: { kind: 'composer' } })
-    const started = await $.tool.call({ tool: 'mcp__task-loop__start', task: 'Build a login page' } as never)
+    await $.prompt.submit({ text: '/dacapo build a login page', wait: false, origin: { kind: 'composer' } })
+    const started = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page' } as never)
     expect('result' in started && started.result).toMatch(/Run .* ready/)
     const runId = /Run (\S+) ready/.exec(String('result' in started ? started.result : ''))?.[1] ?? ''
 
     const bad = await $.tool.call({
-      tool: 'mcp__task-loop__dispatch',
+      tool: 'mcp__dacapo__dispatch',
       title: 'Login page and docs',
       tasks: [{ id: 'login', title: 'Login page', prompt: 'Build it', model: 'sonnet', commit: 'update(login): stuff' }],
     } as never)
     expect('isError' in bad && bad.isError).toBe(true)
 
     const dispatched = await $.tool.call({
-      tool: 'mcp__task-loop__dispatch',
+      tool: 'mcp__dacapo__dispatch',
       title: 'Login page and docs',
       overview: 'Build the login page first; docs follow.',
       tasks: [{ id: 'login', title: 'Login page', prompt: 'Build the login page.', model: 'sonnet', commit: 'feat: add login page', build: 'npm run build' }],
     } as never)
-    expect('result' in dispatched && dispatched.result).toMatch(/prompt: "task-loop worker login"/)
+    expect('result' in dispatched && dispatched.result).toMatch(/prompt: "dacapo worker login"/)
     expect(files.get('/repo/.workspaces/task/1-login/.context/brief.md')).toMatch(/npm run build/)
-    expect(files.get(`/repo/.workspaces/.task-loop/${runId}/iteration-1-login.md`)).toMatch(/clean-commits/)
-    const pendingStatus = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
+    expect(files.get(`/repo/.workspaces/.dacapo/${runId}/iteration-1-login.md`)).toMatch(/clean-commits/)
+    const pendingStatus = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in pendingStatus && pendingStatus.result).toMatch(/login \[pending-worker-1-login\] waiting to start/)
     // a merge cannot run while a worker is still to be started
-    const early = await $.tool.call({ tool: 'mcp__task-loop__merge' } as never)
+    const early = await $.tool.call({ tool: 'mcp__dacapo__merge' } as never)
     expect('isError' in early && early.isError).toBe(true)
     // an Agent call that names nothing pending is refused; the right one is filled in from the run
-    const wrong = await startAgent('task-loop worker nope')
+    const wrong = await startAgent('dacapo worker nope')
     expect('deny' in wrong && typeof wrong.deny === 'string').toBe(true)
     await clock.advance(1_000)
-    const startedWorker = await startAgent('task-loop worker login')
+    const startedWorker = await startAgent('dacapo worker login')
     expect('result' in startedWorker).toBe(true)
     const call = agentCalls[0]!
-    expect(call.subagent_type).toBe('task-loop:worker')
+    expect(call.subagent_type).toBe('dacapo:worker')
     expect(call.model).toBe('sonnet')
     expect(call.run_in_background).toBe(true)
-    expect(String(call.prompt)).toMatch(/^\[task-loop worktree: \/repo\/.workspaces\/task\/1-login\]/)
+    expect(String(call.prompt)).toMatch(/^\[dacapo worktree: \/repo\/.workspaces\/task\/1-login\]/)
     expect(String(call.prompt)).toMatch(/npm run build/)
 
     for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'task-loop', surface, ...PANE })
+      const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
       expect(await ui.find({ text: /Login page/ })).toBeDefined()
       expect(await ui.find({ text: /implement/ })).toBeDefined()
       await ui.unmount()
@@ -224,45 +224,45 @@ describe('the loop', () => {
     await clock.advance(90_000)
     await $.turn.complete({ answer: 'Done. Build passes.', durationMs: 1, isAborted: false, turnId: 't1', agentId: 'agent-1', reason: 'answer' })
     // the wake-up is sent by the ticker, not inside the agent's own completion
-    expect(prompts.some(p => p.startsWith('[task-loop]'))).toBe(false)
+    expect(prompts.some(p => p.startsWith('[dacapo]'))).toBe(false)
     await clock.advance(1_000)
-    expect(prompts.some(p => p.startsWith('[task-loop]') && /all 1 worker\(s\) have ended/.test(p))).toBe(true)
+    expect(prompts.some(p => p.startsWith('[dacapo]') && /all 1 worker\(s\) have ended/.test(p))).toBe(true)
     // undelivered, it is sent again after 30 seconds and at most three times; a started turn marks it delivered
     await clock.advance(31_000)
     expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(2)
-    await $.turn.start({ text: `The task-loop plugin sent a message: ${prompts.find(p => /all 1 worker\(s\) have ended/.test(p))!}` } as never)
+    await $.turn.start({ text: `The dacapo plugin sent a message: ${prompts.find(p => /all 1 worker\(s\) have ended/.test(p))!}` } as never)
     await clock.advance(31_000)
     expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(2)
-    const statusAfter = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
+    const statusAfter = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in statusAfter && statusAfter.result).toMatch(/login \[agent-1\] finished \(1m30s/)
 
     // a finished agent that acts again is live again, and its next completion wakes the orchestrator once more
     await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/task/1-login/src/y.ts', content: 'y', agentId: 'agent-1' } as never)
-    const revived = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
+    const revived = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in revived && revived.result).toMatch(/login \[agent-1\] running \(restarted 1x\)/)
-    const blocked = await $.tool.call({ tool: 'mcp__task-loop__merge' } as never)
+    const blocked = await $.tool.call({ tool: 'mcp__dacapo__merge' } as never)
     expect('isError' in blocked && blocked.isError).toBe(true)
     const before = prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length
     await $.turn.complete({ answer: 'Done again.', durationMs: 1, isAborted: false, turnId: 't1b', agentId: 'agent-1', reason: 'answer' })
     await clock.advance(1_000)
     expect(prompts.filter(p => /all 1 worker\(s\) have ended/.test(p)).length).toBe(before + 1)
-    await $.turn.start({ text: `The task-loop plugin sent a message: ${prompts[prompts.length - 1]!}` } as never)
+    await $.turn.start({ text: `The dacapo plugin sent a message: ${prompts[prompts.length - 1]!}` } as never)
 
-    const merged = await $.tool.call({ tool: 'mcp__task-loop__merge' } as never)
+    const merged = await $.tool.call({ tool: 'mcp__dacapo__merge' } as never)
     expect('result' in merged && merged.result).toMatch(/feat: add login page \(beef1\)/)
     expect('result' in merged && merged.result).toMatch(/Pushed dev to origin/)
 
     const qa = await $.tool.call({
-      tool: 'mcp__task-loop__qa',
+      tool: 'mcp__dacapo__qa',
       rubric: [{ id: 'login', title: 'A user can log in', category: 'core' }, { id: 'copy', title: 'Error copy is clear', category: 'ui-ux' }],
       harness: 'Run `npm start`, open http://localhost:3000/login, use user@example.com / secret.',
     } as never)
-    expect('result' in qa && qa.result).toMatch(/prompt: "task-loop qa 1-1"/)
+    expect('result' in qa && qa.result).toMatch(/prompt: "dacapo qa 1-1"/)
     expect(files.get('/repo/.workspaces/qa/1-1/.context/qa-brief.md')).toMatch(/npm start/)
     const reportPath = '/repo/.workspaces/qa/1-1/.context/qa-report.json'
-    const startedQa = await startAgent('task-loop qa 1-1')
+    const startedQa = await startAgent('dacapo qa 1-1')
     expect('result' in startedQa).toBe(true)
-    expect(agentCalls[1]?.subagent_type).toBe('task-loop:qa')
+    expect(agentCalls[1]?.subagent_type).toBe('dacapo:qa')
     expect(agentCalls[1]?.model).toBe('opus')
 
     // QA may not read source, only its .context folder; and only writes its report
@@ -279,28 +279,28 @@ describe('the loop', () => {
     const wakeQa = prompts.find(p => /QA round 1 for iteration 1/.test(p))
     expect(wakeQa).toMatch(/1 strong, 0 acceptable, 1 unacceptable → verdict: fix/)
     expect(wakeQa).toMatch(/Login works; the error copy needs words\./)
-    expect(files.get(`/repo/.workspaces/.task-loop/${runId}/qa-1-1.json`)).toMatch(/"verdict": "fix"/)
+    expect(files.get(`/repo/.workspaces/.dacapo/${runId}/qa-1-1.json`)).toMatch(/"verdict": "fix"/)
 
     for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'task-loop', surface, ...PANE })
+      const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
       expect(await ui.find({ text: /QA round 1: fix needed/ })).toBeDefined()
       expect(await ui.find({ text: /error copy needs words/ })).toBeUndefined()
-      await ui.press({ plugin: 'task-loop', key: 'qa-agent-2' })
+      await ui.press({ plugin: 'dacapo', key: 'qa-agent-2' })
       expect(await ui.find({ text: /1 strong · 0 acceptable · 1 unacceptable → fix needed/ })).toBeDefined()
       expect(await ui.find({ text: /error copy needs words/ })).toBeDefined()
-      await ui.press({ plugin: 'task-loop', key: 'qa-agent-2' })
+      await ui.press({ plugin: 'dacapo', key: 'qa-agent-2' })
       expect(await ui.find({ text: /error copy needs words/ })).toBeUndefined()
       await ui.unmount()
     }
 
     // a second dispatch starts iteration 2; the pane shows the new card in sequence
     const again = await $.tool.call({
-      tool: 'mcp__task-loop__dispatch',
+      tool: 'mcp__dacapo__dispatch',
       tasks: [{ id: 'copy', title: 'Fix error copy', prompt: 'Explain errors.', model: 'sonnet', commit: 'fix: explain login errors' }],
     } as never)
     expect('result' in again && again.result).toMatch(/Iteration 2/)
-    await startAgent('task-loop worker copy')
-    const ui = await $.ui.mount({ plugin: 'task-loop', surface: 'terminal', ...PANE })
+    await startAgent('dacapo worker copy')
+    const ui = await $.ui.mount({ plugin: 'dacapo', surface: 'terminal', ...PANE })
     expect(await ui.find({ text: /Fix error copy/ })).toBeDefined()
     expect(await ui.find({ text: /Login page/ })).toBeDefined()
     await ui.unmount()
@@ -308,20 +308,20 @@ describe('the loop', () => {
     // a silent worker is marked stale after 30 minutes and the orchestrator is told; activity clears it
     await clock.advance(31 * 60_000)
     expect(prompts.some(p => /Worker copy \[agent-3\] looks stale/.test(p))).toBe(true)
-    const stale = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
+    const stale = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in stale && stale.result).toMatch(/copy \[agent-3\] stale/)
     await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/task/2-copy/a.ts', content: 'x', agentId: 'agent-3' } as never)
-    const back = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
+    const back = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in back && back.result).toMatch(/copy \[agent-3\] running/)
 
     // two idle hours stop it, distinct from a failure
     await clock.advance(2 * 60 * 60_000 + 1_000)
-    const timed = await $.tool.call({ tool: 'mcp__task-loop__status' } as never)
+    const timed = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in timed && timed.result).toMatch(/copy \[agent-3\] timed out/)
     expect(prompts.some(p => /Worker copy \[agent-3\] timed out/.test(p))).toBe(true)
 
     pushFails = true
-    const finished = await $.tool.call({ tool: 'mcp__task-loop__finish' } as never)
+    const finished = await $.tool.call({ tool: 'mcp__dacapo__finish' } as never)
     expect('result' in finished && finished.result).toMatch(/Run .* finished/)
     expect('result' in finished && finished.result).toMatch(/main was not pushed to origin.*Work continues/)
     const after = await $.tool.call({ tool: 'Write', file_path: '/repo/x.ts', content: 'x' })

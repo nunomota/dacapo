@@ -23,7 +23,7 @@ export type Run = {
   root: string
   devBranch: string
   mainBranch: string
-  /** Absolute path of the run log folder, `.workspaces/.task-loop/<id>`. */
+  /** Absolute path of the run log folder, `.workspaces/.dacapo/<id>`. */
   runDir: string
   /** Absolute path of the worktree that has `devBranch` checked out. */
   devWorktree: string
@@ -160,6 +160,6 @@ export type Ui = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'task-loop': { run: Run | null; rows: Row[]; ui: Ui }
+    'dacapo': { run: Run | null; rows: Row[]; ui: Ui }
   }
 }

@@ -1,6 +1,6 @@
-# task-loop
+# dacapo
 
-A Claude Code mod that turns a handed-over task into an orchestrated loop: the session model clarifies, researches and plans; parallel worker subagents implement in git worktrees; the branches are squash-merged into `dev`; a QA subagent uses the deliverable as the end user and scores a rubric; the loop repeats until QA passes, then `dev` is released into `main`. A pane shows the whole run as a timeline, and a band above the prompt shows where the current iteration stands.
+*Da capo*: from the top, again. A Claude Code mod that turns a handed-over task into an orchestrated loop: the session model clarifies, researches and plans; parallel worker subagents implement in git worktrees; the branches are squash-merged into `dev`; a QA subagent uses the deliverable as the end user and scores a rubric; the loop repeats until QA passes, then `dev` is released into `main`. A pane shows the whole run as a timeline, and a band above the prompt shows where the current iteration stands.
 
 Inspired by [savvy-progress](https://github.com/JohnnyVizz/claude-kit).
 
@@ -9,7 +9,7 @@ Inspired by [savvy-progress](https://github.com/JohnnyVizz/claude-kit).
 In a terminal session of Claude Code:
 
 ```
-/plugin install task-loop --marketplace nunomota/claude-task-loop
+/plugin install dacapo --marketplace nunomota/dacapo
 ```
 
 Answer `y` to add the marketplace, then pick the user scope. The mod is active in that session at once and in every later one, including sessions the desktop app starts.
@@ -17,13 +17,13 @@ Answer `y` to add the marketplace, then pick the user scope. The mod is active i
 To run it from a clone instead:
 
 ```
-claude --plugin-dir ~/claude-task-loop
+claude --plugin-dir ~/dacapo
 ```
 
 ## Use
 
 ```
-/task-loop <what you want built>
+/dacapo <what you want built>
 ```
 
 The skill then runs in phases:
@@ -31,7 +31,7 @@ The skill then runs in phases:
 1. **Clarify.** It restates the task and asks about anything material, until nothing is open.
 2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, and notes the build and test commands.
 3. **Plan.** It calls `start` with the task heading and a short overview, splits the work into independent tasks (each with a brief, a model, a build command and the Conventional Commit title of its squash commit), and writes the QA rubric and harness.
-4. **Loop.** `dispatch` prepares one worktree and brief per task under `.workspaces/task/<iteration>-<id>` and spells out the `Agent` call that starts each worker; the orchestrator makes those calls itself, so the session's permission mode (auto mode included) judges them as its own actions, and the mod fills in the brief, model, worktree and background mode. The orchestrator then ends its turn and is woken by a `[task-loop]` prompt when every worker has ended or one goes stale. `merge` squash-merges the finished branches into `dev`. `qa` prepares the QA subagent's worktree of `dev` the same way; its report wakes the orchestrator with the verdict and overview. On `fix` the next `dispatch` starts a new iteration.
+4. **Loop.** `dispatch` prepares one worktree and brief per task under `.workspaces/task/<iteration>-<id>` and spells out the `Agent` call that starts each worker; the orchestrator makes those calls itself, so the session's permission mode (auto mode included) judges them as its own actions, and the mod fills in the brief, model, worktree and background mode. The orchestrator then ends its turn and is woken by a `[dacapo]` prompt when every worker has ended or one goes stale. `merge` squash-merges the finished branches into `dev`. `qa` prepares the QA subagent's worktree of `dev` the same way; its report wakes the orchestrator with the verdict and overview. On `fix` the next `dispatch` starts a new iteration.
 5. **Finish.** `finish` fast-forwards `main` to `dev` (or makes one merge commit when the histories diverged) and removes the run's worktrees.
 
 You can type while workers run; your prompts become rows in the timeline and are folded into the next iteration.
@@ -40,9 +40,9 @@ You can type while workers run; your prompts become rows in the timeline and are
 
 - **Only workers change code.** While a run is active, Edit, Write and history-changing git commands from the orchestrator are refused. A worker can only write inside its own worktree.
 - **Clean commits.** Workers commit in Conventional Commit units with title-only messages; the squash commit on `dev` takes the title from the plan.
-- **QA never reads source.** The QA subagent may read and search only the `.context/` folder of its worktree, and the only file it may write is its report. It is given the harness (how to run and use the deliverable) and the rubric, and scores every item `strong`, `acceptable` or `unacceptable`. The mod validates the report (every rubric id scored once, every score one of the three words, a non-empty overview), derives the verdict, and keeps a copy under `.workspaces/.task-loop/<run>/`.
+- **QA never reads source.** The QA subagent may read and search only the `.context/` folder of its worktree, and the only file it may write is its report. It is given the harness (how to run and use the deliverable) and the rubric, and scores every item `strong`, `acceptable` or `unacceptable`. The mod validates the report (every rubric id scored once, every score one of the three words, a non-empty overview), derives the verdict, and keeps a copy under `.workspaces/.dacapo/<run>/`.
 - **Merges reach the remote.** After every squash merge the mod pushes `dev` to `origin`, and after the release it pushes `main`. A push that fails, or a repository without an `origin`, is reported in the tool's answer, in `status` and in the pane, and the loop goes on; push by hand when you can.
-- **Wake-ups are delivered, not fired and forgotten.** Collection of a QA report and every `[task-loop]` prompt run on the mod's own timer, outside the finishing agent's dispatch. A wake-up whose turn has not started within 30 seconds is sent again, up to three times, and `status` lists any still undelivered.
+- **Wake-ups are delivered, not fired and forgotten.** Collection of a QA report and every `[dacapo]` prompt run on the mod's own timer, outside the finishing agent's dispatch. A wake-up whose turn has not started within 30 seconds is sent again, up to three times, and `status` lists any still undelivered.
 - **Stale and timed out are not failed.** A worker or QA agent with no tool call or model step for 30 minutes is marked stale and the orchestrator is told; it keeps running. After two idle hours it is stopped and marked timed out. Both are distinct from a failure, so the cause stays readable.
 - **Repository hygiene.** `.workspaces/` and `.context/` are added to `.git/info/exclude` (never to a tracked `.gitignore`). Worktrees are named after their branches and pruned once merged.
 
@@ -52,16 +52,16 @@ The orchestrator calls these; the skill says when.
 
 | Tool | What it does |
 | --- | --- |
-| `mcp__task-loop__start` | Records the repository (the session's, or `root`), creates `dev` and its worktree if missing, opens the pane. |
-| `mcp__task-loop__dispatch` | Prepares one worktree, branch and brief per task and returns the `Agent` calls that start the workers. A second dispatch after QA starts the next round. |
-| `mcp__task-loop__merge` | Squash-merges every finished branch of the iteration into `dev`, one titled commit each; reports conflicts instead of resolving them. |
-| `mcp__task-loop__qa` | Prepares the QA worktree with a rubric and harness and returns the `Agent` call that starts it; the report is collected when the agent ends. |
-| `mcp__task-loop__status` | The timeline as text, with tokens and cost. |
-| `mcp__task-loop__phase` | Marks the orchestrator's phase (clarify, research, plan, implement, qa, release); the other tools set the later phases themselves. |
-| `mcp__task-loop__cancel` | Stops a running agent by id. |
-| `mcp__task-loop__finish` | Releases `dev` into `main` and closes the run (`abort: true` closes without releasing). |
+| `mcp__dacapo__start` | Records the repository (the session's, or `root`), creates `dev` and its worktree if missing, opens the pane. |
+| `mcp__dacapo__dispatch` | Prepares one worktree, branch and brief per task and returns the `Agent` calls that start the workers. A second dispatch after QA starts the next round. |
+| `mcp__dacapo__merge` | Squash-merges every finished branch of the iteration into `dev`, one titled commit each; reports conflicts instead of resolving them. |
+| `mcp__dacapo__qa` | Prepares the QA worktree with a rubric and harness and returns the `Agent` call that starts it; the report is collected when the agent ends. |
+| `mcp__dacapo__status` | The timeline as text, with tokens and cost. |
+| `mcp__dacapo__phase` | Marks the orchestrator's phase (clarify, research, plan, implement, qa, release); the other tools set the later phases themselves. |
+| `mcp__dacapo__cancel` | Stops a running agent by id. |
+| `mcp__dacapo__finish` | Releases `dev` into `main` and closes the run (`abort: true` closes without releasing). |
 
-`/task-loop-pane` reopens the timeline pane.
+`/dacapo-pane` reopens the timeline pane.
 
 ## The timeline
 
@@ -91,8 +91,8 @@ hooks/pane.tsx                   the timeline pane and the band
 hooks/cost.ts                    price table, token and cost formatting
 hooks/io.ts                      the engine calls the helpers use
 types/index.d.ts                 the $.state contract
-skills/task-loop/SKILL.md        the /task-loop skill
-tests/task-loop.test.ts          claude plugin test
+skills/dacapo/SKILL.md        the /dacapo skill
+tests/dacapo.test.ts          claude plugin test
 ```
 
 ## Development
