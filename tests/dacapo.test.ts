@@ -463,5 +463,6 @@ describe('the loop', () => {
     expect('result' in after && after.result).toBe('written')
     const done = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in done && done.result).toMatch(/: done, /)
+    expect('result' in done && done.result).toMatch(/Release PR #9 .*: merged/)
   })
 })

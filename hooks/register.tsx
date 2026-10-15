@@ -655,6 +655,8 @@ async function finish(a: Args) {
 const mergeTried = new Set<string>()
 
 async function completeRelease(run: Run, pr: Pr, how: string) {
+  // polling stops once the run is done, so the merge the run just made (or saw) is written into the list itself
+  await io.setRun(cur => (cur ? { ...cur, prs: cur.prs.map(p => (p.number === pr.number ? { ...p, state: 'merged', title: pr.title } : p)) } : cur))
   const notes: string[] = []
   notes.push(...(await git.removeWorktree(io, run.root, run.worktree, run.branch)))
   const remote = await git.deleteRemoteBranch(io, run.root, run.branch)
@@ -663,7 +665,10 @@ async function completeRelease(run: Run, pr: Pr, how: string) {
   const rows = await io.getRows()
   for (const w of rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.status !== 'merged')) notes.push(...(await git.removeWorktree(io, run.root, w.worktree, w.branch)))
   for (const q of rows.filter((r): r is QaRow => r.kind === 'qa')) notes.push(...(await git.removeWorktree(io, run.root, q.worktree)))
-  await io.setRun(cur => (cur ? { ...cur, status: 'done', phase: 'release' } : cur))
+  // one last listing, so every pull request shows its final state
+  const latest = await io.getRun()
+  if (latest) await refreshPrs(latest)
+  await io.setRun(cur => (cur ? { ...cur, status: 'done', phase: 'release', prs: cur.prs.map(p => (p.number === pr.number ? { ...p, state: 'merged' } : p)) } : cur))
   await wake(
     `released-${pr.number}`,
     [
