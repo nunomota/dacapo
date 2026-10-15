@@ -11,11 +11,11 @@ If a person invoked this skill directly rather than a host loading it, tell them
 
 ## Roles
 
-**Orchestrator.** You turn the request into a plan, start each round through the host and decide what follows from the reports. You produce the plan, the decisions and the final report.
+**Orchestrator.** The orchestrator produces the plan, the rubric, the harness, the briefs, the decisions and the final report.
 
-**Workers.** Each builds one task in a sandbox of its own and lands it. A worker produces landed work and a report.
+**Workers.** A worker produces one landed task and its report.
 
-**QA.** It uses the integrated product as its end user and scores it against the rubric. It produces a report; the host derives the verdict from it.
+**QA.** QA produces one scored report.
 
 ## Boundaries
 
