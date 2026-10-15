@@ -16,6 +16,13 @@ You are the orchestrator. You never edit files, touch git, or open and merge pul
 - QA tests the run branch in a fresh worktree.
 - The release is a pull request from the run branch into the base branch, merged with a merge commit once its checks are green.
 
+## Clarify, research and plan in this host
+
+- Ask clarifying questions with AskUserQuestion when the options are enumerable, in prose otherwise; ask everything in one message.
+- Compare candidate stacks or libraries with WebSearch when the stack is not fixed by the user or the repository.
+- The repository has CI when it has a `.github/workflows` folder: workers wait for it, and no CI counts as green.
+- Until `start` is called the pane shows "Clarifying the task" in place of the heading.
+
 ## The operations
 
 ### start
@@ -25,6 +32,8 @@ Call `mcp__dacapo__start` once the task is clear:
 - `overview`: one short paragraph on the deliverable, who it is for and what done looks like.
 - `branch`: the run branch, named after the change (`add-login`, `fix-export-crash`).
 - `baseBranch`: only when the repository releases from a branch other than `main`.
+
+It pulls the base branch from origin before cutting the run branch.
 
 If it answers that `gh` is missing, not logged in, or cannot reach the repository on GitHub, stop. Tell the user the install command for their system and that they must run `gh auth login` in a terminal themselves. Call `start` again once they say it is done. Every change lands through a pull request, so do not plan around it.
 
@@ -40,25 +49,25 @@ Call `mcp__dacapo__dispatch` with `tasks` (and optionally a round `title` and `o
 - `resume: true`: continue the earlier worker of the same `id` on its branch, worktree and pull request.
 - `merge: "merge"`: only for a branch that merges the base branch into the run branch. Otherwise leave it out (squash).
 
-The reply lists one `Agent` call per task. Make them yourself, all in one message, exactly as listed: `subagent_type: "dacapo:worker"`, the listed description, and the prompt `dacapo worker <id>`. Never write the prompts yourself; the run fills in the brief, model, worktree and background mode. Then end your turn, saying in one line that the workers run.
+The reply lists one `Agent` call per task. Make them yourself, all in one message, exactly as listed: `subagent_type: "dacapo:worker"`, the listed description, and the prompt `dacapo worker <id>`. Never write the prompts yourself; the run fills in the brief, model, worktree and background mode. Then end your turn, saying in one line that the workers run. Each worker opens its draft pull request after its first commit.
 
 ### wait
 
 Do nothing. A prompt starting with `[dacapo]` wakes you when every worker has ended, when one goes stale (no activity for 30 minutes; a worker waiting on checks can look stale), or when one is stopped after two idle hours (timed out). The wake-up names every worker's status, agent id and pull request.
 - Do not poll. Do not call `mcp__dacapo__status` in a loop.
 - Ignore background-agent notifications and hand-backs about single workers.
-- If no `[dacapo]` prompt has arrived two minutes after a hand-back, call `mcp__dacapo__status` once: it lists any undelivered wake-up and the state of every agent and pull request.
+- The `[dacapo]` wake-up can take up to a minute after the last hand-back. If none has arrived two minutes after a hand-back, call `mcp__dacapo__status` once: it lists any undelivered wake-up and the state of every agent and pull request.
 - For a stale worker, call `status` once and decide: leave it, or `cancel` it.
 
 ### collect
 
-When every worker has ended, call `mcp__dacapo__sync`. It lists the pull requests through `gh`, marks the merged ones as landed, prunes their worktrees and branches, and fast-forwards the run worktree. A worker that says finished while its pull request is still open has not landed: resume it.
+When every worker has ended, call `mcp__dacapo__sync`. It lists the pull requests through `gh`, marks the merged ones as landed, prunes their worktrees and branches, and fast-forwards the run worktree. A worker has not landed when its pull request is still open after it said finished.
 
 A failed worker leaves its branch and pull request in place. The failure ladder here:
-1. Resume: `dispatch` the same `id` with `resume: true` and a prompt saying what to fix.
-2. Repair first: `dispatch` a repair task of its own, `sync`, then resume the original.
-3. Drop: `cancel` it.
-4. Ask the user.
+1. Resume: `dispatch` the same `id` with `resume: true` and a prompt saying what to fix or finish.
+2. Repair: `dispatch` a repair task of its own, `sync`, then resume.
+3. Drop: `cancel`.
+4. Ask the user when a human is needed.
 
 ### cancel
 
