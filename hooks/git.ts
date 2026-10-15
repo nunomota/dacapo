@@ -22,6 +22,11 @@ export async function branchExists(io: Io, root: string, branch: string): Promis
   return (await git(io, root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).ok
 }
 
+export async function remoteBranchExists(io: Io, root: string, branch: string): Promise<boolean> {
+  const r = await git(io, root, ['ls-remote', '--heads', 'origin', branch])
+  return r.ok && r.out.length > 0
+}
+
 /** Lines `.workspaces/` and `.context/` in the repository's `.git/info/exclude`, added once. */
 export async function ensureExclude(io: Io, root: string): Promise<void> {
   const common = await git(io, root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
@@ -36,14 +41,6 @@ export async function ensureExclude(io: Io, root: string): Promise<void> {
   if (missing.length === 0) return
   const sep = had.length === 0 || had.endsWith('\n') ? '' : '\n'
   await io.write(file, `${had}${sep}# dacapo\n${missing.join('\n')}\n`)
-}
-
-/** Creates `dev` from `main` (or HEAD when `main` is missing) if it does not exist yet. */
-export async function ensureBranch(io: Io, root: string, branch: string, from: string): Promise<void> {
-  if (await branchExists(io, root, branch)) return
-  const base = (await branchExists(io, root, from)) ? from : 'HEAD'
-  const r = await git(io, root, ['branch', branch, base])
-  if (!r.ok) throw new Error(`git branch ${branch} ${base}: ${r.err || r.out}`)
 }
 
 export type Worktree = { path: string; branch: string | null; head: string }
@@ -65,6 +62,22 @@ export async function listWorktrees(io: Io, root: string): Promise<Worktree[]> {
   return trees
 }
 
+/**
+ * Brings the local base branch up to date with origin: fetched, then fast-forwarded where it is checked out
+ * (or its ref moved when it is checked out nowhere). Anything but a fast-forward is reported, never forced.
+ */
+export async function refreshBase(io: Io, root: string, base: string): Promise<{ fetched: boolean; note: string }> {
+  const fetched = await git(io, root, ['fetch', 'origin', base])
+  if (!fetched.ok) return { fetched: false, note: `origin/${base} not fetched: ${(fetched.err || fetched.out).split('\n')[0] ?? ''}` }
+  const tree = (await listWorktrees(io, root)).find(w => w.branch === base)
+  if (tree) {
+    const ff = await git(io, tree.path, ['merge', '--ff-only', `origin/${base}`])
+    return { fetched: true, note: ff.ok ? `${base} is up to date with origin` : `${base} at ${tree.path} was not fast-forwarded: ${(ff.err || ff.out).split('\n')[0] ?? ''}` }
+  }
+  const moved = await git(io, root, ['fetch', 'origin', `${base}:${base}`])
+  return { fetched: true, note: moved.ok ? `${base} is up to date with origin` : `${base} was not moved to origin/${base}: ${(moved.err || moved.out).split('\n')[0] ?? ''}` }
+}
+
 /** The worktree where `branch` is checked out, created under `.workspaces/<branch>` when none has it. */
 export async function worktreeFor(io: Io, root: string, branch: string): Promise<string> {
   const found = (await listWorktrees(io, root)).find(w => w.branch === branch)
@@ -76,15 +89,17 @@ export async function worktreeFor(io: Io, root: string, branch: string): Promise
   return path
 }
 
-/** A new branch and its worktree off `base`; a taken name gets a numeric suffix. */
+/** A new branch and its worktree off `base`; a name taken locally (or on origin, when asked) gets a numeric suffix. */
 export async function addBranchWorktree(
   io: Io,
   root: string,
   wanted: string,
   base: string,
+  checkRemote = false,
 ): Promise<{ branch: string; path: string }> {
+  const taken = async (name: string) => (await branchExists(io, root, name)) || (checkRemote && (await remoteBranchExists(io, root, name)))
   let branch = wanted
-  for (let n = 2; await branchExists(io, root, branch); n += 1) branch = `${wanted}-${n}`
+  for (let n = 2; await taken(branch); n += 1) branch = `${wanted}-${n}`
   const path = `${root}/.workspaces/${branch}`
   await mkdirp(io, `${root}/.workspaces/${branch.split('/').slice(0, -1).join('/')}`)
   const r = await git(io, root, ['worktree', 'add', '-b', branch, path, base])
@@ -107,7 +122,7 @@ export async function removeWorktree(io: Io, root: string, path: string, branch?
       const forced = await git(io, root, ['worktree', 'remove', '--force', path])
       if (!forced.ok) notes.push(`worktree ${path} not removed: ${forced.err || forced.out}`)
     }
-    // the parent (`.workspaces/task`, `.workspaces/qa`) goes once it is empty; rmdir refuses otherwise
+    // the parent (`.workspaces/qa`) goes once it is empty; rmdir refuses otherwise
     await io.run(['rmdir', path.split('/').slice(0, -1).join('/')])
   }
   await git(io, root, ['worktree', 'prune'])
@@ -118,32 +133,25 @@ export async function removeWorktree(io: Io, root: string, path: string, branch?
   return notes
 }
 
-export type SquashOutcome =
-  | { kind: 'merged'; commit: string }
-  | { kind: 'empty' }
-  | { kind: 'conflict'; files: string[] }
-  | { kind: 'error'; message: string }
+/** Deletes `branch` on origin; a branch already gone is no error. */
+export async function deleteRemoteBranch(io: Io, root: string, branch: string): Promise<string | null> {
+  if (!(await remoteBranchExists(io, root, branch))) return null
+  const del = await git(io, root, ['push', 'origin', '--delete', branch])
+  return del.ok ? null : `origin/${branch} not deleted: ${(del.err || del.out).split('\n')[0] ?? ''}`
+}
 
-/** `git merge --squash <branch>` then one commit titled `title`, run in the worktree that holds the target branch. */
-export async function squashMerge(
-  io: Io,
-  devWorktree: string,
-  branch: string,
-  title: string,
-): Promise<SquashOutcome> {
-  const merge = await git(io, devWorktree, ['-c', 'merge.ff=true', 'merge', '--squash', branch])
-  if (!merge.ok) {
-    const conflicted = await git(io, devWorktree, ['diff', '--name-only', '--diff-filter=U'])
-    const files = conflicted.out ? conflicted.out.split('\n') : []
-    await git(io, devWorktree, ['reset', '--merge'])
-    return files.length > 0 ? { kind: 'conflict', files } : { kind: 'error', message: merge.err || merge.out }
+export type PullOutcome = { kind: 'pulled'; commits: number } | { kind: 'error'; message: string }
+
+/** Fast-forwards the worktree's branch to origin; never merges. */
+export async function pullFf(io: Io, worktree: string, branch: string): Promise<PullOutcome> {
+  const before = await git(io, worktree, ['rev-parse', 'HEAD'])
+  const pulled = await git(io, worktree, ['pull', '--ff-only', 'origin', branch])
+  if (!pulled.ok) {
+    const message = (pulled.err || pulled.out).split('\n').filter(l => l.trim() && !/^\s*(From |hint:)/.test(l)).join(' ').slice(0, 300)
+    return { kind: 'error', message: message || 'pull failed' }
   }
-  const staged = await git(io, devWorktree, ['diff', '--cached', '--quiet'])
-  if (staged.ok) return { kind: 'empty' }
-  const commit = await git(io, devWorktree, ['commit', '-m', title])
-  if (!commit.ok) return { kind: 'error', message: commit.err || commit.out }
-  const sha = await git(io, devWorktree, ['rev-parse', '--short', 'HEAD'])
-  return { kind: 'merged', commit: sha.out }
+  const count = await git(io, worktree, ['rev-list', '--count', `${before.out}..HEAD`])
+  return { kind: 'pulled', commits: count.ok ? Number(count.out) || 0 : 0 }
 }
 
 export type PushOutcome = { kind: 'pushed' } | { kind: 'no-remote' } | { kind: 'failed'; message: string }
@@ -156,45 +164,4 @@ export async function pushBranch(io: Io, cwd: string, branch: string): Promise<P
   if (pushed.ok) return { kind: 'pushed' }
   const message = (pushed.err || pushed.out).split('\n').filter(l => l.trim() && !/^\s*(To |remote: |hint:)/.test(l)).join(' ').slice(0, 300)
   return { kind: 'failed', message: message || 'push failed' }
-}
-
-export type ReleaseOutcome =
-  | { kind: 'fast-forward' }
-  | { kind: 'up-to-date' }
-  /** `main` holds commits `dev` lacks, so no fast-forward is possible; nothing was changed. */
-  | { kind: 'diverged'; ahead: number }
-  | { kind: 'error'; message: string }
-
-/** Fast-forwards `main` to `dev`, and only that: a diverged `main` is reported untouched. */
-export async function releaseToMain(
-  io: Io,
-  root: string,
-  dev: string,
-  main: string,
-): Promise<{ outcome: ReleaseOutcome; notes: string[] }> {
-  const notes: string[] = []
-  const trees = await listWorktrees(io, root)
-  let mainTree = trees.find(w => w.branch === main)?.path
-  let isTemp = false
-  if (!mainTree) {
-    mainTree = `${root}/.workspaces/${main}`
-    try {
-      mainTree = await worktreeFor(io, root, main)
-      isTemp = true
-    } catch (error) {
-      return { outcome: { kind: 'error', message: String(error) }, notes }
-    }
-  }
-  const behind = await git(io, mainTree, ['rev-list', '--count', `${main}..${dev}`])
-  const ahead = await git(io, mainTree, ['rev-list', '--count', `${dev}..${main}`])
-  const aheadBy = ahead.ok ? Number(ahead.out) || 0 : 0
-  let outcome: ReleaseOutcome
-  if (behind.ok && behind.out === '0') outcome = { kind: 'up-to-date' }
-  else if (aheadBy > 0) outcome = { kind: 'diverged', ahead: aheadBy }
-  else {
-    const ff = await git(io, mainTree, ['merge', '--ff-only', dev])
-    outcome = ff.ok ? { kind: 'fast-forward' } : { kind: 'error', message: ff.err || ff.out }
-  }
-  if (isTemp) notes.push(...(await removeWorktree(io, root, mainTree)))
-  return { outcome, notes }
 }

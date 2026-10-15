@@ -1,13 +1,14 @@
 import type { Elements } from 'claude-code'
 
-import type { Activity, AgentStats, OrchestratorRow, Phase, QaRow, Row, Run, Ui, UserRow, WorkerRow } from '../types'
+import type { Activity, AgentStats, OrchestratorRow, Phase, Pr, PrState, QaRow, Row, Run, Ui, UserRow, WorkerRow } from '../types'
 import { ZERO, addUsage, costOf, fmtCost, fmtTokens, totalTokens, type Price } from './cost'
 
-/** The three elements every surface has; the hook resolves the table and hands these in. */
+/** The elements every surface has; the hook resolves the table and hands these in. */
 export type Els = {
   Box: Elements['terminal']['Box']
   Text: Elements['terminal']['Text']
   Button: Elements['terminal']['Button']
+  Link: Elements['terminal']['Link']
   /** Present on the surfaces that draw vector icons (desktop, VS Code, mobile); the terminal gets a glyph. */
   Svg?: Elements['desktop']['Svg']
 }
@@ -15,8 +16,8 @@ export type Els = {
 export type Snapshot = { run: Run | null; rows: Row[]; ui: Ui }
 
 export type Actions = {
-  toggleIteration: (n: number) => void
   toggleRow: (id: string) => void
+  togglePrList: () => void
   openPane: () => void
   hideBand: () => void
 }
@@ -25,23 +26,11 @@ export type Theme = { prices: Record<string, Price> }
 
 export const PHASES: readonly Phase[] = ['clarify', 'research', 'plan', 'implement', 'qa', 'release']
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const two = (n: number) => `${n}`.padStart(2, '0')
 
 export function hhmm(ms: number): string {
   const d = new Date(ms)
   return `${two(d.getHours())}:${two(d.getMinutes())}`
-}
-
-/** `14 Oct 18:50`. */
-export function stamp(ms: number): string {
-  const d = new Date(ms)
-  return `${two(d.getDate())} ${MONTHS[d.getMonth()]} ${hhmm(ms)}`
-}
-
-export function clock(ms: number): string {
-  const d = new Date(ms)
-  return `${hhmm(ms)}:${two(d.getSeconds())}`
 }
 
 export function elapsed(fromMs: number, toMs: number): string {
@@ -57,6 +46,14 @@ export function cut(text: string, width: number): string {
   const one = text.replace(/\s+/g, ' ').trim()
   if (width <= 1) return one.slice(0, 1)
   return one.length > width ? `${one.slice(0, width - 1)}…` : one
+}
+
+/** How many rows `text` takes when wrapped at `width`: the estimate the timeline's vertical line is drawn from. */
+export function rowsOf(text: string, width: number): number {
+  const w = Math.max(8, width)
+  let rows = 0
+  for (const line of text.split('\n')) rows += Math.max(1, Math.ceil(line.length / w))
+  return rows
 }
 
 export const isAgentRow = (row: Row): row is WorkerRow | QaRow => row.kind === 'worker' || row.kind === 'qa'
@@ -108,7 +105,7 @@ export const spendText = (s: { tokens: number; cost: number | undefined }) =>
 
 const SEP = '  ·  '
 
-/** Border colors: the person white, the orchestrator purple, QA cyan, a sub-agent by its status. */
+/** Entry colors: the person white, the orchestrator purple, QA cyan, a sub-agent by its status. */
 export const PURPLE = '#a855f7'
 export const CYAN = 'cyan'
 
@@ -132,7 +129,7 @@ export function cardColor(row: Row): string {
 /** The terminal's one-glyph stand-in for each icon. */
 export const GLYPH: Record<Row['kind'], string> = { worker: '⚒', qa: '⚖', user: '✎', orchestrator: '◆' }
 
-/** Vector icons for the surfaces that draw SVG (desktop, VS Code, mobile), in the card's color. */
+/** Vector icons for the surfaces that draw SVG (desktop, VS Code, mobile), in the entry's color. */
 export function icon(kind: Row['kind'], color: string): string {
   const open = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">`
   const close = '</svg>'
@@ -152,7 +149,63 @@ export function icon(kind: Row['kind'], color: string): string {
   }
 }
 
-/** Consecutive messages from the person, or from the orchestrator, fold into one card. */
+// ---------- pull requests ----------
+
+/** GitHub's colors for a pull request's state. */
+export const PR_COLOR: Record<PrState, string> = { draft: '#8b949e', open: '#2da44e', merged: '#8957e5', closed: '#e5534b' }
+
+export const PR_GLYPH: Record<PrState, string> = { draft: '◌', open: '●', merged: '◆', closed: '⊘' }
+
+/** GitHub's octicons for a pull request's state (git-pull-request, -draft, -closed, git-merge; MIT, github.com/primer/octicons). */
+const PR_PATH: Record<PrState, string> = {
+  open: 'M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z',
+  draft:
+    'M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 14a2.25 2.25 0 1 1 0-4.5 2.25 2.25 0 0 1 0 4.5ZM2.5 3.25a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0ZM3.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM14 7.5a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Zm0-4.25a1.25 1.25 0 1 1-2.5 0 1.25 1.25 0 0 1 2.5 0Z',
+  closed:
+    'M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 5.5a.75.75 0 0 1 .75.75v3.378a2.251 2.251 0 1 1-1.5 0V7.25a.75.75 0 0 1 .75-.75Zm-2.03-5.273a.75.75 0 0 1 1.06 0l.97.97.97-.97a.748.748 0 0 1 1.265.332.75.75 0 0 1-.205.729l-.97.97.97.97a.751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018l-.97-.97-.97.97a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734l.97-.97-.97-.97a.75.75 0 0 1 0-1.06ZM2.5 3.25a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0ZM3.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z',
+  merged:
+    'M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z',
+}
+
+export const prIcon = (state: PrState): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="${PR_COLOR[state]}"><path d="${PR_PATH[state]}"/></svg>`
+
+/** The pull requests of one branch, newest first. */
+export const prsOf = (run: Run, branch: string): Pr[] => run.prs.filter(p => p.head === branch).sort((a, b) => b.createdAt - a.createdAt)
+
+export const prWord: Record<PrState, string> = { draft: 'draft', open: 'open', merged: 'merged', closed: 'closed' }
+
+/** `#12 feat: add login (open, checks failing)` for the text surfaces of the run. */
+export const prText = (pr: Pr): string => `#${pr.number} ${pr.title} (${prWord[pr.state]}${pr.checks === 'failing' ? ', checks failing' : pr.checks === 'pending' ? ', checks running' : ''}${pr.mergeable === 'conflicting' ? ', conflicting' : ''})`
+
+/** One pull request as a line: its state icon, its title as a link to GitHub, and a red cross when its checks fail. */
+function drawPr(els: Els, pr: Pr, key: string): JSX.Element {
+  const { Box, Text, Link, Svg } = els
+  const color = PR_COLOR[pr.state]
+  return (
+    <Box key={key} flexDirection="row" alignItems="center" overflow="hidden">
+      <Box flexShrink={0} marginRight={1}>
+        {Svg ? <Svg source={prIcon(pr.state)} alt={`pull request ${prWord[pr.state]}`} width={14} height={14} /> : <Text color={color}>{PR_GLYPH[pr.state]}</Text>}
+      </Box>
+      <Box flexShrink={1} overflow="hidden">
+        <Link href={pr.url}>
+          <Text color={color} wrap="truncate-end">
+            {pr.title}
+          </Text>
+        </Link>
+      </Box>
+      {pr.checks === 'failing' ? (
+        <Box flexShrink={0} marginLeft={1}>
+          <Text color="error">✕</Text>
+        </Box>
+      ) : (
+        ''
+      )}
+    </Box>
+  )
+}
+
+/** Consecutive messages from the person, or from the orchestrator, fold into one entry. */
 export type Entry = { kind: 'messages'; rows: (UserRow | OrchestratorRow)[] } | { kind: 'agent'; row: WorkerRow | QaRow }
 
 export function entriesOf(rows: readonly Row[]): Entry[] {
@@ -170,7 +223,7 @@ export function entriesOf(rows: readonly Row[]): Entry[] {
 // ---------- the pane ----------
 
 export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number, theme: Theme): JSX.Element {
-  const { Box, Text } = els
+  const { Box, Text, Button } = els
   const { run, rows, ui } = snap
   if (!run) {
     return (
@@ -185,6 +238,9 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const endAt = isOver ? (rows[rows.length - 1]?.at ?? now) : now
   const agents = rows.filter(isAgentRow)
   const total = spend(agents, theme.prices, run.orchestrator)
+  const prs = [...run.prs].sort((a, b) => a.createdAt - b.createdAt)
+  const counts = (['merged', 'open', 'draft', 'closed'] as const).map(s => [s, prs.filter(p => p.state === s).length] as const).filter(([, n]) => n > 0)
+  const entries = entriesOf(rows)
 
   return (
     <Box flexDirection="column">
@@ -222,8 +278,33 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           ) : (
             ''
           )}
+          {prs.length > 0 ? (
+            <Text>
+              <Text dimColor>{SEP}</Text>
+              {`${prs.length}`}
+              <Text dimColor>{prs.length === 1 ? ' PR' : ' PRs'}</Text>
+            </Text>
+          ) : (
+            ''
+          )}
         </Text>
         {drawPhases(els, run.phase, width - 4)}
+        {prs.length > 0 && (
+          <Box flexDirection="column">
+            <Button key="pr-list" plain onPress={() => act.togglePrList()}>
+              <Text dimColor>{ui.isPrListOpen ? '▾ ' : '▸ '}</Text>
+              <Text wrap="truncate-end">
+                {`${prs.length} pull request${prs.length === 1 ? '' : 's'}`}
+                <Text dimColor>{counts.map(([s, n]) => ` · ${n} ${s}`).join('')}</Text>
+              </Text>
+            </Button>
+            {ui.isPrListOpen && (
+              <Box flexDirection="column" paddingLeft={2}>
+                {prs.map(pr => drawPr(els, pr, `top-pr-${pr.number}`))}
+              </Box>
+            )}
+          </Box>
+        )}
       </Box>
       {run.pushProblem && (
         <Box paddingX={1} marginTop={1}>
@@ -244,7 +325,7 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           {'─'.repeat(Math.max(10, width - 12))}
         </Text>
       </Box>
-      {entriesOf(rows).map(entry => drawCard(els, entry, ui, act, width, theme, now))}
+      {entries.map((entry, i) => drawEntry(els, entry, ui, act, width, theme, now, run, i === entries.length - 1))}
     </Box>
   )
 }
@@ -273,50 +354,53 @@ function drawPhases(els: Els, current: Phase, width: number): JSX.Element {
   )
 }
 
-/** The card's text block: the header is the button that expands it; one dim subline is always shown; the body when expanded. */
-type Card = { id: string; key: string; kind: Row['kind']; color: string; title: string; subline: string; body: JSX.Element[] }
+/**
+ * One timeline entry: the header is the button that expands it; the subline is always shown, dim; the body when
+ * expanded. `bodyRows` is the body's height as estimated, so the vertical line can be drawn beside it.
+ */
+type Card = { id: string; key: string; kind: Row['kind']; color: string; title: string; subline: JSX.Element; body: JSX.Element[]; bodyRows: number }
 
-function drawCard(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, theme: Theme, now: number): JSX.Element {
+/** The icon column: the entry's icon where a timeline dot would be, and the line running down from it. */
+const ICON_COLS = 3
+
+function drawEntry(els: Els, entry: Entry, ui: Ui, act: Actions, width: number, theme: Theme, now: number, run: Run, isLast: boolean): JSX.Element {
   const { Box, Text, Button, Svg } = els
-  const card = entry.kind === 'agent' ? agentCard(els, entry.row, theme, now, width - 12) : messagesCard(els, entry.rows)
+  // the text column gets an explicit width: the desktop's column count is approximate for its font, and without a
+  // bound the surface never truncates or wraps
+  const textWidth = Math.max(16, width - ICON_COLS - 3)
+  const card = entry.kind === 'agent' ? agentCard(els, entry.row, theme, now, run, textWidth) : messagesCard(els, entry.rows, textWidth)
   const isOpen = ui.expanded.includes(card.id)
-  // the text column gets an explicit width: border and padding take 4, the icon column 7 or 4, and a few cells of slack
-  // because the desktop's column count is approximate for its font; without a bound the surface never truncates or wraps
-  const iconCols = Svg ? 7 : 4
-  const textWidth = Math.max(16, width - 4 - iconCols - 4)
-  // the icon is centered against the two header lines; the body opens underneath, indented to the text column
+  // the line covers the subline, the body when open, and the blank row before the next entry
+  const lineRows = 1 + (isOpen ? card.bodyRows : 0) + (isLast ? 0 : 1)
   return (
-    <Box key={`card-${card.id}`} borderStyle="round" borderColor={card.color} paddingX={1} flexDirection="column" marginBottom={1} overflow="hidden">
-      <Box flexDirection="row" alignItems="center">
-        <Box flexDirection="column" width={iconCols - 1} flexShrink={0} marginRight={1} justifyContent="center" alignItems="center">
-          {Svg ? (
-            <Svg source={icon(card.kind, card.color)} alt={card.kind} width={34} height={34} />
-          ) : (
-            <Text color={card.color}>{GLYPH[card.kind]}</Text>
-          )}
-        </Box>
-        <Box flexDirection="column" width={textWidth} flexShrink={0}>
-          <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
-            <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
-            <Text bold color={card.color} wrap="truncate-end">
-              {card.title}
-            </Text>
-          </Button>
-          <Text dimColor wrap="truncate-end">
-            {card.subline.replace(/\s+/g, ' ').trim()}
-          </Text>
-        </Box>
+    <Box key={`entry-${card.id}`} flexDirection="row" alignItems="flex-start" overflow="hidden">
+      <Box flexDirection="column" width={ICON_COLS} flexShrink={0} alignItems="center">
+        {Svg ? (
+          <Svg source={icon(card.kind, card.color)} alt={card.kind} width={16} height={16} />
+        ) : (
+          <Text color={card.color}>{GLYPH[card.kind]}</Text>
+        )}
+        {lineRows > 0 ? <Text dimColor>{Array.from({ length: lineRows }, () => '│').join('\n')}</Text> : ''}
       </Box>
-      {isOpen && card.body.length > 0 && (
-        <Box flexDirection="column" marginTop={1} paddingLeft={iconCols} width={textWidth + iconCols}>
-          {card.body}
-        </Box>
-      )}
+      <Box flexDirection="column" width={textWidth} flexShrink={0} marginLeft={1} paddingBottom={isLast ? 0 : 1}>
+        <Button key={card.key} plain onPress={() => act.toggleRow(card.id)}>
+          <Text dimColor>{isOpen ? '▾ ' : '▸ '}</Text>
+          <Text bold color={card.color} wrap="truncate-end">
+            {card.title}
+          </Text>
+        </Button>
+        {card.subline}
+        {isOpen && card.body.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            {card.body}
+          </Box>
+        )}
+      </Box>
     </Box>
   )
 }
 
-function messagesCard(els: Els, rows: (UserRow | OrchestratorRow)[]): Card {
+function messagesCard(els: Els, rows: (UserRow | OrchestratorRow)[], textWidth: number): Card {
   const { Box, Text } = els
   const first = rows[0]!
   const last = rows[rows.length - 1]!
@@ -327,12 +411,17 @@ function messagesCard(els: Els, rows: (UserRow | OrchestratorRow)[]): Card {
     kind: first.kind,
     color: cardColor(first),
     title: rows.length > 1 ? `${who === 'User message' ? 'User messages' : who} (${rows.length})` : who,
-    subline: last.text,
+    subline: (
+      <Text dimColor wrap="truncate-end">
+        {last.text.replace(/\s+/g, ' ').trim()}
+      </Text>
+    ),
     body: rows.map((r, i) => (
       <Box key={`msg-${r.id}`} marginTop={i > 0 ? 1 : 0}>
         <Text wrap="wrap">{r.text.trim()}</Text>
       </Box>
     )),
+    bodyRows: 1 + rows.reduce((n, r, i) => n + rowsOf(r.text.trim(), textWidth) + (i > 0 ? 1 : 0), 0),
   }
 }
 
@@ -355,29 +444,42 @@ function drawActivity(els: Els, items: readonly Activity[]): JSX.Element[] {
   ))
 }
 
-function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, width: number): Card {
+function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, run: Run, textWidth: number): Card {
   const { Box, Text } = els
   const span = row.status === 'pending' ? 'waiting' : elapsed(row.at, isActive(row) ? now : (row.endedAt ?? now))
   const color = cardColor(row)
+  const feed = row.stats.activity.length > 0 ? [<Box key="feed" marginTop={1} flexDirection="column">{drawActivity(els, row.stats.activity)}</Box>] : []
+  const feedRows = row.stats.activity.length > 0 ? 1 + row.stats.activity.length : 0
   if (row.kind === 'worker') {
+    const prs = prsOf(run, row.branch)
+    const latest = prs[0]
+    const lead = [span, row.model, ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')
+    const subline = latest ? (
+      <Box flexDirection="row" alignItems="center" overflow="hidden">
+        <Box flexShrink={0}>
+          <Text dimColor>{`${lead} · `}</Text>
+        </Box>
+        {drawPr(els, latest, `pr-${row.id}-${latest.number}`)}
+      </Box>
+    ) : (
+      <Text dimColor wrap="truncate-end">
+        {lead}
+      </Text>
+    )
+    const noteRows = row.note ? 1 + rowsOf(row.note.trim(), textWidth) : 0
     return {
       id: row.id,
       key: `worker-${row.id}`,
       kind: 'worker',
       color,
       title: row.title,
-      subline: [span, row.model, statusWord[row.status], ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · '),
+      subline,
       body: [
         <Text key="stats" dimColor wrap="truncate-end">
           {statsLine(row.stats, row.model, theme.prices)}
         </Text>,
-        ...(row.stats.activity.length > 0
-          ? [
-              <Box key="feed" marginTop={1} flexDirection="column">
-                {drawActivity(els, row.stats.activity)}
-              </Box>,
-            ]
-          : []),
+        ...(prs.length > 1 ? [<Box key="prs" flexDirection="column" marginTop={1}>{prs.map(pr => drawPr(els, pr, `pr-${row.id}-${pr.number}`))}</Box>] : []),
+        ...feed,
         ...(row.note
           ? [
               <Box key="note" marginTop={1}>
@@ -389,15 +491,26 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
             ]
           : []),
       ],
+      bodyRows: 1 + 1 + (prs.length > 1 ? 1 + prs.length : 0) + feedRows + noteRows,
     }
   }
+  const weak = row.items ? row.items.filter(i => i.score !== 'strong') : []
+  const overviewText = row.overview
+    ? row.overview
+    : row.status === 'running' || row.status === 'stale' || row.status === 'pending'
+      ? 'The QA agent is still working; the overview appears when its report is collected.'
+      : (row.note ?? 'No overview was collected.')
   return {
     id: row.id,
     key: `qa-${row.id}`,
     kind: 'qa',
     color,
     title: `QA round ${row.round}${row.summary ? `: ${verdictWord(row)}` : ''}`,
-    subline: [span, row.model, row.summary ? scoreLine(row) : statusWord[row.status], ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · '),
+    subline: (
+      <Text dimColor wrap="truncate-end">
+        {[span, row.model, row.summary ? scoreLine(row) : statusWord[row.status], ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')}
+      </Text>
+    ),
     body: [
       <Text key="stats" dimColor wrap="truncate-end">
         {statsLine(row.stats, row.model, theme.prices)}
@@ -405,39 +518,33 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
       <Text key="score" wrap="wrap">
         {scoreLine(row)}
       </Text>,
-      row.overview ? (
-        <Box key="overview" marginTop={1}>
-          <Text wrap="wrap">{row.overview}</Text>
-        </Box>
-      ) : (
-        <Text key="overview" dimColor>
-          {row.status === 'running' || row.status === 'stale' || row.status === 'pending'
-            ? 'The QA agent is still working; the overview appears when its report is collected.'
-            : (row.note ?? 'No overview was collected.')}
+      <Box key="overview" marginTop={1}>
+        <Text wrap="wrap" dimColor={!row.overview}>
+          {overviewText}
         </Text>
-      ),
-      ...(row.items && row.items.some(i => i.score !== 'strong')
+      </Box>,
+      ...(weak.length > 0
         ? [
             <Box key="items" flexDirection="column" marginTop={1}>
-              {row.items
-                .filter(i => i.score !== 'strong')
-                .map(i => (
-                  <Text key={`item-${row.id}-${i.id}`} wrap="wrap">
-                    <Text color={i.score === 'unacceptable' ? 'error' : 'warning'}>{i.score}</Text>
-                    {` ${i.title}${i.note ? `: ${i.note}` : ''}`}
-                  </Text>
-                ))}
+              {weak.map(i => (
+                <Text key={`item-${row.id}-${i.id}`} wrap="wrap">
+                  <Text color={i.score === 'unacceptable' ? 'error' : 'warning'}>{i.score}</Text>
+                  {` ${i.title}${i.note ? `: ${i.note}` : ''}`}
+                </Text>
+              ))}
             </Box>,
           ]
         : []),
-      ...(row.stats.activity.length > 0
-        ? [
-            <Box key="feed" marginTop={1} flexDirection="column">
-              {drawActivity(els, row.stats.activity)}
-            </Box>,
-          ]
-        : []),
+      ...feed,
     ],
+    bodyRows:
+      1 +
+      1 +
+      rowsOf(scoreLine(row), textWidth) +
+      1 +
+      rowsOf(overviewText, textWidth) +
+      (weak.length > 0 ? 1 + weak.reduce((n, i) => n + rowsOf(`${i.score} ${i.title}: ${i.note}`, textWidth), 0) : 0) +
+      feedRows,
   }
 }
 
@@ -455,6 +562,7 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   const trouble = workers.length - running - waiting - done
   const qa = current.filter((r): r is QaRow => r.kind === 'qa').pop()
   const money = spendText(spend(rows.filter(isAgentRow), theme.prices, run.orchestrator))
+  const openPrs = run.prs.filter(p => p.state === 'open' || p.state === 'draft').length
 
   const workerBits: string[] = []
   if (running > 0) workerBits.push(`${running} running`)
@@ -463,6 +571,8 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   if (trouble > 0) workerBits.push(`${trouble} failed`)
   const second: string[] = []
   if (workerBits.length > 0) second.push(`agents ${workerBits.join(', ')}`)
+  if (openPrs > 0) second.push(`${openPrs} open PR${openPrs === 1 ? '' : 's'}`)
+  if (run.status === 'releasing' && run.release) second.push(`release PR #${run.release.number} waiting on checks`)
   if (qa) second.push(`QA ${verdictWord(qa)}`)
   if (money) second.push(money)
 

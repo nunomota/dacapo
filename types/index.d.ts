@@ -1,4 +1,4 @@
-export type RunStatus = 'planning' | 'active' | 'done' | 'aborted'
+export type RunStatus = 'planning' | 'active' | 'releasing' | 'done' | 'aborted'
 
 export type Phase = 'clarify' | 'research' | 'plan' | 'implement' | 'qa' | 'release'
 
@@ -10,6 +10,30 @@ export type Activity = { at: number; kind: 'tool' | 'text'; text: string }
 
 export type IterationInfo = { n: number; title: string; overview?: string; startedAt: number }
 
+export type PrState = 'draft' | 'open' | 'merged' | 'closed'
+
+export type PrChecks = 'none' | 'pending' | 'passing' | 'failing'
+
+/** A pull request of the repository whose head is one of the run's branches, as last polled through gh. */
+export type Pr = {
+  number: number
+  url: string
+  title: string
+  state: PrState
+  checks: PrChecks
+  /** GitHub's answer on conflicts: unknown while it is still computing. */
+  mergeable: 'mergeable' | 'conflicting' | 'unknown'
+  /** Head and base branch names. */
+  head: string
+  base: string
+  createdAt: number
+}
+
+/** Whether gh can be used, as checked at start. */
+export type Gh =
+  | { ok: true; repo: string; url: string }
+  | { ok: false; problem: 'missing' | 'unauthenticated' | 'not-github'; detail: string }
+
 export type Run = {
   id: string
   task: string
@@ -17,16 +41,18 @@ export type Run = {
   overview?: string
   startedAt: number
   status: RunStatus
-  /** The current implementation iteration, 1-based. */
+  /** The current dispatch round, 1-based. */
   iteration: number
   /** Absolute path of the repository root. */
   root: string
-  devBranch: string
-  mainBranch: string
+  /** The run branch, cut from the base branch at start; every worker pull request targets it. Empty until start. */
+  branch: string
+  /** Absolute path of the worktree that has `branch` checked out, `.workspaces/<branch>`. Empty until start. */
+  worktree: string
+  /** The branch the run was cut from and is released into through the release pull request. */
+  baseBranch: string
   /** Absolute path of the run log folder, `.workspaces/.dacapo/<id>`. */
   runDir: string
-  /** Absolute path of the worktree that has `devBranch` checked out. */
-  devWorktree: string
   phase: Phase
   iterations: IterationInfo[]
   /** The orchestrator's own model steps during the run. */
@@ -35,6 +61,14 @@ export type Run = {
   wakes: Wake[]
   /** The last push to origin that did not happen, shown until the next push succeeds. */
   pushProblem?: string
+  /** gh as checked at start. */
+  gh?: Gh
+  /** The pull requests of the run's branches, newest first, as last polled. */
+  prs: Pr[]
+  /** When `prs` was last refreshed. */
+  prsAt?: number
+  /** The release pull request from the run branch into the base branch, once finish opened it. */
+  release?: { number: number; url: string; title: string; openedAt: number; attempt: number }
 }
 
 /** A prompt the run queued for the orchestrator; `deliveredAt` is set when its turn starts, else the ticker resends it. */
@@ -108,16 +142,22 @@ export type WorkerRow = {
   lastActivityAt: number
   taskId: string
   title: string
+  /** The worker's branch, `<run branch>--<task id>`; its pull requests are the run's `prs` with this head. */
   branch: string
   worktree: string
   model: string
+  /** The planned title: the squash commit's, and the pull request's. */
   commit: string
+  /** How the worker merges its pull request: squash (the rule) or a merge commit (for a branch that merges the base branch in). */
+  mergeMethod: 'squash' | 'merge'
   status: WorkerStatus
   /** The worker's closing answer, or the failure reason. */
   note?: string
   stats: AgentStats
   /** How many times the agent was resumed after it had ended. */
   restarts?: number
+  /** True when the row reuses the branch and worktree of an earlier worker of the same task. */
+  isResumed?: boolean
 }
 
 export type QaRow = {
@@ -148,10 +188,10 @@ export type QaRow = {
 export type Row = UserRow | OrchestratorRow | WorkerRow | QaRow
 
 export type Ui = {
-  /** Iteration numbers whose rows are folded away. */
-  collapsed: number[]
   /** Ids of rows whose body is shown. */
   expanded: string[]
+  /** The pull request list in the top card is unfolded. */
+  isPrListOpen: boolean
   /** The clock as of the last tick, for spinners and elapsed times. */
   tick: number
   /** The pane is hidden from the band's point of view. */
