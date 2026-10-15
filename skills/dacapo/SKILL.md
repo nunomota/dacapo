@@ -28,7 +28,7 @@ Keep the findings short: a stack decision, the versions, the commands, and the t
 
 ## Phase 3: start the run and plan
 
-1. Call `mcp__dacapo__start` with the task in one line (the run's heading) and an `overview`: one short paragraph on the deliverable, who it is for and what done looks like. It confirms the repository, creates the `dev` branch and its worktree if missing, and opens the pane. (The branch names default to `dev` and `main`; pass others only if the repository uses different ones.)
+1. Call `mcp__dacapo__start` with the task in one line (the run's heading, written by you after clarification, never the prompt verbatim) and an `overview`: one short paragraph on the deliverable, who it is for and what done looks like. Until then the pane shows "Clarifying the task" in its place. It confirms the repository, creates the `dev` branch and its worktree if missing, and opens the pane. (The branch names default to `dev` and `main`; pass others only if the repository uses different ones.)
 2. Split the work into components that can be built independently and in parallel. Each component becomes one worker task:
    - `id`: a kebab-case slug.
    - `title`: a few words.

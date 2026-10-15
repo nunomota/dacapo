@@ -189,9 +189,15 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   return (
     <Box flexDirection="column">
       <Box borderStyle="round" borderDimColor paddingX={1} flexDirection="column">
-        <Text bold wrap="truncate-end">
-          {run.task}
-        </Text>
+        {run.task ? (
+          <Text bold wrap="truncate-end">
+            {run.task.replace(/\s+/g, ' ').trim()}
+          </Text>
+        ) : (
+          <Text dimColor italic wrap="truncate-end">
+            Clarifying the task…
+          </Text>
+        )}
         <Text wrap="truncate-end">
           {run.status === 'aborted' ? (
             <Text>
@@ -493,7 +499,7 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
         </Text>
         <Text dimColor>{SEP}</Text>
         <Text bold>{run.phase}</Text>
-        <Text dimColor>{`${SEP}${cut(run.task, Math.max(8, inner - 24 - run.phase.length))}`}</Text>
+        <Text dimColor>{`${SEP}${cut(run.task || 'clarifying the task', Math.max(8, inner - 24 - run.phase.length))}`}</Text>
       </Text>
       <Box flexDirection="row" justifyContent="space-between">
         <Text dimColor wrap="truncate-end">

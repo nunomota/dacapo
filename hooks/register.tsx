@@ -129,7 +129,7 @@ async function openRun(task: string, devBranch: string, mainBranch: string, at?:
   const cwd = at ?? (await io.cwd())
   const root = (await git.repoRoot(io, cwd)) ?? cwd
   const now = await io.now()
-  const id = `${new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15)}-${slug(task).slice(0, 24)}`
+  const id = `${new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15)}-${slug(task || 'run').slice(0, 24)}`
   const run: Run = {
     id,
     task,
@@ -200,7 +200,7 @@ function grow(stats: AgentStats, usage: Partial<AgentStats['usage']> | null, too
 function statusText(snap: Snapshot): string {
   const { run, rows, ui } = snap
   if (!run) return 'No dacapo run.'
-  const lines = [`Run ${run.id}: ${run.status}, iteration ${run.iteration}, dev=${run.devBranch}, main=${run.mainBranch}`]
+  const lines = [`Run ${run.id}${run.task ? ` (${run.task.replace(/\s+/g, ' ')})` : ' (task not yet named; call start when it is clear)'}: ${run.status}, iteration ${run.iteration}, dev=${run.devBranch}, main=${run.mainBranch}`]
   const total = spendText(spend(rows.filter(isAgentRow), prices, run.orchestrator))
   lines[0] += `, phase ${run.phase}${total ? `, ${total}` : ''}`
   if (run.overview) lines.push(`  ${run.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
@@ -948,8 +948,8 @@ export const register: Register = (on, options) => {
     const starts = /^\s*\/dacapo(?::dacapo)?(\s|$)/.exec(text)
     let run = await currentRun()
     if (starts) {
-      const task = text.slice(starts[0].length).trim() || '(task to be clarified)'
-      run = await openRun(task, 'dev', 'main')
+      // the run has no heading yet: the prompt is the person's words, the title and overview come from `start` once the task is clear
+      run = await openRun('', 'dev', 'main')
       void $.ui.open({ id: PANE, title: 'Da capo' })
     }
     if (run) {

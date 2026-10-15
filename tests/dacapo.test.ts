@@ -106,7 +106,8 @@ describe('the pane', () => {
     await $.prompt.submit({ text: 'also keep it tiny', wait: false, origin: { kind: 'composer' } })
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
-      expect(await ui.find({ type: 'Text', text: /build a todo app/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /Clarifying the task/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^build a todo app$/ })).toBeUndefined()
       expect(await ui.find({ text: /User messages \(2\)/ })).toBeDefined()
       expect(await ui.find({ text: /also keep it tiny/ })).toBeDefined()
       if (surface === 'desktop') expect(await ui.find({ type: 'Svg' })).toBeDefined()
