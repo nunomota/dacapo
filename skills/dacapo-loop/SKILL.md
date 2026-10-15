@@ -117,7 +117,7 @@ Produce everything below before any code exists.
 2. **The tasks.** Split the work into components built independently and in parallel, one task each:
    - `id`: a kebab-case slug.
    - `title`: a few words.
-   - `brief`: the complete prompt for a worker that knows nothing else: what to build, which files or modules, the research facts that matter, constraints, and what finished looks like. Workers cannot see each other, so name every contract between components explicitly: routes, types, function signatures, file names.
+   - `brief`: the complete prompt for a worker that knows nothing else: what to build, which files or modules, the research facts that matter, constraints, and what done looks like. Workers cannot see each other, so name every contract between components explicitly: routes, types, function signatures, file names.
    - `model`: `strong` or `fast`.
    - `landing title`: the one line the work lands under.
    - `build`: the command that must pass before landing. `test`: the test command, if any.
@@ -162,7 +162,7 @@ Show the plan (tasks, tiers, landing titles; rubric and harness) in a compact fo
 ## Phase 6: merge
 
 1. Ask the host to integrate the run into the base line, with a one-line title summing up the run and one paragraph on what changed and why.
-2. If the host refuses because the base line moved or its checks fail, start a worker to reconcile or fix it. Either resume the task at fault or start a repair task. Then run QA once more, since a reconciliation can break things, and ask again once it passes.
+2. If the host refuses because the base line moved or its checks fail, start a worker to reconcile or fix it. Either resume the task at fault or start a repair task. Then run QA once more, since a reconciliation can break things, and decide as in phase 5. If the user had chosen to merge with a limitation, ask the host to integrate again unless QA shows new items below strong.
 3. When the run is integrated, report in a few lines: what shipped, the last QA verdict, and anything deliberately left out, including every limitation a worker reported.
 
 ## Rules
