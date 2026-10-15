@@ -1,4 +1,4 @@
-export const CLEAN_COMMITS = `## Commit rules (clean-commits)
+export const CLEAN_COMMITS = `## Commit rules (the dacapo clean-commits skill)
 
 - Every commit title follows Conventional Commits: \`type: description\` (for example \`feat: add login endpoint\`).
 - Allowed types only: feat, fix, docs, style, refactor, test, chore, perf, ci, revert. No other type.
@@ -6,7 +6,7 @@ export const CLEAN_COMMITS = `## Commit rules (clean-commits)
 - Breaking changes use \`!\` before the colon: \`feat!: drop Node 14 support\`.
 - Each commit is one coherent, independently committable unit of work, ordered so each builds on the previous.
 - Work through units one at a time: implement the unit fully, stage it (new files explicitly by name, then \`git add -u\`; only \`git add -u\` when nothing is new), then \`git commit -m "<title>"\`.
-- The commit message is the title alone: no body, no Co-Authored-By, no extra lines.
+- The commit message is the title alone: no body, no extra lines. A Co-Authored-By trailer that the tooling adds is fine.
 - Never use \`git rm\`, \`git reset\`, \`git rebase\`, \`git push --force\` or any command that rewrites history or removes tracked files.`
 
 export const WORKER_SYSTEM = `You are a worker subagent in a dacapo run. You implement exactly one task inside a git worktree that was prepared for you, on a branch of your own.

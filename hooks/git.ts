@@ -160,12 +160,12 @@ export async function pushBranch(io: Io, cwd: string, branch: string): Promise<P
 
 export type ReleaseOutcome =
   | { kind: 'fast-forward' }
-  | { kind: 'merge-commit' }
   | { kind: 'up-to-date' }
-  | { kind: 'conflict'; files: string[] }
+  /** `main` holds commits `dev` lacks, so no fast-forward is possible; nothing was changed. */
+  | { kind: 'diverged'; ahead: number }
   | { kind: 'error'; message: string }
 
-/** Brings `main` up to `dev`: fast-forward when possible, else one `chore:` merge commit. */
+/** Fast-forwards `main` to `dev`, and only that: a diverged `main` is reported untouched. */
 export async function releaseToMain(
   io: Io,
   root: string,
@@ -186,21 +186,14 @@ export async function releaseToMain(
     }
   }
   const behind = await git(io, mainTree, ['rev-list', '--count', `${main}..${dev}`])
+  const ahead = await git(io, mainTree, ['rev-list', '--count', `${dev}..${main}`])
+  const aheadBy = ahead.ok ? Number(ahead.out) || 0 : 0
   let outcome: ReleaseOutcome
   if (behind.ok && behind.out === '0') outcome = { kind: 'up-to-date' }
+  else if (aheadBy > 0) outcome = { kind: 'diverged', ahead: aheadBy }
   else {
     const ff = await git(io, mainTree, ['merge', '--ff-only', dev])
-    if (ff.ok) outcome = { kind: 'fast-forward' }
-    else {
-      const m = await git(io, mainTree, ['merge', '--no-ff', '-m', `chore: merge ${dev} into ${main}`, dev])
-      if (m.ok) outcome = { kind: 'merge-commit' }
-      else {
-        const conflicted = await git(io, mainTree, ['diff', '--name-only', '--diff-filter=U'])
-        const files = conflicted.out ? conflicted.out.split('\n') : []
-        await git(io, mainTree, ['merge', '--abort'])
-        outcome = files.length > 0 ? { kind: 'conflict', files } : { kind: 'error', message: m.err || m.out }
-      }
-    }
+    outcome = ff.ok ? { kind: 'fast-forward' } : { kind: 'error', message: ff.err || ff.out }
   }
   if (isTemp) notes.push(...(await removeWorktree(io, root, mainTree)))
   return { outcome, notes }

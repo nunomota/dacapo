@@ -39,7 +39,7 @@ You can type while workers run; your prompts become rows in the timeline and are
 ## What the mod enforces
 
 - **Only workers change code.** While a run is active, Edit, Write and history-changing git commands from the orchestrator are refused. A worker can only write inside its own worktree.
-- **Clean commits.** Workers commit in Conventional Commit units with title-only messages; the squash commit on `dev` takes the title from the plan.
+- **Clean commits.** Workers follow the bundled `clean-commits` skill: Conventional Commit units with title-only messages; the squash commit on `dev` takes the title from the plan. The skill is also available on its own as `/clean-commits`.
 - **QA never reads source.** The QA subagent may read and search only the `.context/` folder of its worktree, and the only file it may write is its report. It is given the harness (how to run and use the deliverable) and the rubric, and scores every item `strong`, `acceptable` or `unacceptable`. The mod validates the report (every rubric id scored once, every score one of the three words, a non-empty overview), derives the verdict, and keeps a copy under `.workspaces/.dacapo/<run>/`.
 - **Merges reach the remote.** After every squash merge the mod pushes `dev` to `origin`, and after the release it pushes `main`. A push that fails, or a repository without an `origin`, is reported in the tool's answer, in `status` and in the pane, and the loop goes on; push by hand when you can.
 - **Wake-ups are delivered, not fired and forgotten.** Collection of a QA report and every `[dacapo]` prompt run on the mod's own timer, outside the finishing agent's dispatch. A wake-up whose turn has not started within 30 seconds is sent again, up to three times, and `status` lists any still undelivered.
@@ -92,6 +92,7 @@ hooks/cost.ts                    price table, token and cost formatting
 hooks/io.ts                      the engine calls the helpers use
 types/index.d.ts                 the $.state contract
 skills/dacapo/SKILL.md        the /dacapo skill
+skills/clean-commits/SKILL.md    the commit rules workers and the squash merges follow
 tests/dacapo.test.ts          claude plugin test
 ```
 

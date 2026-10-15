@@ -55,12 +55,12 @@ Show the plan (tasks, models, commit titles; rubric and harness) in a compact fo
 
 ## Phase 5: finish
 
-Call `mcp__dacapo__finish`. It merges `dev` into `main` (fast-forward, else one merge commit), removes leftover run worktrees and closes the run. Report in a few lines: what shipped, the last QA verdict, and anything deliberately left out. Reports and briefs of the run are under `.workspaces/.dacapo/<run id>/`.
+Call `mcp__dacapo__finish`. It fast-forwards `main` to `dev`, removes leftover run worktrees and closes the run. If `main` has moved on its own since the run started, finish refuses rather than making a merge commit: dispatch a worker whose task is to merge `main` into its branch, merge and QA as usual so `dev` contains `main`, then finish again. Report in a few lines: what shipped, the last QA verdict, and anything deliberately left out. Reports and briefs of the run are under `.workspaces/.dacapo/<run id>/`.
 
 ## Rules you keep
 
 - Only workers change the codebase. The tools refuse edits and history-changing git commands from you while a run is active.
-- Every contribution follows clean-commits: Conventional Commit titles, one coherent unit per commit, no bodies. The squash commit titles come from your plan.
+- Every contribution follows the bundled `clean-commits` skill: Conventional Commit titles, one coherent unit per commit, no bodies. The squash commit titles come from your plan.
 - Workers never see each other's work mid-flight: put the contracts in the briefs.
 - QA never reads source. Judge its report, not its method.
 - Prefer finishing the loop over polishing forever: when QA says pass, finish.

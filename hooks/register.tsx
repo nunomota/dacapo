@@ -506,17 +506,13 @@ async function finish(a: Args) {
   }
   if (!run.devWorktree) return fail('finish: nothing was ever dispatched; call finish with abort=true to close the run')
   const { outcome, notes } = await git.releaseToMain(io, run.root, run.devBranch, run.mainBranch)
-  if (outcome.kind === 'conflict') {
-    return fail(`finish: merging ${run.devBranch} into ${run.mainBranch} conflicts in ${outcome.files.join(', ')}; dispatch a worker to reconcile ${run.mainBranch} into ${run.devBranch}, then finish again`)
+  if (outcome.kind === 'diverged') {
+    return fail(
+      `finish: ${run.mainBranch} has ${outcome.ahead} commit(s) that ${run.devBranch} lacks, so it cannot be fast-forwarded; nothing was changed. Dispatch a worker whose task is to merge ${run.mainBranch} into its branch (so ${run.devBranch} contains ${run.mainBranch}), merge and QA as usual, then finish again.`,
+    )
   }
   if (outcome.kind === 'error') return fail(`finish: ${outcome.message}`)
-  lines.push(
-    outcome.kind === 'up-to-date'
-      ? `${run.mainBranch} already holds ${run.devBranch}.`
-      : outcome.kind === 'fast-forward'
-        ? `${run.mainBranch} fast-forwarded to ${run.devBranch}.`
-        : `${run.mainBranch} merged ${run.devBranch} with one merge commit (histories had diverged).`,
-  )
+  lines.push(outcome.kind === 'up-to-date' ? `${run.mainBranch} already holds ${run.devBranch}.` : `${run.mainBranch} fast-forwarded to ${run.devBranch}.`)
   lines.push(...notes)
   if (outcome.kind !== 'up-to-date') lines.push(await pushAfter(run.root, run.mainBranch))
   for (const w of rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.status !== 'merged')) {
@@ -857,7 +853,7 @@ export const register: Register = (on, options) => {
       }),
       $.tool.register({
         name: 'finish',
-        description: 'Ends the run: merges the dev branch into the main branch (fast-forward, else one merge commit), removes leftover run worktrees, and closes the loop.',
+        description: 'Ends the run: fast-forwards the main branch to the dev branch (refusing if main has diverged), removes leftover run worktrees, and closes the loop.',
         isDeferred: false,
         inputSchema: {
           type: 'object',
