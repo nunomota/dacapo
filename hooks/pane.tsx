@@ -361,8 +361,8 @@ function drawPhases(els: Els, current: Phase, width: number): JSX.Element {
  */
 type Card = { id: string; key: string; kind: Row['kind']; color: string; title: string; subline: JSX.Element; body: JSX.Element[]; bodyRows: number }
 
-/** The tree column: `├─` beside an entry's header, `│` down to the next entry, `└─` for the last; two cells wide. */
-const TREE_COLS = 2
+/** The tree column: `├─` beside an entry's header, `│` down to the next entry, `└─` for the last; three cells wide, the last one blank so the tick stops short of the icon. */
+const TREE_COLS = 3
 /** The icon column, right of the tree. */
 const ICON_COLS = 2
 /** One text row on the remote surfaces, in CSS pixels: the tree pieces are drawn this tall so they meet edge to edge. */
@@ -379,11 +379,11 @@ function treeSvg(piece: Piece, rows: number): string {
   const parts: string[] = []
   if (piece === 'trunk' || piece === 'branch') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${h}"/>`)
   if (piece === 'last') parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${mid}"/>`)
-  if (piece === 'branch' || piece === 'last' || piece === 'tick') parts.push(`<line x1="${x}" y1="${mid}" x2="16" y2="${mid}"/>`)
+  if (piece === 'branch' || piece === 'last' || piece === 'tick') parts.push(`<line x1="${x}" y1="${mid}" x2="14" y2="${mid}"/>`)
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 ${h}" fill="none" stroke="${TREE_COLOR}" stroke-width="1.5" stroke-linecap="round">${parts.join('')}</svg>`
 }
 
-const TREE_GLYPH: Record<Piece, string> = { branch: '├─', last: '└─', trunk: '│ ', tick: '─', none: '  ' }
+const TREE_GLYPH: Record<Piece, string> = { branch: '├─ ', last: '└─ ', trunk: '│  ', tick: '─  ', none: '   ' }
 
 /** One piece in the tree column, `rows` rows tall; the terminal draws glyphs, the other surfaces an SVG. */
 function connector(els: Els, piece: Piece, rows = 1): JSX.Element {
