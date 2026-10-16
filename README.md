@@ -12,9 +12,7 @@
 
 Everything in the mod is deterministic: it manages worktrees, branches and pull requests, validates reports, wakes the orchestrator, and draws the pane. No model is asked anything inside it. [How it works](docs/how-it-works.md) has the details.
 
-<p align="center">
-  <img src="docs/pane.png" alt="The dacapo pane: task header, phase bar, progress rows and the timeline" width="620">
-</p>
+<img src="docs/pane.png" alt="The dacapo pane: task header, phase bar, progress rows and the timeline" align="right" width="33%">
 
 ## Install
 
