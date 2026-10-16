@@ -12,7 +12,9 @@
 
 Everything in the mod is deterministic: it manages worktrees, branches and pull requests, validates reports, wakes the orchestrator, and draws the pane. No model is asked anything inside it. [How it works](docs/how-it-works.md) has the details.
 
-<img src="docs/pane.png" alt="The dacapo pane: task header, phase bar, progress rows and the timeline" align="right" width="33%">
+<table>
+<tr>
+<td width="66%" valign="top">
 
 ## Install
 
@@ -33,6 +35,15 @@ claude plugin update dacapo
 ```
 
 Then restart Claude Code. Your configuration is not touched: it lives outside the plugin (see below).
+
+</td>
+<td width="34%" valign="top">
+
+<img src="docs/pane.png" alt="The dacapo pane: task header, phase bar, progress rows and the timeline">
+
+</td>
+</tr>
+</table>
 
 ## Use
 
