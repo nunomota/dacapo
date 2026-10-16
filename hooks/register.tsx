@@ -1,18 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Activity, AgentStats, Gh, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
+import type { Activity, AgentStats, Gh, Level, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
+import { describeConf, loadConf, type Layer, type Loaded } from './conf'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as gh from './gh'
 import * as git from './git'
 import type { Io } from './io'
-import { PHASES, drawBand, drawPane, elapsed, hhmm, isAgentRow, prText, prsOf, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
-import { QA_SYSTEM, WORKER_SYSTEM, qaBrief, workerBrief } from './prompts'
-import { validateReport, validateRubric, type RubricItem } from './report'
+import { LEVELS, PHASES, drawBand, drawPane, elapsed, hhmm, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
+import { QA_SYSTEM, REVIEW_SYSTEM, WORKER_SYSTEM, qaBrief, reviewBrief, workerBrief } from './prompts'
+import { QA_CATEGORIES, REVIEW_CATEGORIES, validateReport, validateRubric, type RubricItem } from './report'
 
 const PANE = 'dacapo'
 const WORKER_AGENT = 'dacapo:worker'
 const QA_AGENT = 'dacapo:qa'
+const REVIEW_AGENT = 'dacapo:reviewer'
 const tool = (name: string) => `mcp__dacapo__${name}`
 
 const STALE_MS = 30 * 60_000
@@ -41,12 +43,34 @@ type Args = Record<string, unknown>
 let io: Io
 /** Dollars per million tokens by model prefix, from the built-in table and the `prices` option. */
 let prices: Record<string, Price> = parsePrices(undefined)
+/** The configuration in force: the shipped `dacapo.conf`, then the user's, then the repository's. */
+let conf: Loaded = loadConf([])
+const SHIPPED_CONF = `${import.meta.dir}/../dacapo.conf`
+
+/** Reads the conf files that exist, in the order they apply; agents never read them, the config tool and command tell. */
+async function readConf(root: string): Promise<Loaded> {
+  const home = await io.home().catch(() => undefined)
+  const paths = [SHIPPED_CONF, ...(home ? [`${home}/.claude/dacapo.conf`] : []), `${root}/.dacapo.conf`]
+  const layers: Layer[] = []
+  for (const path of paths) {
+    try {
+      layers.push({ path, text: (await io.exists(path)) ? await io.read(path) : null })
+    } catch {
+      layers.push({ path, text: null })
+    }
+  }
+  conf = loadConf(layers)
+  return conf
+}
 const freshStats = (): AgentStats => ({ usage: ZERO, steps: 0, toolCalls: 0, activity: [] })
 const setPhase = (phase: Phase) => io.setRun(run => (run ? { ...run, phase } : run))
 /** Prompts this module queued itself, so `prompt.submit` does not log them as the person's. */
 const ownPrompts = new Set<string>()
-/** Rubrics by QA row id, for validation; the run folder holds the copy that survives a reload. */
+/** Rubrics by judge (`qa-<iteration>-<round>`, `review-...`), for validation; the run folder holds the copy that survives a reload. */
 const rubrics = new Map<string, RubricItem[]>()
+type Role = 'qa' | 'review'
+/** The key of a judge row's rubric, report and wake-up: its role, iteration and round. */
+const judgeKey = (row: QaRow) => `${roleOf(row)}-${row.iteration}-${row.round}`
 
 // ---------- small helpers ----------
 
@@ -78,10 +102,10 @@ const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : 
 
 const isLive = (row: WorkerRow | QaRow) => row.status === 'running' || row.status === 'stale'
 const isTerminal = (row: WorkerRow | QaRow) => !isLive(row) && row.status !== 'pending'
-const pendingId = (kind: 'worker' | 'qa', iteration: number, key: string) => `pending-${kind}-${iteration}-${key}`
-/** The first line of every prompt the Agent hook hands a worker or QA agent; the spawn hook reads the worktree off it. */
+const pendingId = (kind: 'worker' | Role, iteration: number, key: string) => `pending-${kind}-${iteration}-${key}`
+/** The first line of every prompt the Agent hook hands a worker, QA or reviewer agent; the spawn hook reads the worktree off it. */
 const WORKTREE_LINE = /^\[dacapo worktree: (.+)\]$/m
-const ASK_LINE = /^\s*dacapo (worker|qa) (\S+)\s*$/
+const ASK_LINE = /^\s*dacapo (worker|qa|review) (\S+)\s*$/
 /** The last line of a worker's answer: `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`. */
 const STATUS_LINE = /^\s*dacapo:\s*(done with limitations|done|failed)\s*\.?\s*$/im
 
@@ -131,7 +155,7 @@ const crashed = (_: unknown, e: { tool: string }, next: { error: { kind: string;
 
 // ---------- the run ----------
 
-async function openRun(task: string, baseBranch: string, at?: string): Promise<Run> {
+async function openRun(task: string, baseBranch: string, at?: string, level: Level = 'review'): Promise<Run> {
   const cwd = at ?? (await io.cwd())
   const root = (await git.repoRoot(io, cwd)) ?? cwd
   const now = await io.now()
@@ -146,6 +170,8 @@ async function openRun(task: string, baseBranch: string, at?: string): Promise<R
     branch: '',
     worktree: '',
     baseBranch,
+    level,
+    judges: conf.conf.judges,
     runDir: `${root}/.workspaces/.dacapo/${id}`,
     phase: 'clarify',
     iterations: [],
@@ -247,7 +273,7 @@ function statusText(snap: Snapshot): string {
     `Run ${run.id}${run.task ? ` (${run.task.replace(/\s+/g, ' ')})` : ' (task not yet named; call start when it is clear)'}: ${run.status}, round ${run.iteration}, branch=${run.branch || '(not started)'}, base=${run.baseBranch}`,
   ]
   const total = spendText(spend(rows.filter(isAgentRow), prices, run.orchestrator))
-  lines[0] += `, phase ${run.phase}${total ? `, ${total}` : ''}`
+  lines[0] += `, level ${levelOf(run)}${run.judges === 'parallel' ? ' (judges in parallel)' : ''}, phase ${run.phase}${total ? `, ${total}` : ''}`
   if (run.overview) lines.push(`  ${run.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
   if (run.gh && !run.gh.ok) lines.push(`gh: ${run.gh.problem} (${run.gh.detail})`)
   if (run.pushProblem) lines.push(`Push problem: ${run.pushProblem}`)
@@ -273,7 +299,7 @@ function statusText(snap: Snapshot): string {
         )
       } else {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
-        lines.push(`  ${t} QA round ${row.round} [${row.id}] ${statusWord[row.status]} (${span}): ${scoreLine(row)}`)
+        lines.push(`  ${t} ${roundName(row)} [${row.id}] ${statusWord[row.status]} (${span}): ${scoreLine(row)}`)
       }
     }
   }
@@ -291,13 +317,22 @@ async function start(a: Args) {
   if (root && !(await git.repoRoot(io, root))) return fail(`start: ${root} is not inside a git repository`)
   const overview = str(a.overview).trim() || undefined
   const baseBranch = str(a.baseBranch).trim() || 'main'
+  const askedLevel = str(a.level).trim()
+  if (askedLevel && !LEVELS.includes(askedLevel as Level)) return fail(`start: "level" must be one of ${LEVELS.join(', ')}; got ${JSON.stringify(askedLevel)}`)
+  const askedJudges = str(a.judges).trim()
+  if (askedJudges && askedJudges !== 'sequential' && askedJudges !== 'parallel') return fail(`start: "judges" must be "sequential" or "parallel"; got ${JSON.stringify(askedJudges)}`)
   const wanted = str(a.branch).trim() || slug(task)
   if (!BRANCH_NAME.test(wanted) || wanted.includes('--') || wanted === baseBranch) {
     return fail(`start: "branch" must be a lowercase git branch name without "--" and different from ${baseBranch}; got ${JSON.stringify(wanted)}`)
   }
   let run = await currentRun()
-  if (!run) run = await openRun(task, baseBranch, root || undefined)
-  const named: Run = { ...run, task, overview: overview ?? run.overview, baseBranch: run.worktree ? run.baseBranch : baseBranch }
+  if (!run) run = await openRun(task, baseBranch, root || undefined, (askedLevel as Level) || 'review')
+  // the level is fixed once work can exist: a start after setup keeps it
+  if (askedLevel && run.worktree && askedLevel !== levelOf(run)) return fail(`start: the run is at level ${levelOf(run)} and a level is never changed mid-run`)
+  const level: Level = (askedLevel as Level) || levelOf(run)
+  if (askedJudges && run.worktree && askedJudges !== (run.judges ?? 'sequential')) return fail(`start: the run's judges are ${run.judges ?? 'sequential'} and that is never changed mid-run`)
+  const judges = (askedJudges as Run['judges']) || run.judges || conf.conf.judges
+  const named: Run = { ...run, task, level, judges, overview: overview ?? run.overview, baseBranch: run.worktree ? run.baseBranch : baseBranch }
   if (root && !run.worktree) {
     const top = (await git.repoRoot(io, root)) ?? root
     named.root = top
@@ -332,6 +367,8 @@ async function start(a: Args) {
       ...notes.map(n => `- ${n}`),
       `- every worker branches from "${run.branch}" and lands through a pull request into it; the final pull request goes from "${run.branch}" into "${run.baseBranch}"`,
       `- run folder ${run.runDir}`,
+      `- level ${levelOf(run)}: ${levelOf(run) === 'build' ? 'no QA; the run merges once the work has landed' : levelOf(run) === 'review' ? 'QA as the end user, then merge' : run.judges === 'parallel' ? 'QA as the end user and an engineering review side by side, then merge' : 'QA as the end user, then an engineering review, then merge'}`,
+      `- models: workers ${conf.conf.workers.join(', ')}; QA ${conf.conf.qa.join(', ')}; review ${conf.conf.review.join(', ')} (the first of each is the strong tier and the default, the last the fast tier)`,
       `Plan the work, then call ${tool('dispatch')}.`,
     ].join('\n'),
   )
@@ -357,7 +394,7 @@ async function dispatch(a: Args) {
     if (ids.has(id)) return fail(`dispatch: task id "${id}" repeats`)
     ids.add(id)
     if (!str(t.title).trim() || !str(t.prompt).trim()) return fail(`dispatch: task "${id}" needs a title and a prompt`)
-    if (t.model !== 'opus' && t.model !== 'sonnet') return fail(`dispatch: task "${id}" model must be "opus" or "sonnet"`)
+    if (typeof t.model !== 'string' || !conf.conf.workers.includes(t.model)) return fail(`dispatch: task "${id}" model must be one of ${conf.conf.workers.join(', ')} (the configured worker models; see ${tool('config')})`)
     const commit = str(t.commit).trim()
     if (!COMMIT_TITLE.test(commit) || /^\w+\(/.test(commit) || commit.length > 72) {
       return fail(`dispatch: task "${id}" commit title "${commit}" must be "<type>: <description>" with an allowed type, no scope, at most 72 characters`)
@@ -470,6 +507,12 @@ async function dispatch(a: Args) {
   return ok(text)
 }
 
+/** What the orchestrator calls once a round's work has landed and is synced, by level. */
+const afterLanding = (run: Run): string => (levelOf(run) === 'build' ? tool('finish') : tool('qa'))
+/** The judges to run again after a reconciliation or repair, by level, as a phrase. */
+const judgeAgain = (run: Run): string =>
+  levelOf(run) === 'build' ? '' : levelOf(run) === 'review' ? `run ${tool('qa')} once more since a conflict resolution can break things, and ` : `run ${tool('qa')} and then ${tool('review')} once more since a conflict resolution can break things, and `
+
 async function sync() {
   const run = await currentRun()
   if (!run) return fail('sync: no active run')
@@ -505,7 +548,7 @@ async function sync() {
     pulled.kind === 'pulled' ? `${fresh.worktree} fast-forwarded by ${pulled.commits} commit(s).` : `${fresh.branch} at ${fresh.worktree} was not fast-forwarded: ${pulled.message}`,
     ...(waiting.length > 0 ? ['Finished without landing:', ...waiting.map(s => `- ${s}`)] : []),
     ...(kept.length > 0 ? ['Not landed:', ...kept.map(s => `- ${s}`)] : []),
-    landed.length > 0 && waiting.length === 0 ? `Next: call ${tool('qa')}.` : '',
+    landed.length > 0 && waiting.length === 0 ? `Next: call ${afterLanding(fresh)}.` : '',
   ]
     .filter(Boolean)
     .join('\n')
@@ -514,41 +557,66 @@ async function sync() {
 
 const qaPrompt = (worktree: string) =>
   `Read ${worktree}/.context/qa-brief.md and ${worktree}/.context/rubric.json, then test the deliverable as its user and write the report where the brief says. Your working directory is ${worktree}.`
+const reviewPrompt = (worktree: string) =>
+  `Read ${worktree}/.context/review-brief.md and ${worktree}/.context/rubric.json, then review the run's change as an engineer and write the report where the brief says. Your working directory is ${worktree}.`
 
-async function qa(a: Args) {
+/**
+ * Starts a judge of the integrated state in a fresh checkout of the run branch: QA, which uses the product as its
+ * user and needs a harness, or the reviewer, which reads the run's diff and runs only at level consolidate.
+ */
+async function startJudge(role: Role, a: Args) {
+  const name = role
   const run = await currentRun()
-  if (!run) return fail('qa: no active run')
-  if (!run.worktree) return fail(`qa: nothing was dispatched yet; call ${tool('start')} first`)
-  const rubric = validateRubric(a.rubric)
-  if (!rubric.ok) return fail(`qa: ${rubric.problem}`)
+  if (!run) return fail(`${name}: no active run`)
+  if (!run.worktree) return fail(`${name}: nothing was dispatched yet; call ${tool('start')} first`)
+  const level = levelOf(run)
+  if (role === 'qa' && level === 'build') return fail(`qa: the run is at level build, which has no QA; call ${tool('finish')} once the work has landed`)
+  if (role === 'review' && level !== 'consolidate') return fail(`review: the run is at level ${level}; an engineering review runs at level consolidate only`)
+  const rubric = validateRubric(a.rubric, role === 'qa' ? QA_CATEGORIES : REVIEW_CATEGORIES)
+  if (!rubric.ok) return fail(`${name}: ${rubric.problem}`)
   const harness = str(a.harness).trim()
-  if (!harness) return fail('qa: "harness" must say how to run and use the deliverable')
-  const model = a.model === 'sonnet' ? 'sonnet' : 'opus'
+  if (role === 'qa' && !harness) return fail('qa: "harness" must say how to run and use the deliverable')
+  const allowed = role === 'qa' ? conf.conf.qa : conf.conf.review
+  const model = str(a.model).trim() || allowed[0]!
+  if (!allowed.includes(model)) return fail(`${name}: "model" must be one of ${allowed.join(', ')} (the configured ${name} models; see ${tool('config')})`)
   const iteration = run.iteration
   const rows = await io.getRows()
-  const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r))
-  if (unfinished.length > 0) return fail(`qa: ${unfinished.length} agent(s) still running; wait or cancel them first`)
+  const parallel = level === 'consolidate' && run.judges === 'parallel'
+  // with judges in parallel, QA and the reviewer do not wait for each other; workers still end first
+  const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r) && !(parallel && r.kind === 'qa'))
+  if (unfinished.length > 0) return fail(`${name}: ${unfinished.length} agent(s) still running; wait or cancel them first`)
   const unsynced = rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.status === 'finished')
-  if (unsynced.length > 0) return fail(`qa: ${unsynced.length} finished worker(s) not yet synced; call ${tool('sync')} first`)
-  // QA rounds count across the whole run, since the timeline does not group by round
-  const round = rows.filter(r => r.kind === 'qa').length + 1
-  const worktree = `${run.root}/.workspaces/qa/${iteration}-${round}`
-  const reportPath = `${worktree}/.context/qa-report.json`
+  if (unsynced.length > 0) return fail(`${name}: ${unsynced.length} finished worker(s) not yet synced; call ${tool('sync')} first`)
+  // the reviewer reads the state QA tests: QA goes first in every round, or alongside when the judges run in parallel
+  const qaRows = rows.filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) === 'qa' && r.iteration === iteration && r.status !== 'cancelled')
+  const qaDone = qaRows.some(r => r.status === 'finished')
+  if (role === 'review' && !qaDone && !(parallel && qaRows.length > 0)) {
+    return fail(`review: QA has not ${parallel ? 'started' : 'reported'} on round ${iteration} yet; call ${tool('qa')} first, the reviewer reads the state QA tests`)
+  }
+  // rounds count across the whole run, per judge, since the timeline does not group by round
+  const round = rows.filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) === role).length + 1
+  const worktree = `${run.root}/.workspaces/${role}/${iteration}-${round}`
+  const reportPath = `${worktree}/.context/${role}-report.json`
+  const key = `${role}-${iteration}-${round}`
   try {
     await git.addDetachedWorktree(io, run.root, worktree, run.branch)
     await git.mkdirp(io, `${worktree}/.context`)
     await io.write(`${worktree}/.context/rubric.json`, JSON.stringify(rubric.rubric, null, 2))
-    const brief = qaBrief({ task: run.task, harness, brief: str(a.brief), reportPath, worktree })
-    await io.write(`${worktree}/.context/qa-brief.md`, brief)
-    await io.write(`${run.runDir}/qa-${iteration}-${round}-rubric.json`, JSON.stringify(rubric.rubric, null, 2))
-    await io.write(`${run.runDir}/qa-${iteration}-${round}-brief.md`, brief)
+    const brief =
+      role === 'qa'
+        ? qaBrief({ task: run.task, harness, brief: str(a.brief), reportPath, worktree })
+        : reviewBrief({ task: run.task, base: run.baseBranch, brief: str(a.brief), reportPath, worktree })
+    await io.write(`${worktree}/.context/${role}-brief.md`, brief)
+    await io.write(`${run.runDir}/${key}-rubric.json`, JSON.stringify(rubric.rubric, null, 2))
+    await io.write(`${run.runDir}/${key}-brief.md`, brief)
   } catch (error) {
-    return fail(`qa: ${String(error)}`)
+    return fail(`${name}: ${String(error)}`)
   }
   const now = await io.now()
   const row: QaRow = {
     kind: 'qa',
-    id: pendingId('qa', iteration, `${round}`),
+    role,
+    id: pendingId(role, iteration, `${round}`),
     iteration,
     round,
     attempt: 1,
@@ -560,16 +628,18 @@ async function qa(a: Args) {
     status: 'pending',
     stats: freshStats(),
   }
-  rubrics.set(`${iteration}-${round}`, rubric.rubric)
-  await setPhase('qa')
+  rubrics.set(key, rubric.rubric)
+  await setPhase(role)
   await io.setRows(list => [...list, row])
   void io.openPane()
   return ok(
     [
-      `QA round ${round} prepared at ${worktree} (a checkout of ${run.branch}).`,
+      `${roundName(row)} prepared at ${worktree} (a checkout of ${run.branch}).`,
       'Now start it: call the Agent tool with exactly these arguments (the run fills in the brief, model, worktree and background mode):',
-      `- Agent({ subagent_type: "${QA_AGENT}", description: "QA round ${round}", prompt: "dacapo qa ${iteration}-${round}" })`,
-      'Then end your turn; a prompt wakes you with the verdict and overview.',
+      `- Agent({ subagent_type: "${role === 'qa' ? QA_AGENT : REVIEW_AGENT}", description: "${roundName(row)}", prompt: "dacapo ${role} ${iteration}-${round}" })`,
+      parallel && role === 'qa'
+        ? `The judges run in parallel: call ${tool('review')} now as well, then start both agents in one message and end your turn; a prompt wakes you with each verdict.`
+        : 'Then end your turn; a prompt wakes you with the verdict and overview.',
     ].join('\n'),
   )
 }
@@ -675,7 +745,7 @@ async function completeMerge(run: Run, pr: Pr, how: string) {
     [
       `Merged into ${run.baseBranch}: pull request #${pr.number} "${pr.title}" (${pr.url}, ${how}).`,
       ...notes.filter(Boolean).map(n => `- ${n}`),
-      `Run ${run.id} finished; reports and briefs are under ${run.runDir}. Report to the user in a few lines: what shipped, the last QA verdict, and anything left out.`,
+      `Run ${run.id} finished; reports and briefs are under ${run.runDir}. Report to the user in a few lines: what shipped, the level and the last verdicts, anything left out, and the decisions and recommendations to review.`,
     ].join('\n'),
   )
 }
@@ -693,13 +763,13 @@ async function watchFinal(run: Run) {
   if (pr.mergeable === 'conflicting') {
     return wake(
       key('conflict'),
-      `The final pull request #${pr.number} conflicts with ${run.baseBranch}. Dispatch one worker with merge: "merge" whose task is to merge origin/${run.baseBranch} into its branch and resolve the conflicts (commit title "chore: merge ${run.baseBranch} into ${run.branch}"), then ${tool('sync')}, run ${tool('qa')} once more since a conflict resolution can break things, and call ${tool('finish')} again.`,
+      `The final pull request #${pr.number} conflicts with ${run.baseBranch}. Dispatch one worker with merge: "merge" whose task is to merge origin/${run.baseBranch} into its branch and resolve the conflicts (commit title "chore: merge ${run.baseBranch} into ${run.branch}"), then ${tool('sync')}, ${judgeAgain(run)}call ${tool('finish')} again.`,
     )
   }
   if (pr.checks === 'failing') {
     return wake(
       key('checks'),
-      `The final pull request #${pr.number} has failing checks (${pr.url}). Dispatch a worker to fix them (resume the task at fault, or a repair task), then ${tool('sync')}, ${tool('qa')} once more, and ${tool('finish')} again.`,
+      `The final pull request #${pr.number} has failing checks (${pr.url}). Dispatch a worker to fix them (resume the task at fault, or a repair task), then ${tool('sync')}, ${judgeAgain(run)}call ${tool('finish')} again.`,
     )
   }
   if (pr.checks === 'pending' || pr.mergeable === 'unknown') return
@@ -720,18 +790,21 @@ async function watchFinal(run: Run) {
 // ---------- completion of the agents ----------
 
 async function rubricFor(run: Run, row: QaRow): Promise<RubricItem[]> {
-  const held = rubrics.get(`${row.iteration}-${row.round}`)
+  const held = rubrics.get(judgeKey(row))
   if (held) return held
-  const text = await io.read(`${run.runDir}/qa-${row.iteration}-${row.round}-rubric.json`)
+  const text = await io.read(`${run.runDir}/${judgeKey(row)}-rubric.json`)
   return JSON.parse(text) as RubricItem[]
 }
 
 async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   const run = await io.getRun()
   if (!run) return
+  const role = roleOf(row)
+  const key = judgeKey(row)
+  const name = roundName(row)
   if (agentFailure) {
     await patchQa(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: agentFailure, collect: undefined }))
-    await wake(`qa-${row.iteration}-${row.round}`, `QA round ${row.round} failed before writing a report (${agentFailure}). Call ${tool('status')}, then ${tool('qa')} again or ${tool('finish')} as you see fit.`)
+    await wake(key, `${name} failed before writing a report (${agentFailure}). Call ${tool('status')}, then ${tool(role)} again or ${tool('finish')} as you see fit.`)
     return
   }
   let text: string | null = null
@@ -745,14 +818,14 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
     rubric = await rubricFor(run, row)
   } catch (error) {
     await patchQa(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: `rubric unreadable: ${String(error)}`, collect: undefined }))
-    await wake(`qa-${row.iteration}-${row.round}`, `QA round ${row.round} ended but its rubric could not be read (${String(error)}). Call ${tool('qa')} again.`)
+    await wake(key, `${name} ended but its rubric could not be read (${String(error)}). Call ${tool(role)} again.`)
     return
   }
   const checked = text === null ? { ok: false as const, problems: [`no report at ${row.reportPath}`] } : validateReport(text, rubric)
   if (!checked.ok) {
     const note = `report invalid: ${checked.problems.join('; ')}`
     await patchQa(row.id, r => ({ ...r, status: 'invalid', endedAt: now, note, collect: undefined }))
-    await wake(`qa-${row.iteration}-${row.round}`, `QA round ${row.round} ended without a valid report (${note}). The worktree ${row.worktree} is kept. Call ${tool('qa')} again (a new round) with a clearer harness, or decide without it.`)
+    await wake(key, `${name} ended without a valid report (${note}). The worktree ${row.worktree} is kept. Call ${tool(role)} again (a new round) with a clearer ${role === 'qa' ? 'harness' : 'brief'}, or decide without it.`)
     return
   }
   const stamped = JSON.stringify(
@@ -760,21 +833,49 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
     null,
     2,
   )
-  await io.write(`${run.runDir}/qa-${row.iteration}-${row.round}.json`, stamped)
+  await io.write(`${run.runDir}/${key}.json`, stamped)
   await patchQa(row.id, r => ({ ...r, status: 'finished', endedAt: now, summary: checked.summary, items: checked.items, overview: checked.overview, collect: undefined }))
-  rubrics.delete(`${row.iteration}-${row.round}`)
+  rubrics.delete(key)
   const s = checked.summary
   const weak = checked.items.filter(i => i.score !== 'strong').map(i => `- ${i.score}: ${i.title}${i.note ? ` — ${i.note}` : ''}`)
-  await wake(
-    `qa-${row.iteration}-${row.round}`,
-    [
-      `QA round ${row.round}: ${s.strong} strong, ${s.acceptable} acceptable, ${s.unacceptable} unacceptable → verdict: ${s.verdict}.`,
-      ...(weak.length > 0 ? ['Items below strong:', ...weak] : []),
-      'Overview from QA:',
-      checked.overview,
-      s.verdict === 'fix'
+  const toFinish = `call ${tool('finish')} with the final pull request's title and body (clean-prs rules) to open it from ${run.branch} into ${run.baseBranch}`
+  // with judges in parallel, the other judge of the round may be running or already in; a QA verdict of fix stops a running review
+  const others = (await io.getRows()).filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) !== role && r.iteration === row.iteration && r.status !== 'cancelled')
+  const other = others[others.length - 1]
+  const preempted: string[] = []
+  if (role === 'qa' && s.verdict === 'fix') {
+    for (const r of others.filter(isLive)) {
+      void io.stop(r.id).catch(() => undefined)
+      await patchQa(r.id, x => ({ ...x, status: 'cancelled', endedAt: now, note: 'stopped: a QA verdict of fix preempts the review; it runs again after the fixes', collect: undefined }))
+      preempted.push(`${roundName(r)} was stopped: QA's fix verdict preempts it. Run ${tool('review')} again once the fixes have landed and QA passes.`)
+    }
+  }
+  const otherState = !other ? undefined : isLive(other) || other.status === 'pending' ? 'running' : other.summary ? other.summary.verdict : 'without a report'
+  const next =
+    role === 'qa'
+      ? s.verdict === 'fix'
         ? `Next: plan the fixes and call ${tool('dispatch')} (a new round starts), then ${tool('sync')} and ${tool('qa')} again.`
-        : `Next: call ${tool('finish')} with the final pull request's title and body (clean-prs rules) to open it from ${run.branch} into ${run.baseBranch}, or dispatch improvements first if the recommendations are worth another round.`,
+        : levelOf(run) === 'consolidate'
+          ? otherState === 'running'
+            ? `${roundName(other!)} is still running; its wake-up follows. Decide once both are in.`
+            : otherState && otherState !== 'without a report'
+              ? `${roundName(other!)} already reported ${otherState}; decide on both reports as the loop says.`
+              : `Next: call ${tool('review')} with the engineering rubric${s.verdict === 'pass' ? '' : ', or dispatch improvements first if the recommendations are worth another round'}.`
+          : `Next: ${toFinish}${s.verdict === 'pass' ? '' : ', or dispatch improvements first if the recommendations are worth another round'}.`
+      : otherState === 'running'
+        ? `${roundName(other!)} is still running; wait for its verdict before deciding, since a QA verdict of fix comes first.`
+        : s.verdict === 'pass'
+          ? `Next: ${toFinish}.`
+          : `Next: the items below strong whose fix lies inside the run's own change become fix tasks: call ${tool('dispatch')} (a new round starts), then ${tool('sync')}, ${tool('qa')} again (a fix can regress behaviour) and ${tool('review')} again. An item whose fix would reach parts the run does not touch is not a task: it goes to the final report as a recommendation.`
+  await wake(
+    key,
+    [
+      `${name}: ${s.strong} strong, ${s.acceptable} acceptable, ${s.unacceptable} unacceptable → verdict: ${s.verdict}.`,
+      ...(weak.length > 0 ? ['Items below strong:', ...weak] : []),
+      `Overview from ${role === 'qa' ? 'QA' : 'the reviewer'}:`,
+      checked.overview,
+      ...preempted,
+      next,
     ].join('\n'),
   )
   await git.removeWorktree(io, run.root, row.worktree)
@@ -801,7 +902,7 @@ async function maybeWakeForWorkers() {
       `Round ${run.iteration}: all ${workers.length} worker(s) have ended (${finished} finished).`,
       ...lines,
       ...(troubled ? [FAILURE_OPTIONS] : []),
-      finished > 0 ? `Next: call ${tool('sync')} (it confirms what landed and prunes), then ${tool('qa')}.` : `No worker finished. Review with ${tool('status')} and decide.`,
+      finished > 0 ? `Next: call ${tool('sync')} (it confirms what landed and prunes), then ${afterLanding(run)}.` : `No worker finished. Review with ${tool('status')} and decide.`,
     ].join('\n'),
   )
 }
@@ -812,7 +913,7 @@ async function maybeWakeForWorkers() {
  * next completion wakes the orchestrator afresh.
  */
 async function revive(row: WorkerRow | QaRow, now: number) {
-  const key = row.kind === 'worker' ? `workers-${row.iteration}` : `qa-${row.iteration}-${row.round}`
+  const key = row.kind === 'worker' ? `workers-${row.iteration}` : judgeKey(row)
   await io.setRun(cur => (cur ? { ...cur, wakes: cur.wakes.filter(w => w.key !== key) } : cur))
   await patchRow(row.id, r =>
     r.kind === 'worker'
@@ -860,7 +961,7 @@ async function tick() {
   await io.setUi(ui => ({ ...ui, tick: now }))
   for (const row of live) {
     const idle = now - row.lastActivityAt
-    const who = row.kind === 'worker' ? `Worker ${row.taskId}` : `QA round ${row.round}`
+    const who = row.kind === 'worker' ? `Worker ${row.taskId}` : roundName(row)
     if (idle >= TIMEOUT_MS) {
       await patchRow(row.id, r => ({ ...r, status: 'timeout', endedAt: now, note: `no activity for ${elapsed(row.lastActivityAt, now)}; stopped` }))
       void io.stop(row.id).catch(() => undefined)
@@ -929,6 +1030,7 @@ export const register: Register = (on, options) => {
       exists: path => $.fs.exists(path),
       now: () => $.clock.now(),
       cwd: () => $.session.cwd(),
+      home: () => $.env.get('HOME'),
       stop: agentId => $.tool.call({ tool: 'TaskStop', task_id: agentId }),
       submit: text => $.prompt.submit({ text }),
       openPane: focus => $.ui.open(focus ? { id: PANE, title: 'Da capo', focus: true } : { id: PANE, title: 'Da capo' }),
@@ -940,6 +1042,9 @@ export const register: Register = (on, options) => {
       getUi: () => read($, uiAtom),
       setUi: fn => update($, uiAtom, fn),
     }
+
+    const cwd = await io.cwd()
+    await readConf((await git.repoRoot(io, cwd)) ?? cwd)
 
     await Promise.all([
       $.tool.register({
@@ -954,6 +1059,8 @@ export const register: Register = (on, options) => {
             overview: { type: 'string', description: 'One short paragraph on the whole task: deliverable, who it is for, what done looks like. Shown under the heading.' },
             branch: { type: 'string', description: 'The run branch, named after the change (kebab-case, e.g. "add-login"); default a slug of the task. Every worker pull request targets it.' },
             baseBranch: { type: 'string', description: 'The branch the run is cut from and merged into; default "main".' },
+            level: { type: 'string', enum: ['build', 'review', 'consolidate'], description: 'How far the run is judged before it merges: build (no QA), review (QA as the end user), consolidate (QA, then an engineering review of the run\'s change). Default from the configuration. Fixed for the run.' },
+            judges: { type: 'string', enum: ['sequential', 'parallel'], description: 'At consolidate: whether QA and the review run one after the other or side by side. Default from the configuration. Fixed for the run.' },
             root: { type: 'string', description: 'Absolute path inside the repository to run in; default the session working directory.' },
           },
           required: ['task'],
@@ -978,7 +1085,7 @@ export const register: Register = (on, options) => {
                   id: { type: 'string', description: 'Short kebab-case id, unique in this dispatch.' },
                   title: { type: 'string', description: 'A few words naming the task.' },
                   prompt: { type: 'string', description: 'The full brief: what to build, where, constraints, acceptance. For a resumed task: what to fix or finish.' },
-                  model: { type: 'string', enum: ['opus', 'sonnet'], description: 'opus for complex or cross-cutting work, sonnet for contained work.' },
+                  model: { type: 'string', enum: conf.conf.workers, description: 'One of the configured worker models: the first for complex or cross-cutting work, the last for contained work.' },
                   commit: { type: 'string', description: 'Conventional Commit title of the squash commit and the pull request, e.g. "feat: add login endpoint". No scope in parentheses.' },
                   build: { type: 'string', description: 'Command that must pass before the worker marks its pull request ready.' },
                   test: { type: 'string', description: 'Test command the worker runs, if any.' },
@@ -1034,30 +1141,63 @@ export const register: Register = (on, options) => {
               description: 'How to start, reach and use the deliverable: install and run commands, URLs or binaries, accounts or fixtures, expected flows. Markdown.',
             },
             brief: { type: 'string', description: 'Optional: what was built this round and what changed since the last one.' },
-            model: { type: 'string', enum: ['opus', 'sonnet'], description: 'Default opus.' },
+            model: { type: 'string', enum: conf.conf.qa, description: 'One of the configured QA models; default the first.' },
           },
           required: ['rubric', 'harness'],
         },
       }),
       $.tool.register({
-        name: 'phase',
-        description: 'Marks where the orchestrator is: clarify, research, plan, implement, qa or merge. start, dispatch, qa and finish set the later phases themselves; call this for clarify and research.',
+        name: 'review',
+        description:
+          'At level consolidate, after QA passes: starts the reviewer subagent in a fresh worktree of the run branch. It reads the run\'s change against the base branch as an engineer, scores every engineering rubric item strong/acceptable/unacceptable and writes a report the run collects. Returns at once; the run wakes you with the overview and verdict.',
         isDeferred: false,
         inputSchema: {
           type: 'object',
-          properties: { phase: { type: 'string', enum: ['clarify', 'research', 'plan', 'implement', 'qa', 'merge'] } },
+          properties: {
+            rubric: {
+              type: 'array',
+              minItems: 1,
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string', description: 'kebab-case id' },
+                  title: { type: 'string', description: 'What is checked, as a property of the code a reader can verify in the diff.' },
+                  category: { type: 'string', enum: ['quality', 'consistency', 'cleanup'] },
+                },
+                required: ['id', 'title', 'category'],
+              },
+            },
+            brief: { type: 'string', description: 'Optional: what the run built, the conventions and references the briefs pointed at, and what to look at first.' },
+            model: { type: 'string', enum: conf.conf.review, description: 'One of the configured review models; default the first.' },
+          },
+          required: ['rubric'],
+        },
+      }),
+      $.tool.register({
+        name: 'config',
+        description: 'The configuration in force: the default level, whether judges run in parallel, and the models workers, QA and the reviewer may be given, each with the file it came from. Agents never read the conf files themselves.',
+        isDeferred: false,
+        inputSchema: { type: 'object', properties: {} },
+      }),
+      $.tool.register({
+        name: 'phase',
+        description: 'Marks where the orchestrator is: clarify, research, plan, implement, qa, review or merge. start, dispatch, qa, review and finish set the later phases themselves; call this for clarify and research.',
+        isDeferred: false,
+        inputSchema: {
+          type: 'object',
+          properties: { phase: { type: 'string', enum: ['clarify', 'research', 'plan', 'implement', 'qa', 'review', 'merge'] } },
           required: ['phase'],
         },
       }),
       $.tool.register({
         name: 'status',
-        description: 'The timeline as text: every worker and QA row with status, pull request and elapsed time, and the run state.',
+        description: 'The timeline as text: every worker, QA and review row with status, pull request and elapsed time, and the run state.',
         isDeferred: false,
         inputSchema: { type: 'object', properties: {} },
       }),
       $.tool.register({
         name: 'cancel',
-        description: 'Stops a running worker or QA subagent by agent id, marks its row cancelled and closes its open pull request. Its worktree is kept for inspection until the run ends.',
+        description: 'Stops a running worker, QA or reviewer subagent by agent id, marks its row cancelled and closes its open pull request. Its worktree is kept for inspection until the run ends.',
         isDeferred: false,
         inputSchema: {
           type: 'object',
@@ -1092,7 +1232,14 @@ export const register: Register = (on, options) => {
         disallowedTools: ['Agent', 'Edit', 'NotebookEdit', 'EnterWorktree', 'ExitWorktree'],
         omitClaudeMd: true,
       }),
+      $.agent.register({
+        name: 'reviewer',
+        description: 'dacapo reviewer: reads the run\'s change as an engineer and scores an engineering rubric. Spawned by the dacapo tools only.',
+        prompt: REVIEW_SYSTEM,
+        disallowedTools: ['Agent', 'Edit', 'NotebookEdit', 'EnterWorktree', 'ExitWorktree'],
+      }),
       $.command.register({ name: 'dacapo-pane', description: 'Opens the dacapo timeline pane.' }),
+      $.command.register({ name: 'dacapo-config', description: 'Shows the dacapo configuration in force and the files it was read from.' }),
     ])
 
     $.clock.every(TICK_MS, () => void tick())
@@ -1109,30 +1256,30 @@ export const register: Register = (on, options) => {
     const run = await currentRun()
     if (!run) return { deny: 'dacapo: no active run; call mcp__dacapo__start first' }
     const rows = await io.getRows()
-    const kind = ask[1] as 'worker' | 'qa'
+    const kind = ask[1] as 'worker' | Role
     const key = ask[2]!
-    // a worker is asked for by task id, QA by `<round>-<qa round>`; the pending row's key is the task id or the round
-    const wanted = kind === 'qa' ? pendingId('qa', Number(key.split('-')[0]), key.split('-')[1] ?? '') : pendingId('worker', run.iteration, key)
-    const row = rows.find((r): r is WorkerRow | QaRow => r.kind === kind && r.id === wanted)
+    // a worker is asked for by task id, a judge by `<round>-<judge round>`; the pending row's key is the task id or the round
+    const wanted = kind === 'worker' ? pendingId('worker', run.iteration, key) : pendingId(kind, Number(key.split('-')[0]), key.split('-')[1] ?? '')
+    const row = rows.find((r): r is WorkerRow | QaRow => r.kind === (kind === 'worker' ? 'worker' : 'qa') && r.id === wanted)
     if (!row) {
-      const expected = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && r.status === 'pending').map(r => (r.kind === 'worker' ? `worker ${r.taskId}` : `qa ${r.iteration}-${r.round}`))
-      return { deny: `dacapo: nothing pending for "${ask[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(kind === 'worker' ? 'dispatch' : 'qa')} first.` }
+      const expected = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && r.status === 'pending').map(r => (r.kind === 'worker' ? `worker ${r.taskId}` : `${roleOf(r)} ${r.iteration}-${r.round}`))
+      return { deny: `dacapo: nothing pending for "${ask[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(kind === 'worker' ? 'dispatch' : kind)} first.` }
     }
-    const brief = row.kind === 'worker' ? await io.read(`${row.worktree}/.context/brief.md`) : qaPrompt(row.worktree)
+    const brief = row.kind === 'worker' ? await io.read(`${row.worktree}/.context/brief.md`) : roleOf(row) === 'review' ? reviewPrompt(row.worktree) : qaPrompt(row.worktree)
     const prompt = `[dacapo worktree: ${row.worktree}]\n\n${brief}\n\nStart now. Your working directory is the worktree above; every path you touch is under it.`
     const ran = await next({
       ...e,
       prompt,
-      description: row.kind === 'worker' ? row.title : `QA round ${row.round}`,
-      subagent_type: row.kind === 'worker' ? WORKER_AGENT : QA_AGENT,
-      model: row.model === 'sonnet' ? ('sonnet' as const) : ('opus' as const),
+      description: row.kind === 'worker' ? row.title : roundName(row),
+      subagent_type: row.kind === 'worker' ? WORKER_AGENT : roleOf(row) === 'review' ? REVIEW_AGENT : QA_AGENT,
+      model: row.model,
       run_in_background: true,
     })
     const got = 'result' in ran && ran.result && typeof ran.result === 'object' ? (ran.result as { agentId?: unknown }).agentId : undefined
     const agentId = typeof got === 'string' ? got : undefined
     const now = await io.now()
     if (agentId) {
-      await io.setRows(list => list.map(r => (r.kind === kind && r.id === row.id ? { ...r, id: agentId, status: 'running', at: now, lastActivityAt: now } : r)))
+      await io.setRows(list => list.map(r => (isAgentRow(r) && r.id === row.id ? { ...r, id: agentId, status: 'running', at: now, lastActivityAt: now } : r)))
     } else {
       const note = 'deny' in ran && ran.deny ? String(ran.deny) : 'isError' in ran && ran.isError ? String(ran.result ?? 'the Agent tool reported an error') : 'the Agent tool answered without an agent id'
       await patchRow(row.id, r => ({ ...r, note: `not started: ${note.slice(0, 300)}` }))
@@ -1145,6 +1292,12 @@ export const register: Register = (on, options) => {
     if (!line || e.isTeammate) return next(e)
     return next({ ...e, cwd: line[1]! })
   }).catch(($, e, next) => next(e))
+
+  on('command.run', { command: 'dacapo-config' }, async () => {
+    const cwd = await io.cwd()
+    const loaded = await readConf((await git.repoRoot(io, cwd)) ?? cwd)
+    return { text: `dacapo configuration\n${describeConf(loaded)}\nEdit ~/.claude/dacapo.conf for every repository, or .dacapo.conf at this repository's root; see dacapo.conf in the plugin for the keys.` }
+  })
 
   on('command.run', { command: 'dacapo-pane' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Da capo', focus: true })
@@ -1164,11 +1317,14 @@ export const register: Register = (on, options) => {
     // only what the person typed is a row: not a subagent's hand-back, a notification or another session's message
     const isTyped = ['composer', 'bridge', 'sdk', 'channel'].includes(e.origin.kind) && !/^\s*<agent-message\b/.test(text)
     if (!isTyped) return next(e)
-    const starts = /^\s*\/dacapo:core(\s|$)/.exec(text)
+    const starts = /^\s*\/dacapo:core(?:\s+--(build|review|consolidate)\b)?(\s|$)/.exec(text)
     let run = await currentRun()
     if (starts) {
-      // the run has no heading yet: the prompt is the person's words, the title and overview come from `start` once the task is clear
-      run = await openRun('', 'main')
+      // the run has no heading yet: the prompt is the person's words, the title and overview come from `start` once the task is clear;
+      // a level flag right after the command (`--consolidate`) sets the level now, so the pane shows it while the task is clarified
+      const cwd = await io.cwd()
+      await readConf((await git.repoRoot(io, cwd)) ?? cwd)
+      run = await openRun('', 'main', undefined, (starts[1] as Level | undefined) ?? conf.conf.level)
       void $.ui.open({ id: PANE, title: 'Da capo' })
     }
     if (run) {
@@ -1184,7 +1340,8 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__dacapo__start' }, ($, e) => start(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__dispatch' }, ($, e) => dispatch(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__sync' }, () => sync()).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__qa' }, ($, e) => qa(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__qa' }, ($, e) => startJudge('qa', e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__review' }, ($, e) => startJudge('review', e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__cancel' }, ($, e) => cancel(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__phase' }, async ($, e) => {
@@ -1194,12 +1351,13 @@ export const register: Register = (on, options) => {
     await setPhase(phase)
     return ok(`Phase: ${phase}.`)
   }).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__config' }, async () => ok(describeConf(conf))).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__status' }, async () => {
     const snap = await snapshot()
     return ok(statusText(snap))
   }).catch(crashed)
 
-  // ----- guards: the orchestrator does not edit, merge or open pull requests; workers stay in their worktree; QA never reads source -----
+  // ----- guards: the orchestrator does not edit, merge or open pull requests; workers stay in their worktree; QA never reads source; the reviewer writes only its report -----
 
   on('tool.call', async ($, e, next) => {
     const run = await currentRun()
@@ -1232,6 +1390,14 @@ export const register: Register = (on, options) => {
       return next(e)
     }
     const contextDir = `${row.worktree}/.context`
+    if (roleOf(row) === 'review') {
+      // the reviewer reads anything and writes one file
+      if (e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') {
+        const target = str(a.file_path) || str(a.notebook_path)
+        if (normalize(target, row.worktree) !== row.reportPath) return { deny: `dacapo reviewer: you never change the code; the only file you write is ${row.reportPath}` }
+      }
+      return next(e)
+    }
     if (e.tool === 'Read' || e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') {
       const target = str(a.file_path) || str(a.notebook_path)
       if (!isUnder(target, contextDir, row.worktree)) {

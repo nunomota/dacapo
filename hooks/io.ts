@@ -14,6 +14,7 @@ export type Io = {
   exists: (path: string) => Promise<boolean>
   now: () => Promise<number>
   cwd: () => Promise<string>
+  home: () => Promise<string | undefined>
   stop: (agentId: string) => Promise<unknown>
   submit: (text: string) => Promise<unknown>
   openPane: (focus?: boolean) => Promise<unknown>

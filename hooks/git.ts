@@ -36,7 +36,7 @@ export async function ensureExclude(io: Io, root: string): Promise<void> {
   const file = `${dir}/exclude`
   const had = (await io.exists(file)) ? await io.read(file) : ''
   const lines = had.split('\n')
-  const wanted = ['.workspaces/', '.context/']
+  const wanted = ['.workspaces/', '.context/', '.dacapo.conf']
   const missing = wanted.filter(w => !lines.some(l => l.trim() === w || l.trim() === w.replace(/\/$/, '')))
   if (missing.length === 0) return
   const sep = had.length === 0 || had.endsWith('\n') ? '' : '\n'

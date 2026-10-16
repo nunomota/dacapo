@@ -1,6 +1,6 @@
 import type { Elements } from 'claude-code'
 
-import type { Activity, AgentStats, OrchestratorRow, Phase, Pr, PrState, QaRow, QaSummary, Row, Run, Ui, UserRow, WorkerRow } from '../types'
+import type { Activity, AgentStats, Level, OrchestratorRow, Phase, Pr, PrState, QaRow, QaSummary, Row, Run, Ui, UserRow, WorkerRow } from '../types'
 import { ZERO, addUsage, costOf, fmtCost, fmtTokens, totalTokens, type Price } from './cost'
 
 /** The elements every surface has; the hook resolves the table and hands these in. */
@@ -26,10 +26,23 @@ export type Actions = {
 export type Theme = { prices: Record<string, Price> }
 
 /** The collapsible progress rows of the badge. */
-export type Section = 'prs' | 'agents' | 'qa' | 'timeline'
+export type Section = 'prs' | 'agents' | 'qa' | 'review' | 'timeline'
 
 /** Every phase has a color of its own; the bar shows the ones reached in it and the current one's name. */
-export const PHASE_COLOR: Record<Phase, string> = { clarify: '#378ADD', research: '#7F77DD', plan: '#1D9E75', implement: '#D85A30', qa: '#EF9F27', merge: '#639922' }
+export const PHASE_COLOR: Record<Phase, string> = { clarify: '#378ADD', research: '#7F77DD', plan: '#1D9E75', implement: '#D85A30', qa: '#EF9F27', review: '#9E7BEA', merge: '#639922' }
+
+export const LEVELS: readonly Level[] = ['build', 'review', 'consolidate']
+/**
+ * One color per level, none of them a state color: build is the bar's grey (nothing is judged), review the qa
+ * phase's amber (the level is that phase), consolidate the merged-PR violet (landed and kept, which is what it buys).
+ */
+export const LEVEL_COLOR: Record<Level, string> = { build: '#6e7681', review: '#EF9F27', consolidate: '#8957e5' }
+/** What each level means, in the words the header shows beside its name. */
+export const LEVEL_GLOSS: Record<Level, string> = { build: 'no QA', review: 'QA as the end user', consolidate: 'QA, then engineering review' }
+/** A run saved before levels existed reads as `review`, the loop as it was. */
+export const levelOf = (run: Run): Level => run.level ?? 'review'
+/** The phases a run at this level walks, in order: the bar's blocks. */
+export const phasesOf = (level: Level): readonly Phase[] => PHASES.filter(p => (p === 'qa' ? level !== 'build' : p === 'review' ? level === 'consolidate' : true))
 
 /** The state colors: teal in progress, green done, yellow done with limitations or recommendations, orange failed. */
 export const TEAL = '#39c5cf'
@@ -39,7 +52,7 @@ export const ORANGE = '#e8723a'
 /** The failure color; orange reads better than red beside the yellow. */
 export const RED = ORANGE
 
-export const PHASES: readonly Phase[] = ['clarify', 'research', 'plan', 'implement', 'qa', 'merge']
+export const PHASES: readonly Phase[] = ['clarify', 'research', 'plan', 'implement', 'qa', 'review', 'merge']
 
 const two = (n: number) => `${n}`.padStart(2, '0')
 
@@ -85,6 +98,14 @@ export const statusWord: Record<WorkerRow['status'] | QaRow['status'], string> =
   timeout: 'timed out',
   cancelled: 'cancelled',
 }
+
+/** Which judge a row is: QA (the default) or the reviewer. */
+export const roleOf = (row: QaRow): 'qa' | 'review' => row.role ?? 'qa'
+/** `QA round 2` or `Review round 1`: how the row is named everywhere it is spoken of. */
+export const roundName = (row: QaRow): string => `${roleOf(row) === 'review' ? 'Review' : 'QA'} round ${row.round}`
+/** The glyph and icon a row is drawn with; a review row has its own, the rest follow the row's kind. */
+export type IconKind = Row['kind'] | 'review'
+export const iconKindOf = (row: Row): IconKind => (row.kind === 'qa' && roleOf(row) === 'review' ? 'review' : row.kind)
 
 export const verdictWord = (row: QaRow | undefined): string | undefined =>
   !row ? undefined : row.summary ? (row.summary.verdict === 'fix' ? 'fix needed' : row.summary.verdict === 'pass' ? 'pass' : 'pass, recommendations') : statusWord[row.status]
@@ -189,10 +210,10 @@ export const isInProgress = (row: Row): boolean => isAgentRow(row) && (row.statu
 export const spinner = (tick: number): string => ['◐', '◓', '◑', '◒'][Math.floor(tick / 1000) % 4]!
 
 /** The terminal's one-glyph stand-in for each icon. */
-export const GLYPH: Record<Row['kind'], string> = { worker: '⚒', qa: '⚖', user: '✎', orchestrator: '⟲' }
+export const GLYPH: Record<IconKind, string> = { worker: '⚒', qa: '⚖', review: '⌕', user: '✎', orchestrator: '⟲' }
 
 /** Vector icons for the surfaces that draw SVG (desktop, VS Code, mobile), in the entry's color. */
-export function icon(kind: Row['kind'], color: string, isLive = false): string {
+export function icon(kind: IconKind, color: string, isLive = false): string {
   // a live icon breathes: its opacity swings on a loop (SMIL, drawn when the surface runs the SVG as a frame)
   const pulse = isLive ? '<animate attributeName="opacity" values="1;0.3;1" dur="1.6s" repeatCount="indefinite"/>' : ''
   const open = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${pulse}`
@@ -210,6 +231,9 @@ export function icon(kind: Row['kind'], color: string, isLive = false): string {
     case 'qa':
       // a clipboard with a check mark
       return `${open}<rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3" rx="1" fill="${color}" stroke="none"/><path d="M8.5 13l2.5 2.5 4.5-5"/>${close}`
+    case 'review':
+      // a magnifier over lines of code
+      return `${open}<circle cx="10" cy="10" r="6"/><line x1="14.5" y1="14.5" x2="21" y2="21"/><line x1="7.5" y1="8.5" x2="12.5" y2="8.5"/><line x1="7.5" y1="11.5" x2="11" y2="11.5"/>${close}`
   }
 }
 
@@ -331,27 +355,27 @@ function keyLine(els: Els, key: string, value: JSX.Element | string): JSX.Elemen
 export const TIMELINE_LATEST = 5
 
 /**
- * Six blocks, one per phase: the ones done greyed out, the current one in its own color with its name beneath,
+ * One block per phase of the run's level (five at build, six at review, seven at consolidate): the ones done greyed out, the current one in its own color with its name beneath,
  * the ones ahead hollow. A merged run fills every block green and reads "merged"; an aborted one stops on
  * its phase in orange and reads "aborted". One SVG on the remote surfaces so the label sits under its block
  * whatever the font; glyph rows in the terminal.
  */
-function drawBar(els: Els, current: Phase, status: Run['status']): JSX.Element {
+function drawBar(els: Els, phases: readonly Phase[], current: Phase, status: Run['status']): JSX.Element {
   const { Box, Text, Svg } = els
-  const at = PHASES.indexOf(current)
+  const at = phases.indexOf(current)
   const grey = '#6e7681'
   const isMerged = status === 'done'
   const isAborted = status === 'aborted'
   const label = isMerged ? 'merged' : isAborted ? 'aborted' : current
   const labelColor = isMerged ? GREEN : isAborted ? ORANGE : PHASE_COLOR[current]
-  const labelAt = isMerged ? PHASES.length - 1 : at
+  const labelAt = isMerged ? phases.length - 1 : at
   // the fill of block i: a color, grey, or null for hollow
   const fillOf = (p: Phase, i: number): string | null => (isMerged ? GREEN : i < at ? grey : i === at ? (isAborted ? ORANGE : PHASE_COLOR[p]) : null)
   if (Svg) {
     const w = 46
     const gap = 6
     const bar = 13
-    const rects = PHASES.map((p, i) => {
+    const rects = phases.map((p, i) => {
       const x = i * (w + gap)
       const fill = fillOf(p, i)
       return fill
@@ -359,7 +383,7 @@ function drawBar(els: Els, current: Phase, status: Run['status']): JSX.Element {
         : `<rect x="${x + 0.5}" y="0.5" width="${w - 1}" height="${bar - 1}" rx="3" fill="none" stroke="${grey}" stroke-width="1"/>`
     })
     const cx = labelAt * (w + gap) + w / 2
-    const total = PHASES.length * (w + gap) - gap
+    const total = phases.length * (w + gap) - gap
     const source = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${bar + 18}">${rects.join('')}<text x="${cx}" y="${bar + 14}" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="${labelColor}">${label}</text></svg>`
     return (
       <Box>
@@ -370,7 +394,7 @@ function drawBar(els: Els, current: Phase, status: Run['status']): JSX.Element {
   return (
     <Box flexDirection="column">
       <Text>
-        {PHASES.map((p, i) => {
+        {phases.map((p, i) => {
           const fill = fillOf(p, i)
           return (
             <Text key={`bar-${p}`}>
@@ -421,7 +445,7 @@ function sectionRow(els: Els, act: Actions, name: Section, label: string, isOpen
 }
 
 /** One line of an expanded section: the entry's icon and its header text in the entry's color, plus a dim tail. */
-function sectionLine(els: Els, key: string, kind: Row['kind'], color: string, text: string, live: boolean, now: number, tail?: JSX.Element): JSX.Element {
+function sectionLine(els: Els, key: string, kind: IconKind, color: string, text: string, live: boolean, now: number, tail?: JSX.Element): JSX.Element {
   const { Box, Text, Svg } = els
   return (
     <Box key={key} flexDirection="row" alignItems="center" overflow="hidden">
@@ -452,7 +476,10 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const endAt = isOver ? (rows[rows.length - 1]?.at ?? now) : now
   const agents = rows.filter(isAgentRow)
   const workers = rows.filter((r): r is WorkerRow => r.kind === 'worker')
-  const qas = rows.filter((r): r is QaRow => r.kind === 'qa').sort((a, b) => a.round - b.round)
+  const judges = rows.filter((r): r is QaRow => r.kind === 'qa').sort((a, b) => a.round - b.round)
+  const qas = judges.filter(q => roleOf(q) === 'qa')
+  const reviews = judges.filter(q => roleOf(q) === 'review')
+  const level = levelOf(run)
   const total = spend(agents, theme.prices, run.orchestrator)
   const prs = [...run.prs].sort((a, b) => a.createdAt - b.createdAt)
   const entries = entriesOf(rows)
@@ -477,11 +504,11 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
     ['limited', YELLOW, workers.filter(w => workerColor(w, run) === YELLOW)],
     ['failed', ORANGE, workers.filter(w => workerColor(w, run) === ORANGE)],
   ]
-  const qaBuckets: Array<[string, string, QaRow[]]> = [
-    ['running', TEAL, qas.filter(q => qaColor(q) === TEAL)],
-    ['pass', GREEN, qas.filter(q => qaColor(q) === GREEN)],
-    ['recommendations', YELLOW, qas.filter(q => qaColor(q) === YELLOW)],
-    ['fix', ORANGE, qas.filter(q => qaColor(q) === ORANGE)],
+  const judgeBuckets = (list: QaRow[]): Array<[string, string, QaRow[]]> => [
+    ['running', TEAL, list.filter(q => qaColor(q) === TEAL)],
+    ['pass', GREEN, list.filter(q => qaColor(q) === GREEN)],
+    ['recommendations', YELLOW, list.filter(q => qaColor(q) === YELLOW)],
+    ['fix', ORANGE, list.filter(q => qaColor(q) === ORANGE)],
   ]
   const sections: JSX.Element[] = []
   if (prs.length > 0) {
@@ -510,28 +537,35 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
       ),
     )
   }
-  if (qas.length > 0) {
+  // QA rounds, then review rounds: the same row shape, the judge's own icon
+  for (const [section, title, kind, list] of [
+    ['qa', 'QA', 'qa', qas],
+    ['review', 'Review', 'review', reviews],
+  ] as const) {
+    if (list.length === 0) continue
     sections.push(
       sectionRow(
         els,
         act,
-        'qa',
-        `QA (${qas.length})`,
-        ui.openSections.includes('qa'),
-        qaBuckets.filter(([, , list]) => list.length > 0).map(([name, color, list]) => countChip(els, `qa-${name}`, color, icon('qa', color), GLYPH.qa, list.length)),
-        qas.map(q =>
+        section,
+        `${title} (${list.length})`,
+        ui.openSections.includes(section),
+        judgeBuckets(list)
+          .filter(([, , l]) => l.length > 0)
+          .map(([name, color, l]) => countChip(els, `${section}-${name}`, color, icon(kind, color), GLYPH[kind], l.length)),
+        list.map(q =>
           sectionLine(
             els,
-            `qa-line-${q.id}`,
-            'qa',
+            `${section}-line-${q.id}`,
+            kind,
             qaColor(q),
-            `QA round ${q.round}${q.summary ? `: ${verdictWord(q)}` : ''}`,
+            `${roundName(q)}${q.summary ? `: ${verdictWord(q)}` : ''}`,
             isInProgress(q),
             now,
             q.summary ? (
-              <Text key={`qa-tail-${q.id}`} wrap="truncate-end">
+              <Text key={`${section}-tail-${q.id}`} wrap="truncate-end">
                 <Text dimColor> · </Text>
-                {scoreNumbers(els, q.summary, `qa-score-${q.id}`)}
+                {scoreNumbers(els, q.summary, `${section}-score-${q.id}`)}
               </Text>
             ) : undefined,
           ),
@@ -560,12 +594,20 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           )}
           {keyLine(els, 'Elapsed', elapsedValue)}
           {keyLine(els, 'Branch', run.branch ? `${run.branch} → ${run.baseBranch}` : `not started (into ${run.baseBranch})`)}
+          {keyLine(
+            els,
+            'Level',
+            <Text wrap="truncate-end">
+              <Text color={LEVEL_COLOR[level]}>{level}</Text>
+              <Text dimColor>{` · ${LEVEL_GLOSS[level]}`}</Text>
+            </Text>,
+          )}
           {keyLine(els, 'Models', modelsText)}
           {keyLine(els, 'Spend', spendText_)}
         </Box>
       </Box>
       <Box marginTop={1} paddingLeft={LOGO_COLS + 1}>
-        {drawBar(els, run.phase, run.status)}
+        {drawBar(els, phasesOf(level), run.phase, run.status)}
       </Box>
       {run.gh && !run.gh.ok && (
         <Box marginTop={1}>
@@ -646,7 +688,7 @@ function drawTimeline(els: Els, entries: Entry[], ui: Ui, act: Actions, width: n
  * One timeline entry: the header is the button that expands it; the subline is always shown, dim; the body when
  * expanded. `bodyRows` is the body's height as estimated, so the vertical line can be drawn beside it.
  */
-type Card = { id: string; key: string; kind: Row['kind']; color: string; title: string; subline: JSX.Element; body: JSX.Element[]; bodyRows: number }
+type Card = { id: string; key: string; kind: IconKind; color: string; title: string; subline: JSX.Element; body: JSX.Element[]; bodyRows: number }
 
 /** The tree column: `├─` beside an entry's header, `│` down to the next entry, `└─` for the last; three cells wide, the last one blank so the tick stops short of the icon. */
 const TREE_COLS = 3
@@ -872,14 +914,14 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
   const overviewText = row.overview
     ? row.overview
     : row.status === 'running' || row.status === 'stale' || row.status === 'pending'
-      ? 'The QA agent is still working; the overview appears when its report is collected.'
+      ? `The ${roleOf(row) === 'review' ? 'reviewer' : 'QA agent'} is still working; the overview appears when its report is collected.`
       : (row.note ?? 'No overview was collected.')
   return {
     id: row.id,
-    key: `qa-${row.id}`,
-    kind: 'qa',
+    key: `${roleOf(row)}-${row.id}`,
+    kind: iconKindOf(row),
     color,
-    title: `QA round ${row.round}${row.summary ? `: ${verdictWord(row)}` : ''}`,
+    title: `${roundName(row)}${row.summary ? `: ${verdictWord(row)}` : ''}`,
     subline: (
       <Text wrap="truncate-end">
         <Text dimColor>{`${[span, row.model, ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')} · `}</Text>
@@ -949,7 +991,9 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   const waiting = workers.filter(w => w.status === 'pending').length
   const done = workers.filter(w => w.status === 'finished' || w.status === 'merged').length
   const trouble = workers.length - running - waiting - done
-  const qa = current.filter((r): r is QaRow => r.kind === 'qa').pop()
+  const qa = current.filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) === 'qa').pop()
+  const review = current.filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) === 'review').pop()
+  const level = levelOf(run)
   const money = spendText(spend(rows.filter(isAgentRow), theme.prices, run.orchestrator))
   const openPrs = run.prs.filter(p => p.state === 'open' || p.state === 'draft').length
 
@@ -963,9 +1007,10 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   if (openPrs > 0) second.push(`${openPrs} open PR${openPrs === 1 ? '' : 's'}`)
   if (run.status === 'merging' && run.final) second.push(`final PR #${run.final.number} waiting on checks`)
   if (qa) second.push(`QA ${verdictWord(qa)}`)
+  if (review) second.push(`review ${verdictWord(review)}`)
   if (money) second.push(money)
 
-  const first = `dacapo${SEP}${run.phase}`
+  const first = `dacapo${SEP}${level}${SEP}${run.phase}`
   const buttons = (
     <Box flexDirection="row" flexShrink={0}>
       <Button key="open-pane" plain onPress={() => act.openPane()}>
@@ -997,8 +1042,10 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
           dacapo
         </Text>
         <Text dimColor>{SEP}</Text>
+        <Text color={LEVEL_COLOR[level]}>{level}</Text>
+        <Text dimColor>{SEP}</Text>
         <Text bold>{run.phase}</Text>
-        <Text dimColor>{`${SEP}${cut(run.task || 'clarifying the task', Math.max(8, inner - 24 - run.phase.length))}`}</Text>
+        <Text dimColor>{`${SEP}${cut(run.task || 'clarifying the task', Math.max(8, inner - 29 - level.length - run.phase.length))}`}</Text>
       </Text>
       <Box flexDirection="row" justifyContent="space-between">
         <Text dimColor wrap="truncate-end">
