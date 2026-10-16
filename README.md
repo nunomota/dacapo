@@ -31,7 +31,7 @@ Answer `y` to add the marketplace and pick the user scope. The mod is active in 
 ## Use
 
 ```
-/dacapo <what you want built>
+/dacapo:core <what you want built>
 ```
 
 The orchestrator then walks six phases, and the pane shows which one it is in:
@@ -77,10 +77,10 @@ The orchestrator calls these; the `dacapo` skill says when.
 
 | Skill | Purpose |
 | --- | --- |
-| `/dacapo` | The entry point: loads the loop and binds it to this mod's tools and subagents. |
-| `/dacapo-loop` | The loop's specification: roles, boundaries, host guarantees, report contracts and decision rules, for other orchestrators to follow with their own way to run agents and land work. |
-| `/clean-commits` | The commit rules workers follow. |
-| `/clean-prs` | The pull request rules workers and the final pull request follow. |
+| `/dacapo:core` | The entry point: loads the loop and binds it to this mod's tools and subagents. |
+| `/dacapo:loop` | The loop's specification: roles, boundaries, host guarantees, report contracts and decision rules, for other orchestrators to follow with their own way to run agents and land work. |
+| `/dacapo:clean-commits` | The commit rules workers follow. |
+| `/dacapo:clean-prs` | The pull request rules workers and the final pull request follow. |
 
 ## Development
 

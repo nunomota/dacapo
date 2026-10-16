@@ -1,11 +1,11 @@
 ---
-name: dacapo
-description: Runs a handed-over task as an orchestrated loop: clarify, research, plan, dispatch parallel worker subagents in git worktrees, end-user QA with a scored rubric, iterate, merge. Workers land their work through GitHub pull requests into a run branch, and the run branch merges into main through a final pull request. Invoked by the user via /dacapo <task>.
+name: core
+description: Runs a handed-over task as an orchestrated loop: clarify, research, plan, dispatch parallel worker subagents in git worktrees, end-user QA with a scored rubric, iterate, merge. Workers land their work through GitHub pull requests into a run branch, and the run branch merges into main through a final pull request. Invoked by the user via /dacapo:core <task>.
 ---
 
-# dacapo
+# core
 
-Before anything else, load `dacapo:dacapo-loop` with the Skill tool: it is the loop you follow, with its roles, boundaries, contracts and decision rules. This file says how this plugin runs it: its tools, subagents, worktrees, pull requests and wake-ups. The task is everything after `/dacapo` in the prompt that invoked this skill. With the loop loaded, begin its phase 1.
+Before anything else, load `dacapo:loop` with the Skill tool: it is the loop you follow, with its roles, boundaries, contracts and decision rules. This file says how this plugin runs it: its tools, subagents, worktrees, pull requests and wake-ups. The task is everything after `/dacapo:core` in the prompt that invoked this skill. With the loop loaded, begin its phase 1.
 
 The loop's boundaries are enforced here. While a run is active the tools refuse Edit, Write, history-changing git commands and `gh pr` commands from you. Workers write only inside their worktree. QA can read and search only its `.context` folder and write only its report; its shell is bound by its prompt alone. You never edit files, touch git, or open and merge pull requests: the `mcp__dacapo__*` tools and the worker subagents do. Each tool reply says what to call next. A timeline pane shows every worker, QA round, pull request and user prompt of the run; the band above the prompt shows where the run stands. `/dacapo-pane` reopens the pane.
 
