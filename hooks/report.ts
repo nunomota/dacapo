@@ -1,6 +1,10 @@
-import type { QaItem, QaSummary, Score } from '../types'
+import type { QaCategory, QaItem, QaSummary, ReviewCategory, Score } from '../types'
 
-export type RubricItem = { id: string; title: string; category: 'core' | 'ui-ux' }
+export type RubricItem = { id: string; title: string; category: QaCategory | ReviewCategory }
+
+/** The categories a rubric may use: QA's judge the product as a user, the reviewer's judge the code as an engineer. */
+export const QA_CATEGORIES: readonly QaCategory[] = ['core', 'ui-ux']
+export const REVIEW_CATEGORIES: readonly ReviewCategory[] = ['quality', 'consistency', 'cleanup']
 
 const SCORES: readonly Score[] = ['strong', 'acceptable', 'unacceptable']
 
@@ -69,7 +73,7 @@ export function summarize(items: readonly QaItem[]): QaSummary {
   return { strong, acceptable, unacceptable, verdict }
 }
 
-export function validateRubric(raw: unknown): { ok: true; rubric: RubricItem[] } | { ok: false; problem: string } {
+export function validateRubric(raw: unknown, categories: readonly RubricItem['category'][] = QA_CATEGORIES): { ok: true; rubric: RubricItem[] } | { ok: false; problem: string } {
   if (!Array.isArray(raw) || raw.length === 0) return { ok: false, problem: 'rubric must be a non-empty array' }
   const rubric: RubricItem[] = []
   const seen = new Set<string>()
@@ -84,10 +88,10 @@ export function validateRubric(raw: unknown): { ok: true; rubric: RubricItem[] }
     if (typeof it.title !== 'string' || it.title.trim().length === 0) {
       return { ok: false, problem: `rubric item "${it.id}" needs a title` }
     }
-    if (it.category !== 'core' && it.category !== 'ui-ux') {
-      return { ok: false, problem: `rubric item "${it.id}" category must be "core" or "ui-ux"` }
+    if (typeof it.category !== 'string' || !(categories as readonly string[]).includes(it.category)) {
+      return { ok: false, problem: `rubric item "${it.id}" category must be one of ${categories.map(c => `"${c}"`).join(', ')}` }
     }
-    rubric.push({ id: it.id, title: it.title.trim(), category: it.category })
+    rubric.push({ id: it.id, title: it.title.trim(), category: it.category as RubricItem['category'] })
   }
   return { ok: true, rubric }
 }

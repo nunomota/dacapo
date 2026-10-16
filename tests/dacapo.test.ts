@@ -1,8 +1,9 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { checksOf, parsePrs } from '../hooks/gh'
-import { cut, elapsed, rowsOf } from '../hooks/pane'
-import { summarize, validateReport, validateRubric } from '../hooks/report'
+import { cut, elapsed, phasesOf, rowsOf } from '../hooks/pane'
+import { DEFAULT_CONF, describeConf, loadConf, parseConf } from '../hooks/conf'
+import { REVIEW_CATEGORIES, summarize, validateReport, validateRubric } from '../hooks/report'
 
 const RUBRIC = [
   { id: 'login', title: 'A user can log in', category: 'core' as const },
@@ -62,6 +63,41 @@ describe('QA report validation', () => {
     expect(validateRubric([{ id: 'a', title: 't', category: 'perf' }]).ok).toBe(false)
     expect(validateRubric([{ id: 'a', title: 't', category: 'core' }, { id: 'a', title: 'u', category: 'core' }]).ok).toBe(false)
   })
+
+  test('the engineering rubric has its own categories, and neither rubric accepts the other\'s', () => {
+    expect(validateRubric([{ id: 'errors', title: 'Errors follow the codebase\'s style', category: 'consistency' }], REVIEW_CATEGORIES).ok).toBe(true)
+    expect(validateRubric([{ id: 'a', title: 't', category: 'quality' }]).ok).toBe(false)
+    const out = validateRubric([{ id: 'a', title: 't', category: 'core' }], REVIEW_CATEGORIES)
+    expect(out.ok).toBe(false)
+    if (out.ok) return
+    expect(out.problem).toMatch(/"quality", "consistency", "cleanup"/)
+  })
+})
+
+describe('the configuration', () => {
+  test('key = value lines with comments and lists; a wrong value is named and the earlier one kept', () => {
+    const parsed = parseConf('# a comment\nlevel = consolidate\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\n')
+    expect(parsed.values).toEqual({ level: ['consolidate'], workers: ['fable', 'opus', 'sonnet'] })
+    expect(parsed.problems).toEqual([
+      'line 4: "judges" must be one of sequential, parallel',
+      'line 5: not "key = value": nope',
+      'line 6: unknown key "color" (one of level, judges, workers, qa, review)',
+    ])
+  })
+
+  test('later files override earlier ones key by key, over the defaults, and each value names its file', () => {
+    const loaded = loadConf([
+      { path: '/plugin/dacapo.conf', text: 'level = review\nqa = opus, sonnet\n' },
+      { path: '/home/u/.claude/dacapo.conf', text: 'qa = sonnet\njudges = parallel\n' },
+      { path: '/repo/.dacapo.conf', text: null },
+    ])
+    expect(loaded.conf).toEqual({ ...DEFAULT_CONF, qa: ['sonnet'], judges: 'parallel' })
+    expect(loaded.origin.qa).toBe('/home/u/.claude/dacapo.conf')
+    expect(loaded.origin.workers).toBe('default')
+    expect(loaded.read).toEqual(['/plugin/dacapo.conf', '/home/u/.claude/dacapo.conf'])
+    expect(describeConf(loaded)).toMatch(/^level = review  \(\/plugin\/dacapo.conf\)\n/)
+    expect(describeConf(loadConf([]))).toMatch(/Files read: none; defaults\./)
+  })
 })
 
 describe('pull requests as gh lists them', () => {
@@ -92,6 +128,12 @@ describe('timeline formatting', () => {
     expect(elapsed(0, 2 * 3_600_000 + 5 * 60_000)).toBe('2h05m')
   })
 
+  test('each level walks its own phases: no qa at build, a review after qa at consolidate', () => {
+    expect(phasesOf('build')).toEqual(['clarify', 'research', 'plan', 'implement', 'merge'])
+    expect(phasesOf('review')).toEqual(['clarify', 'research', 'plan', 'implement', 'qa', 'merge'])
+    expect(phasesOf('consolidate')).toEqual(['clarify', 'research', 'plan', 'implement', 'qa', 'review', 'merge'])
+  })
+
   test('cut shortens with an ellipsis and folds whitespace; rowsOf counts wrapped rows', () => {
     expect(cut('a   long\nline here', 8)).toBe('a long …')
     expect(cut('short', 10)).toBe('short')
@@ -118,6 +160,7 @@ describe('the pane', () => {
 
   test('the /dacapo:core prompt opens a run and becomes the first row', async ($, on) => {
     mock.clock(on, { now: Date.UTC(2026, 9, 10, 12, 0, 0) })
+    mock.env(on, { HOME: '/home/u' })
     on('session.start', (_, e) => ({ cwd: e.cwd }))
     on('prompt.submit', (_, e) => ({ text: e.text }))
     on('session.cwd', () => ({ value: '/tmp/dacapo-test' }))
@@ -159,7 +202,10 @@ describe('the loop', () => {
   test('workers land through pull requests; sync, QA, resume, guards, stale marking and the final merge', async ($, on) => {
     const t0 = Date.UTC(2026, 9, 10, 12, 0, 0)
     const clock = mock.clock(on, { now: t0 })
+    mock.env(on, { HOME: '/home/u' })
     const files = new Map<string, string>()
+    // the user's conf: judges in parallel, QA on the fast tier first, one line the plugin does not know
+    files.set('/home/u/.claude/dacapo.conf', '# mine\njudges = parallel\nqa = sonnet, opus  # fast first\nbogus = 1\n')
     const prompts: string[] = []
     const ghCalls: string[][] = []
     let ghMissing = true
@@ -249,15 +295,39 @@ describe('the loop', () => {
     const RED = [{ __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'FAILURE' }]
 
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-    await $.prompt.submit({ text: '/dacapo:core build a login page', wait: false, origin: { kind: 'composer' } })
+    // the level flag sets the level before the task is clear; a task that begins with "build" is just a task
+    await $.prompt.submit({ text: '/dacapo:core --consolidate build a login page', wait: false, origin: { kind: 'composer' } })
 
     // without gh the run cannot start, and the orchestrator is told how to help
     const noGh = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page' } as never)
     expect('isError' in noGh && noGh.isError).toBe(true)
     expect('result' in noGh && noGh.result).toMatch(/brew install gh/)
     ghMissing = false
+    const badLevel = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page', level: 'turbo' } as never)
+    expect('isError' in badLevel && badLevel.isError).toBe(true)
     const started = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page' } as never)
     expect('result' in started && started.result).toMatch(/Run .* ready on x\/y/)
+    expect('result' in started && started.result).toMatch(/level consolidate: QA as the end user and an engineering review side by side/)
+    expect('result' in started && started.result).toMatch(/QA sonnet, opus; review opus, sonnet/)
+    // the configuration in force, with where each value came from; agents never read the files
+    const config = await $.tool.call({ tool: 'mcp__dacapo__config' } as never)
+    expect('result' in config && config.result).toMatch(/level = review  \(default\)/)
+    expect('result' in config && config.result).toMatch(/judges = parallel  \(\/home\/u\/.claude\/dacapo.conf\)/)
+    expect('result' in config && config.result).toMatch(/qa = sonnet, opus/)
+    expect('result' in config && config.result).toMatch(/Ignored:[\s\S]*unknown key "bogus"/)
+    // a model the configuration does not list is refused
+    const fable = await $.tool.call({
+      tool: 'mcp__dacapo__dispatch',
+      tasks: [{ id: 'login', title: 'Login page', prompt: 'Build it', model: 'fable', commit: 'feat: add login page' }],
+    } as never)
+    expect('isError' in fable && fable.isError).toBe(true)
+    expect('result' in fable && fable.result).toMatch(/one of opus, sonnet/)
+    // once set up, the level is fixed
+    const relevel = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page', level: 'build' } as never)
+    expect('isError' in relevel && relevel.isError).toBe(true)
+    // the reviewer runs after QA reported on the round, never before
+    const early = await $.tool.call({ tool: 'mcp__dacapo__review', rubric: [{ id: 'style', title: 'Matches the codebase', category: 'consistency' }] } as never)
+    expect('isError' in early && early.isError).toBe(true)
     expect('result' in started && started.result).toMatch(new RegExp(`run branch "${RUN}" cut from origin/main`))
     expect('result' in started && started.result).toMatch(/Pushed build-a-login-page to origin/)
     const runId = /Run (\S+) ready/.exec(String('result' in started ? started.result : ''))?.[1] ?? ''
@@ -287,6 +357,7 @@ describe('the loop', () => {
     expect(files.get(`/repo/.workspaces/.dacapo/${runId}/round-1-login.md`)).toMatch(/clean-commits/)
     const pendingStatus = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in pendingStatus && pendingStatus.result).toMatch(/login \[pending-worker-1-login\] waiting to start/)
+    expect('result' in pendingStatus && pendingStatus.result).toMatch(/level consolidate \(judges in parallel\), phase implement/)
     // an Agent call that names nothing pending is refused; the right one is filled in from the run
     const wrong = await startAgent('dacapo worker nope')
     expect('deny' in wrong && typeof wrong.deny === 'string').toBe(true)
@@ -375,7 +446,15 @@ describe('the loop', () => {
     const startedQa = await startAgent('dacapo qa 1-1')
     expect('result' in startedQa).toBe(true)
     expect(agentCalls[1]?.subagent_type).toBe('dacapo:qa')
-    expect(agentCalls[1]?.model).toBe('opus')
+    expect(agentCalls[1]?.model).toBe('sonnet')
+
+    // judges in parallel: the review starts while QA runs, and a QA verdict of fix stops it
+    expect('result' in qa && qa.result).toMatch(/judges run in parallel: call mcp__dacapo__review now/)
+    const alongside = await $.tool.call({ tool: 'mcp__dacapo__review', rubric: [{ id: 'style', title: 'Matches the codebase', category: 'consistency' }] } as never)
+    expect('result' in alongside && alongside.result).toMatch(/Review round 1 prepared/)
+    await startAgent('dacapo review 1-1')
+    expect(agentCalls[2]?.subagent_type).toBe('dacapo:reviewer')
+    expect(agentCalls[2]?.model).toBe('opus')
 
     // QA may not read source, only its .context folder; and only writes its report
     const peek = await $.tool.call({ tool: 'Read', file_path: '/repo/.workspaces/qa/1-1/src/login.ts', agentId: 'agent-2' } as never)
@@ -392,6 +471,10 @@ describe('the loop', () => {
     expect(wakeQa).toMatch(/1 strong, 0 acceptable, 1 unacceptable → verdict: fix/)
     expect(wakeQa).toMatch(/Login works; the error copy needs words\./)
     expect(files.get(`/repo/.workspaces/.dacapo/${runId}/qa-1-1.json`)).toMatch(/"verdict": "fix"/)
+    expect(wakeQa).toMatch(/Review round 1 was stopped: QA's fix verdict preempts it/)
+    const preempted = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
+    expect('result' in preempted && preempted.result).toMatch(/Review round 1 \[agent-3\] cancelled/)
+    expect('result' in preempted && preempted.result).toMatch(/judges in parallel/)
 
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
@@ -403,6 +486,45 @@ describe('the loop', () => {
       expect(await ui.find({ text: /error copy needs words/ })).toBeDefined()
       await ui.press({ plugin: 'dacapo', key: 'qa-agent-2' })
       expect(await ui.find({ text: /error copy needs words/ })).toBeUndefined()
+      expect(await ui.find({ text: /^consolidate$/ })).toBeDefined()
+      expect(await ui.find({ text: /QA, then engineering review/ })).toBeDefined()
+      await ui.unmount()
+    }
+
+    // at level consolidate the reviewer reads the run's change and scores the engineering rubric; it reads source, writes only its report
+    const review = await $.tool.call({
+      tool: 'mcp__dacapo__review',
+      rubric: [{ id: 'errors', title: 'Errors are raised and shown the way the codebase already does', category: 'consistency' }, { id: 'dead', title: 'No dead code or leftover scaffolding', category: 'cleanup' }],
+      brief: 'The briefs pointed both tasks at the existing form components.',
+    } as never)
+    expect('result' in review && review.result).toMatch(/Review round 2 prepared/)
+    expect('result' in review && review.result).toMatch(/subagent_type: "dacapo:reviewer".*prompt: "dacapo review 1-2"/)
+    expect(files.get('/repo/.workspaces/review/1-2/.context/review-brief.md')).toMatch(/git diff origin\/main\.\.\.HEAD/)
+    expect(files.get('/repo/.workspaces/review/1-2/.context/review-brief.md')).toMatch(/existing form components/)
+    const startedReview = await startAgent('dacapo review 1-2')
+    expect('result' in startedReview).toBe(true)
+    expect(agentCalls[3]?.subagent_type).toBe('dacapo:reviewer')
+    const reviewerReads = await $.tool.call({ tool: 'Read', file_path: '/repo/.workspaces/review/1-2/src/login.ts', agentId: 'agent-4' } as never)
+    expect('result' in reviewerReads && reviewerReads.result).toBe('read')
+    const reviewerEdits = await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/review/1-2/src/login.ts', content: 'x', agentId: 'agent-4' } as never)
+    expect('deny' in reviewerEdits && typeof reviewerEdits.deny === 'string').toBe(true)
+    const reviewReport = '/repo/.workspaces/review/1-2/.context/review-report.json'
+    const reviewerWrites = await $.tool.call({ tool: 'Write', file_path: reviewReport, content: 'x', agentId: 'agent-4' } as never)
+    expect('result' in reviewerWrites && reviewerWrites.result).toBe('written')
+    files.set(reviewReport, JSON.stringify({ items: [{ id: 'errors', score: 'strong', note: 'uses the shared toast' }, { id: 'dead', score: 'strong', note: 'nothing left over' }], overview: 'Clean; the legacy form helper could be shared later.' }))
+    await $.turn.complete({ answer: 'Report written.', durationMs: 1, isAborted: false, turnId: 't3', agentId: 'agent-4', reason: 'answer' })
+    await clock.advance(1_000)
+    const wakeReview = prompts.find(p => /Review round 2:/.test(p))
+    expect(wakeReview).toMatch(/2 strong, 0 acceptable, 0 unacceptable → verdict: pass/)
+    expect(wakeReview).toMatch(/Overview from the reviewer:/)
+    expect(wakeReview).toMatch(/call mcp__dacapo__finish/)
+    expect(files.get(`/repo/.workspaces/.dacapo/${runId}/review-1-2.json`)).toMatch(/"verdict": "pass"/)
+    const afterReview = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
+    expect('result' in afterReview && afterReview.result).toMatch(/Review round 2 \[agent-4\] finished .*2 strong/)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
+      expect(await ui.find({ text: /Review \(2\)/ })).toBeDefined()
+      expect(await ui.find({ text: /Review round 2: pass/ })).toBeDefined()
       await ui.unmount()
     }
 
@@ -422,18 +544,18 @@ describe('the loop', () => {
 
     // a silent worker is marked stale after 30 minutes and the orchestrator is told; activity clears it
     await clock.advance(31 * 60_000)
-    expect(prompts.some(p => /Worker login \[agent-3\] looks stale/.test(p))).toBe(true)
+    expect(prompts.some(p => /Worker login \[agent-5\] looks stale/.test(p))).toBe(true)
     const stale = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
-    expect('result' in stale && stale.result).toMatch(/login \[agent-3\] stale/)
-    await $.tool.call({ tool: 'Write', file_path: `/repo/.workspaces/${WORK}/a.ts`, content: 'x', agentId: 'agent-3' } as never)
+    expect('result' in stale && stale.result).toMatch(/login \[agent-5\] stale/)
+    await $.tool.call({ tool: 'Write', file_path: `/repo/.workspaces/${WORK}/a.ts`, content: 'x', agentId: 'agent-5' } as never)
     const back = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
-    expect('result' in back && back.result).toMatch(/login \[agent-3\] running/)
+    expect('result' in back && back.result).toMatch(/login \[agent-5\] running/)
 
     // two idle hours stop it, distinct from a failure; the wake-up lists the options
     await clock.advance(2 * 60 * 60_000 + 1_000)
     const timed = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
-    expect('result' in timed && timed.result).toMatch(/login \[agent-3\] timed out/)
-    expect(prompts.some(p => /Worker login \[agent-3\] timed out/.test(p))).toBe(true)
+    expect('result' in timed && timed.result).toMatch(/login \[agent-5\] timed out/)
+    expect(prompts.some(p => /Worker login \[agent-5\] timed out/.test(p))).toBe(true)
     expect(prompts.some(p => /Round 2: all 1 worker\(s\) have ended/.test(p) && /resume it: dispatch the same task id with resume: true/.test(p))).toBe(true)
 
     // the end: a final pull request from the run branch into main, merged by the run once green

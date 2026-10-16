@@ -1,6 +1,12 @@
 export type RunStatus = 'planning' | 'active' | 'merging' | 'done' | 'aborted'
 
-export type Phase = 'clarify' | 'research' | 'plan' | 'implement' | 'qa' | 'merge'
+export type Phase = 'clarify' | 'research' | 'plan' | 'implement' | 'qa' | 'review' | 'merge'
+
+/**
+ * How far a run is judged before it merges: `build` lands the work and merges; `review` adds QA as the end user
+ * (the default); `consolidate` adds an engineering review of the run's accumulated change after QA passes.
+ */
+export type Level = 'build' | 'review' | 'consolidate'
 
 /** Token counts as the API reports them, summed over model steps. */
 export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number }
@@ -51,6 +57,10 @@ export type Run = {
   worktree: string
   /** The branch the run was cut from and is merged into through the final pull request. */
   baseBranch: string
+  /** Chosen at start and fixed for the run; a run saved before levels existed reads as `review`. */
+  level?: Level
+  /** At consolidate: whether QA and the review run one after the other (the rule) or side by side; absent means sequential. */
+  judges?: 'sequential' | 'parallel'
   /** Absolute path of the run log folder, `.workspaces/.dacapo/<id>`. */
   runDir: string
   phase: Phase
@@ -96,7 +106,11 @@ export type QaStatus =
 
 export type Score = 'strong' | 'acceptable' | 'unacceptable'
 
-export type QaItem = { id: string; title: string; category: 'core' | 'ui-ux'; score: Score; note: string }
+/** QA scores user-visible outcomes (`core`, `ui-ux`); the reviewer scores properties of the code (`quality`, `consistency`, `cleanup`). */
+export type QaCategory = 'core' | 'ui-ux'
+export type ReviewCategory = 'quality' | 'consistency' | 'cleanup'
+
+export type QaItem = { id: string; title: string; category: QaCategory | ReviewCategory; score: Score; note: string }
 
 export type QaSummary = {
   strong: number
@@ -162,9 +176,14 @@ export type WorkerRow = {
   isResumed?: boolean
 }
 
+/**
+ * A scored report on the integrated state: QA's, as the end user, or the reviewer's, as an engineer reading the
+ * run's diff. Both share this row; `role` tells them apart (absent means QA, for rows saved before reviews existed).
+ */
 export type QaRow = {
   kind: 'qa'
-  /** The QA subagent's agent id. */
+  role?: 'qa' | 'review'
+  /** The QA or reviewer subagent's agent id. */
   id: string
   iteration: number
   round: number

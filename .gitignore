@@ -2,3 +2,5 @@
 .claude-plugin/types/
 tsconfig.json
 node_modules/
+# a local dacapo configuration for this repository (see dacapo.conf)
+.dacapo.conf

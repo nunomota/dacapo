@@ -10,7 +10,7 @@
 
 **dacapo** is an orchestration plugin for [Claude Code](https://claude.com/claude-code). You hand it a task. The session clarifies it with you, researches the stack and splits the work. Worker subagents build the pieces in parallel, each in its own git worktree, and land them through GitHub pull requests into a run branch. A QA subagent then uses the result the way a user would, scores a rubric, and the loop runs again until it passes. A final pull request merges the run branch into `main`.
 
-Everything in the mod is deterministic: it manages worktrees, branches and pull requests, validates reports, wakes the orchestrator, and draws the pane. No model is asked anything inside it.
+Everything in the mod is deterministic: it manages worktrees, branches and pull requests, validates reports, wakes the orchestrator, and draws the pane. No model is asked anything inside it. [How it works](docs/how-it-works.md) has the details.
 
 <p align="center">
   <img src="docs/pane.png" alt="The dacapo pane: task header, phase bar, progress rows and the timeline" width="620">
@@ -28,74 +28,76 @@ In a Claude Code session:
 
 Answer `y` to add the marketplace and pick the user scope. The mod is active in that session and every later one.
 
+## Update
+
+```
+claude plugin update dacapo
+```
+
+Then restart Claude Code. Your configuration is not touched: it lives outside the plugin (see below).
+
 ## Use
 
 ```
-/dacapo:core <what you want built>
+/dacapo:core [--build | --review | --consolidate] <what you want built>
 ```
 
-The orchestrator then walks six phases, and the pane shows which one it is in:
+The flag is the run's level, how far the work is judged before it merges. The levels nest, and the pane names the one in force:
+
+- **build** lands the work: the run merges once every task has landed. No QA.
+- **review** adds QA as the end user, until it passes. The default.
+- **consolidate** adds an engineering review of the run's whole change after QA passes, so the codebase stays maintainable past this run.
+
+Without a flag the run takes the level your configuration names, `review` unless you changed it.
+
+The orchestrator then walks the phases of the level, and the pane shows which one it is in:
 
 1. **Clarify.** It restates the task and asks about anything material until nothing is open.
-2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, notes the build and test commands.
-3. **Plan.** It names the run, cuts a run branch from `main`, splits the work into independent tasks, and writes the QA rubric and harness before any code exists.
+2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, notes the build and test commands, and finds the existing conventions each task must match.
+3. **Plan.** It names the run, cuts a run branch from `main`, splits the work into independent tasks, and writes the QA rubric and harness (and, at `consolidate`, the engineering rubric) before any code exists.
 4. **Implement.** One worker per task, in parallel. Each opens a draft pull request against the run branch, marks it ready when its build passes, waits for checks, and squash-merges with the planned title. A worker's task is done only when its pull request is merged.
-5. **QA.** A fresh subagent uses the deliverable as the end user and scores every rubric item `strong`, `acceptable` or `unacceptable`. On any verdict below pass the loop goes back to step 4, with every item below `strong` becoming a task. The run merges only on pass. The one exception is a stuck loop, where the user may decide to merge with the limitation stated.
-6. **Merge.** The orchestrator opens the final pull request into `main`, written to the `clean-prs` rules, and the mod merges it once its checks are green.
+5. **QA.** A fresh subagent uses the deliverable as the end user, attending to consistency across it, and scores every rubric item `strong`, `acceptable` or `unacceptable`. On any verdict below pass the loop goes back to step 4, with every item below `strong` becoming a task. The run merges only on pass. The one exception is a stuck loop, where the user may decide to merge with the limitation stated.
+6. **Review** (at `consolidate`). Another subagent reads the run's change against `main` as an engineer and scores an engineering rubric: quality, consistency with the codebase, cleanup. Findings inside the run's change become fix tasks; findings beyond it are recommendations in the final report.
+7. **Merge.** The orchestrator opens the final pull request into `main`, written to the `clean-prs` rules, and the mod merges it once its checks are green.
 
-You can type while workers run. Your prompts become events in the timeline and are folded into the next round.
+You can type while workers run. Your prompts become events in the timeline and are folded into the next round. `/dacapo-pane` reopens the pane.
 
-## What the mod enforces
+## Configure
 
-- **Only workers change code.** While a run is active, the orchestrator cannot edit files, rewrite git history or touch pull requests by hand. Workers write inside their own worktree only.
-- **Everything lands through pull requests.** Workers merge their own after green checks; the final merge into `main` is a pull request too. The mod never merges a branch locally.
-- **Clean history.** Commits follow the bundled `clean-commits` skill: Conventional Commit titles, one unit of work each, no bodies, no attribution lines. Pull requests follow `clean-prs`: the planned title, one paragraph on the contribution, a `Verified:` line.
-- **QA never reads source.** The QA subagent can only read the brief and rubric it was given and only write its report. The mod validates the report and derives the verdict.
-- **Nothing is fired and forgotten.** Report collection, pull request polling, the final merge and every wake-up run on the mod's own timer. A wake-up that does not arrive is sent again.
-- **Stale is not failed.** An agent silent for 30 minutes is marked stale and the orchestrator is told; it keeps running. After two idle hours it is timed out: stopped and handled as a failure (resume, repair, drop or ask).
+The plugin ships [`dacapo.conf`](dacapo.conf) with its defaults. It is replaced on every update, so do not edit it there: copy it and edit the copy. A later file overrides an earlier one, key by key.
 
-## The pane
-
-The header reads like fastfetch: the task, elapsed time, branch, models and spend, then a phase bar whose done phases are grey, current phase colored and named, phases ahead hollow. Three rows count pull requests by state, agents by outcome and QA rounds by verdict, each expanding to its items. Below them the timeline is a tree of everything that happened: your messages, the orchestrator's answers, every worker with a link to its pull request, every QA round with its scores. It shows the latest five events and folds the rest behind `earlier`.
-
-One color code throughout: teal in progress, green done, yellow done with limitations or recommendations, orange failed.
-
-## Tools
-
-The orchestrator calls these; the `dacapo` skill says when.
-
-| Tool | What it does |
+| File | Scope |
 | --- | --- |
-| `start` | Checks `gh`, pulls the base branch, cuts the run branch in its worktree and pushes it. |
-| `dispatch` | Prepares one worktree, branch and brief per task; `resume: true` continues an earlier worker. |
-| `sync` | Confirms which pull requests merged, prunes their branches, fast-forwards the run worktree. |
-| `qa` | Prepares the QA worktree with the rubric and harness. |
-| `finish` | Opens the final pull request; the mod merges it when green. |
-| `status`, `phase`, `cancel` | The timeline as text, the phase marker, stopping an agent. |
+| `dacapo.conf` inside the installed plugin | The defaults. |
+| `~/.claude/dacapo.conf` | You, in every repository. |
+| `.dacapo.conf` at a repository's root | That repository. dacapo keeps it out of git. |
 
-## Skills
+The keys:
 
-| Skill | Purpose |
-| --- | --- |
-| `/dacapo:core` | The entry point: loads the loop and binds it to this mod's tools and subagents. |
-| `/dacapo:loop` | The loop's specification: roles, boundaries, host guarantees, report contracts and decision rules, for other orchestrators to follow with their own way to run agents and land work. |
-| `/dacapo:clean-commits` | The commit rules workers follow. |
-| `/dacapo:clean-prs` | The pull request rules workers and the final pull request follow. |
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `level` | `review` | The level of a run whose prompt carries no flag. |
+| `judges` | `sequential` | At `consolidate`: `sequential` runs the review after QA passes; `parallel` runs both side by side. |
+| `workers` | `opus, sonnet` | The models a worker may be given, strongest first. The first is the strong tier and the default, the last the fast tier. |
+| `qa` | `opus, sonnet` | The models QA may be given, likewise. |
+| `review` | `opus, sonnet` | The models the reviewer may be given, likewise. |
 
-## Development
+Fable is listed in the shipped file, commented out; uncomment the lines in your copy to allow it. Lines starting with `#` are comments and lists are comma-separated. Agents never read these files: the orchestrator asks a tool for the values in force, so comments and commented-out lines never reach a model. `/dacapo-config` shows you the same values and the file each came from.
 
-```
-claude plugin validate .
-claude plugin test .
-```
+Model prices for the pane's cost estimate are a plugin option, not a conf key: `claude plugin configure dacapo`.
 
-Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude Code API; it may change between releases. Pull request state comes from one `gh pr list` call every 20 seconds on the mod's timer. Cost estimates use Anthropic list prices per model; override them with the plugin's `prices` option.
+## Going further
 
-## Known limits
+**Judges in parallel.** At `consolidate`, set `judges = parallel` in your conf, or ask for it when you hand over the task, and QA and the engineering review run side by side. It is faster and spends more tokens: a review of a state QA then fails is wasted, since a QA verdict of `fix` always preempts the review, which runs again after the fixes.
 
-- The QA agent keeps a shell so it can run the deliverable, so reading source through a shell command is forbidden by its prompt rather than by the tooling.
-- Branch protection that requires reviews stops a worker's merge and the final merge; the orchestrator is told, and merging on GitHub by hand finishes the run.
-- The timeline lives for the session; it is not kept across restarts.
+**The loop outside this plugin.** The loop is specified apart from the mod that runs it, in the `dacapo:loop` skill (`/dacapo:loop` shows it): the roles, their boundaries, the levels, what a host must guarantee, the report contracts and the decision rules of each phase. Any orchestrator that can run agents and land their work its own way can follow it, [Conductor](https://www.conductor.build/) among them. The `dacapo:core` skill is this plugin's binding of the loop to its tools.
+
+**The commit and pull request rules** workers follow are skills of their own, `/dacapo:clean-commits` and `/dacapo:clean-prs`, usable outside a run.
+
+## Docs
+
+- [How it works](docs/how-it-works.md): what the mod enforces, outcomes, the pane, the tools.
+- [Developing dacapo](docs/development.md): validating, testing, layout, known limits.
 
 Inspired by [savvy-progress](https://github.com/JohnnyVizz/claude-kit).
 
