@@ -1,10 +1,18 @@
-<p align="center">
+<div align="center">
   <img src="docs/banner.svg" alt="dacapo: from the top, again" width="720">
-</p>
-
-<p align="center">
-  A Claude Code mod that turns a handed-over task into a build loop: clarify, research, plan, build in parallel, QA as the end user, repeat until it passes, merge.
-</p>
+  <br /><br />
+  <p><em>A Claude Code mod that turns a handed-over task into a build loop: clarify, research, plan, build in parallel, QA as the end user, repeat until it passes, merge.</em></p>
+  <a href="https://github.com/nunomota/dacapo/blob/main/.claude-plugin/plugin.json"><img alt="version" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnunomota%2Fdacapo%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&label=version&color=blue" /></a>
+  <a href="https://claude.com/claude-code"><img alt="platform" src="https://img.shields.io/badge/platform-Claude%20Code%20plugin-D85A30" /></a>
+  <a href="https://cli.github.com"><img alt="requires" src="https://img.shields.io/badge/requires-GitHub%20CLI-brightgreen" /></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green" /></a>
+  <br /><br />
+  <a href="#install">Install</a> •
+  <a href="#use">Use</a> •
+  <a href="#configure">Configure</a> •
+  <a href="#going-further">Going further</a> •
+  <a href="#docs">Docs</a>
+</div>
 
 ---
 
