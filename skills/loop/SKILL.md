@@ -1,6 +1,6 @@
 ---
 name: loop
-description: The dacapo loop as a specification for any orchestrator that runs agents and lands their work its own way. It covers four roles (orchestrator, workers, QA, reviewer) and their boundaries, the three levels a run can be held to (build, verify, polish), what a host must guarantee, and the inputs written before any code exists. It also gives the worker, QA and reviewer report contracts, the decision rules of each phase (clarify, research, plan, implement, qa, review, merge), and what keeps rounds repeatable: the conventions workers match, the hazards research must find, the evidence briefs ask for, and the decision record a run leaves behind.
+description: The dacapo loop as a specification for any orchestrator that runs agents and lands their work its own way. It covers four roles (orchestrator, workers, QA, reviewer) and their boundaries, the three levels a run can be held to (fast, balanced, deep), what a host must guarantee, and the inputs written before any code exists. It also gives the worker, QA and reviewer report contracts, the decision rules of each phase (clarify, research, plan, implement, qa, review, merge), and what keeps rounds repeatable: the conventions workers match, the hazards research must find, the evidence briefs ask for, and the decision record a run leaves behind.
 ---
 
 # loop
@@ -23,9 +23,9 @@ If a person invoked this skill directly rather than a host loading it, tell them
 
 A run is held to one of three levels, each adding a judge to the one below. The level is chosen in phase 1, recorded with the decisions, and never raised or lowered once work is dispatched.
 
-- **build**: clarify, research, plan, implement, merge. The run merges once every task of the round has landed; a failed or dropped task is a limitation in the final report. No rubric, no harness.
-- **verify**: adds QA (phase 5). The default: the loop as it has always run.
-- **polish**: adds the engineering review (phase 5b) after QA passes, so the codebase stays maintainable past this run.
+- **fast**: clarify, research, plan, implement, merge. The run merges once every task of the round has landed; a failed or dropped task is a limitation in the final report. No rubric, no harness.
+- **balanced**: adds QA (phase 5). The default: the loop as it has always run.
+- **deep**: adds the engineering review (phase 5b) after QA passes, so the codebase stays maintainable past this run.
 
 ## Boundaries
 
@@ -35,7 +35,7 @@ Responsible for:
 - Clarifying the request with the user, the only role in conversation with the user.
 - Researching the stack, its versions, its build and test commands, and the references each task must match.
 - Splitting the work into independent tasks with explicit contracts.
-- Writing every input before code exists: briefs, landing titles, build and test commands, rubric, harness, and at `polish` the engineering rubric.
+- Writing every input before code exists: briefs, landing titles, build and test commands, rubric, harness, and at `deep` the engineering rubric.
 - Reading outcomes and reports, and deciding each next round.
 - Asking the host to integrate the run, and writing the final report.
 
@@ -98,7 +98,7 @@ Cannot see:
 
 ### Reviewer
 
-Present at `polish` only.
+Present at `deep` only.
 
 Responsible for:
 - Reading the change the run has accumulated against its base, the same state QA just tested, and the code it touches.
@@ -121,7 +121,7 @@ Cannot see:
 - **Isolation.** Each worker works in a sandbox it cannot leave; the host refuses its writes outside it.
 - **Deterministic integration.** Landed work enters the run under its planned landing title by the host's own mechanism, never by the orchestrator. Work counts as landed only when the host says so. At the end the host integrates the run into the base line when asked, and says why when it refuses (the base moved, checks fail).
 - **A clean QA environment.** QA gets a clean copy of the integrated state and a way to run the product. Source is unreachable to it, or at least forbidden by its instructions.
-- **A read-only reviewer environment.** At `polish`, the reviewer gets a clean copy of the integrated state and the base it is compared against; it can write its report and nothing else.
+- **A read-only reviewer environment.** At `deep`, the reviewer gets a clean copy of the integrated state and the base it is compared against; it can write its report and nothing else.
 - **Validated reports.** For QA and the reviewer alike, the host checks that every rubric id is scored exactly once, every score is `strong`, `acceptable` or `unacceptable`, and the overview is not empty. It derives the verdict from the scores and never asks the judge for one. An invalid report goes to the orchestrator with the reasons.
 - **Reported outcomes.** Without being asked, the host tells the orchestrator each worker's report and whether its work landed. It also tells it about a worker that is stalled: still running, with no activity for a long time. A report is never lost on the way.
 - **Resume and stop.** The work of a worker that did not land stays in place, so its task can be resumed from where it stopped. The orchestrator can stop a worker, which discards what it has not landed.
@@ -168,11 +168,11 @@ Produce everything below before any code exists.
 
    Tasks within a round are independent. When one task needs another's result, put it in a later round or combine the two into one task. Contracts cover the seams where one task's work calls another's; when two tasks add the same kind of thing without touching, their briefs point at the same reference or the same convention. One exception saves a round: a task may build against another task's contract in the same round when all three hold. The contract is written in full in a context file both briefs share (names, signatures, payloads, file names). The dependent brief says to code against it tolerantly and to reconcile with the landed dependency before landing. And the dependency is expected to land first. Without all three, use a later round.
 3. **The standing worker instructions** (see the host guarantees). Write them into each brief only when the host does not hand them over.
-4. **The rubric** (at `verify` and above). Items with `id` (kebab-case), `title` and `category` (`core` or `ui-ux`). Each item is one user-visible outcome that can be tested through the harness alone. Cover the core function first, then clarity, feedback, error handling, flow and consistency; failure paths get items too. No item mentions code or files. Six to twelve items is usual. Writing it now keeps it from being shaped by what the workers produce.
+4. **The rubric** (at `balanced` and above). Items with `id` (kebab-case), `title` and `category` (`core` or `ui-ux`). Each item is one user-visible outcome that can be tested through the harness alone. Cover the core function first, then clarity, feedback, error handling, flow and consistency; failure paths get items too. No item mentions code or files. Six to twelve items is usual. Writing it now keeps it from being shaped by what the workers produce.
 
    One item belongs in every rubric: consistency (like things look and behave alike across the deliverable, the kinds of surface named one by one; the note names the pair that diverged). Three more belong in every rubric of a run on an existing product: regression (the flows that worked before the run still work, named one by one), stability (no crash and no error in the product's own log during every flow QA walks), and the failure paths the deliverable adds (a bad input, a lost connection, an unreachable peer). They are scored like the rest.
-5. **The engineering rubric** (at `polish`). Items with `id`, `title` and `category` (`quality`, `consistency` or `cleanup`). Each item is one property of the code a reader can check in the run's diff: an error raised the way the codebase raises them, a name that follows the project's naming, no scaffolding left behind. Consistency items name the conventions and references the briefs pointed at. Six to twelve items. Written now and never reshaped afterwards, like the rubric.
-6. **The harness** (at `verify` and above). How QA starts, reaches and uses the deliverable: install and run commands, a URL or binary, accounts or fixtures, the flows a user walks. QA sees nothing else, so it must be enough for someone who has never seen the codebase.
+5. **The engineering rubric** (at `deep`). Items with `id`, `title` and `category` (`quality`, `consistency` or `cleanup`). Each item is one property of the code a reader can check in the run's diff: an error raised the way the codebase raises them, a name that follows the project's naming, no scaffolding left behind. Consistency items name the conventions and references the briefs pointed at. Six to twelve items. Written now and never reshaped afterwards, like the rubric.
+6. **The harness** (at `balanced` and above). How QA starts, reaches and uses the deliverable: install and run commands, a URL or binary, accounts or fixtures, the flows a user walks. QA sees nothing else, so it must be enough for someone who has never seen the codebase.
 
    It also names: the hooks that shorten long waits (flags for timers, seeds, fixtures), so a flow is walked in minutes; how to run a second instance when the deliverable needs a peer; the environment's own limits and how to tell them from product failures (a window the OS stops drawing, a port another process holds, a stalled instance to restart), so QA attributes them to the environment; and the known non-issues of this run (behaviour that looks wrong but is by design), so they are not reported.
 
@@ -195,11 +195,11 @@ Show the plan (level; tasks, tiers, landing titles; rubrics and harness) in a co
    3. **Drop it**: stop the task; the run continues with the others.
    4. **Ask the user** when a human is needed: missing secrets, a required approval, an outage.
 5. The user may talk to you during a round. Answer, and fold any new direction into the next round rather than the running one.
-6. At `build`, when every task of the round has landed, go to phase 6; a task that failed or was dropped is a limitation in the final report. At the other levels go to phase 5.
+6. At `fast`, when every task of the round has landed, go to phase 6; a task that failed or was dropped is a limitation in the final report. At the other levels go to phase 5.
 
 ## Phase 5: qa
 
-Skipped at `build`.
+Skipped at `fast`.
 
 1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. QA is handed these, the run's one-line request and where to write its report. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms. In a fix round, list the items the round aimed at, so QA re-verifies them first; it still scores every item.
 2. QA's report has `items`, one per rubric id, each with `id`, `score` and a `note` of one to three sentences, and an `overview`. Scores: `strong` (clearly met), `acceptable` (technically passes, improvements recommended), `unacceptable` (fails, must be fixed). The host derives the verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any is acceptable and none unacceptable; `pass` otherwise. You receive the verdict, the counts, every item below `strong` and the overview.
@@ -209,12 +209,12 @@ Skipped at `build`.
    - **After the user's merge decision** (step 5): the items the user accepted no longer count. An item is new only if it was `strong` in the last valid report before that decision and is below `strong` now. New items become fix tasks as in the next case, and you go back to phase 4. With no new items, go to phase 6.
    - **`fix` or `pass-with-recommendations`**: every item below `strong`, acceptable ones included, becomes a fix task in the next round. Its brief starts from the QA note: what QA did, saw and expected, and the evidence it cited. Recommendations are fixed, not weighed. Go back to phase 4.
      A fix round is a new set of tasks. Group them by the part of the codebase they touch, one task per part, so parallel fix workers do not collide; a task that holds an `unacceptable` core item gets the strong tier. A fix that changes how a kind of thing looks or behaves everywhere is one task of its own round, since parallel fixes applying it differently recreate the inconsistency. Resuming a task whose landed work is at fault counts as a fix task.
-   - **`pass`**: at `verify`, go to phase 6; at `polish`, go to phase 5b.
+   - **`pass`**: at `balanced`, go to phase 6; at `deep`, go to phase 5b.
 5. The loop is stuck when the same items stay below `strong` after two consecutive rounds aimed at them, or when QA's report is invalid twice in a row. A reconciliation or fix round from phase 6 counts toward this test only if it was aimed at those items. Items accepted in the user's merge decision never count toward it. When the loop is stuck, ask the user how to proceed: another round with a different approach, merging with the limitation stated, or stopping. The user's answer decides. Another round with a different approach goes back to phase 4. Choosing to merge is the user's merge decision: go to phase 6, and state the limitation in the final report. The stuck count restarts after the user's choice: rounds before it no longer count toward the test.
 
 ## Phase 5b: review
 
-At `polish` only, after QA passes.
+At `deep` only, after QA passes.
 
 1. Hand the host the engineering rubric and a note on what the run built, the conventions and references the briefs pointed at, and what to look at first. The reviewer is handed these, the run's one-line request, the base the run is compared against, and where to write its report.
 2. The reviewer's report has the shape of QA's: `items`, one per rubric id, each with `id`, `score` and a `note`, and an `overview`. The host derives the verdict the same way. You receive the verdict, the counts, every item below `strong` and the overview.
@@ -226,7 +226,7 @@ At `polish` only, after QA passes.
 ## Phase 6: merge
 
 1. Ask the host to integrate the run into the base line, with a one-line title summing up the run and one paragraph on what changed and why.
-2. If the host refuses because the base line moved or its checks fail, start a worker to reconcile or fix it. Either resume the task at fault or start a repair task, and handle its outcome as in phase 4. A reconciliation can break things, so once it has landed, run the judges of the level again (QA; at `polish` then the review) and decide as in phase 5 and 5b. At `build` ask the host to integrate again once it has landed.
+2. If the host refuses because the base line moved or its checks fail, start a worker to reconcile or fix it. Either resume the task at fault or start a repair task, and handle its outcome as in phase 4. A reconciliation can break things, so once it has landed, run the judges of the level again (QA; at `deep` then the review) and decide as in phase 5 and 5b. At `build` ask the host to integrate again once it has landed.
 3. When the run is integrated, report in a few lines: what shipped, the level and the last verdicts, and anything deliberately left out. Include every limitation a worker reported, any limitation the user accepted, every design decision a worker took alone that the user should review (a tuned number, a rule read two ways, a pattern chosen where nothing existed) and every reusable pattern it introduced, with where each lives, and every recommendation deferred under the third rule of phase 3.
 
 ## Rules
@@ -239,7 +239,7 @@ At `polish` only, after QA passes.
 - The orchestrator never widens a run beyond the parts the change touches; what it deferred is reported.
 - The level is chosen before dispatch and never changed mid-run.
 - The orchestrator is the only role that talks to the user.
-- The run merges only on `pass` from every judge of its level, or after the user's merge decision (phase 5 step 5); at `build`, once the work has landed.
+- The run merges only on `pass` from every judge of its level, or after the user's merge decision (phase 5 step 5); at `fast`, once the work has landed.
 - Once work is dispatched, the orchestrator asks the user only when the loop is stuck (phase 5 step 5) or a human is needed (phase 4 step 4).
 - A command that can hang runs under a time limit; a resource parallel tasks cannot share is used by one task at a time, never by a per-task test.
 - Decisions the user confirmed, and the conventions decided for siblings, live in the repository, written by a worker.

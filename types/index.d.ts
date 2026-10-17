@@ -3,10 +3,10 @@ export type RunStatus = 'planning' | 'active' | 'merging' | 'done' | 'aborted'
 export type Phase = 'clarify' | 'research' | 'plan' | 'implement' | 'qa' | 'review' | 'merge'
 
 /**
- * How far a run is judged before it merges: `build` lands the work and merges; `verify` adds QA as the end user
- * (the default); `polish` adds an engineering review of the run's accumulated change after QA passes.
+ * How far a run is judged before it merges: `fast` lands the work and merges; `balanced` adds QA as the end user
+ * (the default); `deep` adds an engineering review of the run's accumulated change after QA passes.
  */
-export type Level = 'build' | 'verify' | 'polish'
+export type Level = 'fast' | 'balanced' | 'deep'
 
 /** Token counts as the API reports them, summed over model steps. */
 export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number }
@@ -59,7 +59,7 @@ export type Run = {
   baseBranch: string
   /** Chosen at start and fixed for the run; a run saved before levels existed reads as `review`. */
   level?: Level
-  /** At polish: whether QA and the review run one after the other (the rule) or side by side; absent means sequential. */
+  /** At deep: whether QA and the review run one after the other (the rule) or side by side; absent means sequential. */
   judges?: 'sequential' | 'parallel'
   /** Absolute path of the run log folder, `.workspaces/.dacapo/<id>`. */
   runDir: string
