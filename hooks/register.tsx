@@ -155,7 +155,7 @@ const crashed = (_: unknown, e: { tool: string }, next: { error: { kind: string;
 
 // ---------- the run ----------
 
-async function openRun(task: string, baseBranch: string, at?: string, level: Level = 'verify'): Promise<Run> {
+async function openRun(task: string, baseBranch: string, at?: string, level: Level = 'balanced'): Promise<Run> {
   const cwd = at ?? (await io.cwd())
   const root = (await git.repoRoot(io, cwd)) ?? cwd
   const now = await io.now()
@@ -326,7 +326,7 @@ async function start(a: Args) {
     return fail(`start: "branch" must be a lowercase git branch name without "--" and different from ${baseBranch}; got ${JSON.stringify(wanted)}`)
   }
   let run = await currentRun()
-  if (!run) run = await openRun(task, baseBranch, root || undefined, (askedLevel as Level) || 'verify')
+  if (!run) run = await openRun(task, baseBranch, root || undefined, (askedLevel as Level) || 'balanced')
   // the level is fixed once work can exist: a start after setup keeps it
   if (askedLevel && run.worktree && askedLevel !== levelOf(run)) return fail(`start: the run is at level ${levelOf(run)} and a level is never changed mid-run`)
   const level: Level = (askedLevel as Level) || levelOf(run)
@@ -367,7 +367,7 @@ async function start(a: Args) {
       ...notes.map(n => `- ${n}`),
       `- every worker branches from "${run.branch}" and lands through a pull request into it; the final pull request goes from "${run.branch}" into "${run.baseBranch}"`,
       `- run folder ${run.runDir}`,
-      `- level ${levelOf(run)}: ${levelOf(run) === 'build' ? 'no QA; the run merges once the work has landed' : levelOf(run) === 'verify' ? 'QA as the end user, then merge' : run.judges === 'parallel' ? 'QA as the end user and an engineering review side by side, then merge' : 'QA as the end user, then an engineering review, then merge'}`,
+      `- level ${levelOf(run)}: ${levelOf(run) === 'fast' ? 'no QA; the run merges once the work has landed' : levelOf(run) === 'balanced' ? 'QA as the end user, then merge' : run.judges === 'parallel' ? 'QA as the end user and an engineering review side by side, then merge' : 'QA as the end user, then an engineering review, then merge'}`,
       `- models: workers ${conf.conf.workers.join(', ')}; QA ${conf.conf.qa.join(', ')}; review ${conf.conf.review.join(', ')} (the first of each is the strong tier and the default, the last the fast tier)`,
       `- rules: commits follow the ${conf.conf['commits-skill']} skill, pull requests the ${conf.conf['prs-skill']} skill; workers load them from their brief, and you load ${conf.conf['prs-skill']} before writing the final pull request`,
       `Plan the work, then call ${tool('dispatch')}.`,
@@ -514,10 +514,10 @@ async function dispatch(a: Args) {
 }
 
 /** What the orchestrator calls once a round's work has landed and is synced, by level. */
-const afterLanding = (run: Run): string => (levelOf(run) === 'build' ? tool('finish') : tool('qa'))
+const afterLanding = (run: Run): string => (levelOf(run) === 'fast' ? tool('finish') : tool('qa'))
 /** The judges to run again after a reconciliation or repair, by level, as a phrase. */
 const judgeAgain = (run: Run): string =>
-  levelOf(run) === 'build' ? '' : levelOf(run) === 'review' ? `run ${tool('qa')} once more since a conflict resolution can break things, and ` : `run ${tool('qa')} and then ${tool('review')} once more since a conflict resolution can break things, and `
+  levelOf(run) === 'fast' ? '' : levelOf(run) === 'balanced' ? `run ${tool('qa')} once more since a conflict resolution can break things, and ` : `run ${tool('qa')} and then ${tool('review')} once more since a conflict resolution can break things, and `
 
 async function sync() {
   const run = await currentRun()
@@ -568,7 +568,7 @@ const reviewPrompt = (worktree: string) =>
 
 /**
  * Starts a judge of the integrated state in a fresh checkout of the run branch: QA, which uses the product as its
- * user and needs a harness, or the reviewer, which reads the run's diff and runs only at level polish.
+ * user and needs a harness, or the reviewer, which reads the run's diff and runs only at level deep.
  */
 async function startJudge(role: Role, a: Args) {
   const name = role
@@ -576,8 +576,8 @@ async function startJudge(role: Role, a: Args) {
   if (!run) return fail(`${name}: no active run`)
   if (!run.worktree) return fail(`${name}: nothing was dispatched yet; call ${tool('start')} first`)
   const level = levelOf(run)
-  if (role === 'qa' && level === 'build') return fail(`qa: the run is at level build, which has no QA; call ${tool('finish')} once the work has landed`)
-  if (role === 'review' && level !== 'polish') return fail(`review: the run is at level ${level}; an engineering review runs at level polish only`)
+  if (role === 'qa' && level === 'fast') return fail(`qa: the run is at level fast, which has no QA; call ${tool('finish')} once the work has landed`)
+  if (role === 'review' && level !== 'deep') return fail(`review: the run is at level ${level}; an engineering review runs at level deep only`)
   const rubric = validateRubric(a.rubric, role === 'qa' ? QA_CATEGORIES : REVIEW_CATEGORIES)
   if (!rubric.ok) return fail(`${name}: ${rubric.problem}`)
   const harness = str(a.harness).trim()
@@ -587,7 +587,7 @@ async function startJudge(role: Role, a: Args) {
   if (!allowed.includes(model)) return fail(`${name}: "model" must be one of ${allowed.join(', ')} (the configured ${name} models; see ${tool('config')})`)
   const iteration = run.iteration
   const rows = await io.getRows()
-  const parallel = level === 'polish' && run.judges === 'parallel'
+  const parallel = level === 'deep' && run.judges === 'parallel'
   // with judges in parallel, QA and the reviewer do not wait for each other; workers still end first
   const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r) && !(parallel && r.kind === 'qa'))
   if (unfinished.length > 0) return fail(`${name}: ${unfinished.length} agent(s) still running; wait or cancel them first`)
@@ -862,7 +862,7 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
     role === 'qa'
       ? s.verdict === 'fix'
         ? `Next: plan the fixes and call ${tool('dispatch')} (a new round starts), then ${tool('sync')} and ${tool('qa')} again.`
-        : levelOf(run) === 'polish'
+        : levelOf(run) === 'deep'
           ? otherState === 'running'
             ? `${roundName(other!)} is still running; its wake-up follows. Decide once both are in.`
             : otherState && otherState !== 'without a report'
@@ -1066,8 +1066,8 @@ export const register: Register = (on, options) => {
             overview: { type: 'string', description: 'One short paragraph on the whole task: deliverable, who it is for, what done looks like. Shown under the heading.' },
             branch: { type: 'string', description: 'The run branch, named after the change (kebab-case, e.g. "add-login"); default a slug of the task. Every worker pull request targets it.' },
             baseBranch: { type: 'string', description: 'The branch the run is cut from and merged into; default "main".' },
-            level: { type: 'string', enum: ['build', 'verify', 'polish'], description: 'How far the run is judged before it merges: build (no QA), verify (QA as the end user), polish (QA, then an engineering review of the run\'s change). Default from the configuration. Fixed for the run.' },
-            judges: { type: 'string', enum: ['sequential', 'parallel'], description: 'At polish: whether QA and the review run one after the other or side by side. Default from the configuration. Fixed for the run.' },
+            level: { type: 'string', enum: ['fast', 'balanced', 'deep'], description: 'How far the run is judged before it merges: fast (no QA), balanced (QA as the end user), deep (QA, then an engineering review of the run\'s change). Default from the configuration. Fixed for the run.' },
+            judges: { type: 'string', enum: ['sequential', 'parallel'], description: 'At deep: whether QA and the review run one after the other or side by side. Default from the configuration. Fixed for the run.' },
             root: { type: 'string', description: 'Absolute path inside the repository to run in; default the session working directory.' },
           },
           required: ['task'],
@@ -1156,7 +1156,7 @@ export const register: Register = (on, options) => {
       $.tool.register({
         name: 'review',
         description:
-          'At level polish, after QA passes: starts the reviewer subagent in a fresh worktree of the run branch. It reads the run\'s change against the base branch as an engineer, scores every engineering rubric item strong/acceptable/unacceptable and writes a report the run collects. Returns at once; the run wakes you with the overview and verdict.',
+          'At level deep, after QA passes: starts the reviewer subagent in a fresh worktree of the run branch. It reads the run\'s change against the base branch as an engineer, scores every engineering rubric item strong/acceptable/unacceptable and writes a report the run collects. Returns at once; the run wakes you with the overview and verdict.',
         isDeferred: false,
         inputSchema: {
           type: 'object',
@@ -1168,7 +1168,7 @@ export const register: Register = (on, options) => {
                 type: 'object',
                 properties: {
                   id: { type: 'string', description: 'kebab-case id' },
-                  title: { type: 'string', description: 'What is checked, as a property of the code a reader can verify in the diff.' },
+                  title: { type: 'string', description: 'What is checked, as a property of the code a reader can balanced in the diff.' },
                   category: { type: 'string', enum: ['quality', 'consistency', 'cleanup'] },
                 },
                 required: ['id', 'title', 'category'],
@@ -1324,11 +1324,11 @@ export const register: Register = (on, options) => {
     // only what the person typed is a row: not a subagent's hand-back, a notification or another session's message
     const isTyped = ['composer', 'bridge', 'sdk', 'channel'].includes(e.origin.kind) && !/^\s*<agent-message\b/.test(text)
     if (!isTyped) return next(e)
-    const starts = /^\s*\/dacapo:core(?:\s+--(build|verify|polish)\b)?(\s|$)/.exec(text)
+    const starts = /^\s*\/dacapo:core(?:\s+--(fast|balanced|deep)\b)?(\s|$)/.exec(text)
     let run = await currentRun()
     if (starts) {
       // the run has no heading yet: the prompt is the person's words, the title and overview come from `start` once the task is clear;
-      // a level flag right after the command (`--polish`) sets the level now, so the pane shows it while the task is clarified
+      // a level flag right after the command (`--deep`) sets the level now, so the pane shows it while the task is clarified
       const cwd = await io.cwd()
       await readConf((await git.repoRoot(io, cwd)) ?? cwd)
       run = await openRun('', 'main', undefined, (starts[1] as Level | undefined) ?? conf.conf.level)
