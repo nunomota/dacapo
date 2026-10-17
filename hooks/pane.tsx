@@ -31,18 +31,18 @@ export type Section = 'prs' | 'agents' | 'qa' | 'review' | 'timeline'
 /** Every phase has a color of its own; the bar shows the ones reached in it and the current one's name. */
 export const PHASE_COLOR: Record<Phase, string> = { clarify: '#378ADD', research: '#7F77DD', plan: '#1D9E75', implement: '#D85A30', qa: '#EF9F27', review: '#9E7BEA', merge: '#639922' }
 
-export const LEVELS: readonly Level[] = ['build', 'review', 'consolidate']
+export const LEVELS: readonly Level[] = ['build', 'verify', 'polish']
 /**
- * One color per level, none of them a state color: build is the bar's grey (nothing is judged), review the qa
- * phase's amber (the level is that phase), consolidate the merged-PR violet (landed and kept, which is what it buys).
+ * One color per level, none of them a state color: build is the bar's grey (nothing is judged), verify the qa
+ * phase's amber (the level is that phase), polish the merged-PR violet (landed and kept, which is what it buys).
  */
-export const LEVEL_COLOR: Record<Level, string> = { build: '#6e7681', review: '#EF9F27', consolidate: '#8957e5' }
+export const LEVEL_COLOR: Record<Level, string> = { build: '#6e7681', verify: '#EF9F27', polish: '#8957e5' }
 /** What each level means, in the words the header shows beside its name. */
-export const LEVEL_GLOSS: Record<Level, string> = { build: 'no QA', review: 'QA as the end user', consolidate: 'QA, then engineering review' }
+export const LEVEL_GLOSS: Record<Level, string> = { build: 'no QA', verify: 'QA as the end user', polish: 'QA, then engineering review' }
 /** A run saved before levels existed reads as `review`, the loop as it was. */
-export const levelOf = (run: Run): Level => run.level ?? 'review'
+export const levelOf = (run: Run): Level => run.level ?? 'verify'
 /** The phases a run at this level walks, in order: the bar's blocks. */
-export const phasesOf = (level: Level): readonly Phase[] => PHASES.filter(p => (p === 'qa' ? level !== 'build' : p === 'review' ? level === 'consolidate' : true))
+export const phasesOf = (level: Level): readonly Phase[] => PHASES.filter(p => (p === 'qa' ? level !== 'build' : p === 'review' ? level === 'polish' : true))
 
 /** The state colors: teal in progress, green done, yellow done with limitations or recommendations, orange failed. */
 export const TEAL = '#39c5cf'
@@ -355,7 +355,7 @@ function keyLine(els: Els, key: string, value: JSX.Element | string): JSX.Elemen
 export const TIMELINE_LATEST = 5
 
 /**
- * One block per phase of the run's level (five at build, six at review, seven at consolidate): the ones done greyed out, the current one in its own color with its name beneath,
+ * One block per phase of the run's level (five at build, six at verify, seven at polish): the ones done greyed out, the current one in its own color with its name beneath,
  * the ones ahead hollow. A merged run fills every block green and reads "merged"; an aborted one stops on
  * its phase in orange and reads "aborted". One SVG on the remote surfaces so the label sits under its block
  * whatever the font; glyph rows in the terminal.

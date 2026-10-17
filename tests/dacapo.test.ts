@@ -77,9 +77,9 @@ describe('QA report validation', () => {
 describe('the configuration', () => {
   test('key = value lines with comments and lists; a wrong value is named and the earlier one kept', () => {
     const parsed = parseConf(
-      '# a comment\nlevel = consolidate\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\nprs-skill = /my-prs\ncommits-skill = a, b\ncommits-skill = Not A Skill\n',
+      '# a comment\nlevel = polish\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\nprs-skill = /my-prs\ncommits-skill = a, b\ncommits-skill = Not A Skill\n',
     )
-    expect(parsed.values).toEqual({ level: ['consolidate'], workers: ['fable', 'opus', 'sonnet'], 'prs-skill': ['my-prs'] })
+    expect(parsed.values).toEqual({ level: ['polish'], workers: ['fable', 'opus', 'sonnet'], 'prs-skill': ['my-prs'] })
     expect(parsed.problems).toEqual([
       'line 4: "judges" must be one of sequential, parallel',
       'line 5: not "key = value": nope',
@@ -91,7 +91,7 @@ describe('the configuration', () => {
 
   test('later files override earlier ones key by key, over the defaults, and each value names its file', () => {
     const loaded = loadConf([
-      { path: '/plugin/dacapo.conf', text: 'level = review\nqa = opus, sonnet\n' },
+      { path: '/plugin/dacapo.conf', text: 'level = verify\nqa = opus, sonnet\n' },
       { path: '/home/u/.claude/dacapo.conf', text: 'qa = sonnet\njudges = parallel\ncommits-skill = other:rules\n' },
       { path: '/repo/.dacapo.conf', text: null },
     ])
@@ -101,7 +101,7 @@ describe('the configuration', () => {
     expect(loaded.origin['prs-skill']).toBe('default')
     expect(describeConf(loaded)).toMatch(/\ncommits-skill = other:rules  \(\/home\/u\/.claude\/dacapo.conf\)\nprs-skill = dacapo:rules-prs  \(default\)\n/)
     expect(loaded.read).toEqual(['/plugin/dacapo.conf', '/home/u/.claude/dacapo.conf'])
-    expect(describeConf(loaded)).toMatch(/^level = review  \(\/plugin\/dacapo.conf\)\n/)
+    expect(describeConf(loaded)).toMatch(/^level = verify  \(\/plugin\/dacapo.conf\)\n/)
     expect(describeConf(loadConf([]))).toMatch(/Files read: none; defaults\./)
   })
 })
@@ -134,10 +134,10 @@ describe('timeline formatting', () => {
     expect(elapsed(0, 2 * 3_600_000 + 5 * 60_000)).toBe('2h05m')
   })
 
-  test('each level walks its own phases: no qa at build, a review after qa at consolidate', () => {
+  test('each level walks its own phases: no qa at build, a review after qa at polish', () => {
     expect(phasesOf('build')).toEqual(['clarify', 'research', 'plan', 'implement', 'merge'])
-    expect(phasesOf('review')).toEqual(['clarify', 'research', 'plan', 'implement', 'qa', 'merge'])
-    expect(phasesOf('consolidate')).toEqual(['clarify', 'research', 'plan', 'implement', 'qa', 'review', 'merge'])
+    expect(phasesOf('verify')).toEqual(['clarify', 'research', 'plan', 'implement', 'qa', 'merge'])
+    expect(phasesOf('polish')).toEqual(['clarify', 'research', 'plan', 'implement', 'qa', 'review', 'merge'])
   })
 
   test('cut shortens with an ellipsis and folds whitespace; rowsOf counts wrapped rows', () => {
@@ -302,7 +302,7 @@ describe('the loop', () => {
 
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     // the level flag sets the level before the task is clear; a task that begins with "build" is just a task
-    await $.prompt.submit({ text: '/dacapo:core --consolidate build a login page', wait: false, origin: { kind: 'composer' } })
+    await $.prompt.submit({ text: '/dacapo:core --polish build a login page', wait: false, origin: { kind: 'composer' } })
 
     // without gh the run cannot start, and the orchestrator is told how to help
     const noGh = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page' } as never)
@@ -313,11 +313,11 @@ describe('the loop', () => {
     expect('isError' in badLevel && badLevel.isError).toBe(true)
     const started = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page' } as never)
     expect('result' in started && started.result).toMatch(/Run .* ready on x\/y/)
-    expect('result' in started && started.result).toMatch(/level consolidate: QA as the end user and an engineering review side by side/)
+    expect('result' in started && started.result).toMatch(/level polish: QA as the end user and an engineering review side by side/)
     expect('result' in started && started.result).toMatch(/QA sonnet, opus; review opus, sonnet/)
     // the configuration in force, with where each value came from; agents never read the files
     const config = await $.tool.call({ tool: 'mcp__dacapo__config' } as never)
-    expect('result' in config && config.result).toMatch(/level = review  \(default\)/)
+    expect('result' in config && config.result).toMatch(/level = verify  \(default\)/)
     expect('result' in config && config.result).toMatch(/judges = parallel  \(\/home\/u\/.claude\/dacapo.conf\)/)
     expect('result' in config && config.result).toMatch(/qa = sonnet, opus/)
     expect('result' in config && config.result).toMatch(/commits-skill = dacapo:rules-commits  \(default\)/)
@@ -367,7 +367,7 @@ describe('the loop', () => {
     expect(files.get(`/repo/.workspaces/.dacapo/${runId}/round-1-login.md`)).toMatch(/dacapo:rules-commits/)
     const pendingStatus = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in pendingStatus && pendingStatus.result).toMatch(/login \[pending-worker-1-login\] waiting to start/)
-    expect('result' in pendingStatus && pendingStatus.result).toMatch(/level consolidate \(judges in parallel\), phase implement/)
+    expect('result' in pendingStatus && pendingStatus.result).toMatch(/level polish \(judges in parallel\), phase implement/)
     // an Agent call that names nothing pending is refused; the right one is filled in from the run
     const wrong = await startAgent('dacapo worker nope')
     expect('deny' in wrong && typeof wrong.deny === 'string').toBe(true)
@@ -496,12 +496,12 @@ describe('the loop', () => {
       expect(await ui.find({ text: /error copy needs words/ })).toBeDefined()
       await ui.press({ plugin: 'dacapo', key: 'qa-agent-2' })
       expect(await ui.find({ text: /error copy needs words/ })).toBeUndefined()
-      expect(await ui.find({ text: /^consolidate$/ })).toBeDefined()
+      expect(await ui.find({ text: /^polish$/ })).toBeDefined()
       expect(await ui.find({ text: /QA, then engineering review/ })).toBeDefined()
       await ui.unmount()
     }
 
-    // at level consolidate the reviewer reads the run's change and scores the engineering rubric; it reads source, writes only its report
+    // at level polish the reviewer reads the run's change and scores the engineering rubric; it reads source, writes only its report
     const review = await $.tool.call({
       tool: 'mcp__dacapo__review',
       rubric: [{ id: 'errors', title: 'Errors are raised and shown the way the codebase already does', category: 'consistency' }, { id: 'dead', title: 'No dead code or leftover scaffolding', category: 'cleanup' }],
