@@ -67,15 +67,19 @@ The flag is the run's level, how far the work is judged before it merges. The le
 
 Without a flag the run takes the level your configuration names, `review` unless you changed it.
 
-The orchestrator then walks the phases of the level, and the pane shows which one it is in:
+The orchestrator then walks the phases of the level, and the pane shows which one it is in. Every verdict below pass sends the loop back to implement, and the run merges only on pass.
 
-1. **Clarify.** It restates the task and asks about anything material until nothing is open.
-2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, notes the build and test commands, and finds the existing conventions each task must match.
-3. **Plan.** It names the run, cuts a run branch from `main`, splits the work into independent tasks, and writes the QA rubric and harness (and, at `consolidate`, the engineering rubric) before any code exists.
-4. **Implement.** One worker per task, in parallel. Each opens a draft pull request against the run branch, marks it ready when its build passes, waits for checks, and squash-merges with the planned title. A worker's task is done only when its pull request is merged.
-5. **QA.** A fresh subagent uses the deliverable as the end user, attending to consistency across it, and scores every rubric item `strong`, `acceptable` or `unacceptable`. On any verdict below pass the loop goes back to step 4, with every item below `strong` becoming a task. The run merges only on pass. The one exception is a stuck loop, where the user may decide to merge with the limitation stated.
-6. **Review** (at `consolidate`). Another subagent reads the run's change against `main` as an engineer and scores an engineering rubric: quality, consistency with the codebase, cleanup. Findings inside the run's change become fix tasks; findings beyond it are recommendations in the final report.
-7. **Merge.** The orchestrator opens the final pull request into `main`, written to the pull request rules skill, and the mod merges it once its checks are green.
+```
+clarify ──▶ research ──▶ plan ──▶ implement ──▶ QA ──▶ review ──▶ merge
+                                      ▲          │         │
+                                      └── fix ───┴─────────┘
+
+build        clarify · research · plan · implement · merge
+review       the same, with QA as the end user before the merge
+consolidate  the same, with an engineering review after QA passes
+```
+
+[The phases](docs/how-it-works.md#the-phases) describes what each one does.
 
 You can type while workers run. Your prompts become events in the timeline and are folded into the next round. `/dacapo-pane` reopens the pane.
 
@@ -115,7 +119,7 @@ Model prices for the pane's cost estimate are a plugin option, not a conf key: `
 
 ## Docs
 
-- [How it works](docs/how-it-works.md): what the mod enforces, outcomes, the pane, the tools.
+- [How it works](docs/how-it-works.md): the phases, what the mod enforces, outcomes, the pane, the tools.
 - [Developing dacapo](docs/development.md): validating, testing, layout, known limits.
 
 Inspired by [savvy-progress](https://github.com/JohnnyVizz/claude-kit).
