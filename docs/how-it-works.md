@@ -1,6 +1,18 @@
 # How dacapo works
 
-The [README](../README.md) covers installing, updating, configuring and using dacapo. This page is the rest: what the mod enforces, how it reads a worker's outcome, the pane, and the tools the orchestrator calls.
+The [README](../README.md) covers installing, updating, configuring and using dacapo. This page is the rest: the phases of a run, what the mod enforces, how it reads a worker's outcome, the pane, and the tools the orchestrator calls.
+
+## The phases
+
+A run walks the phases of its level in order, and the pane shows which one it is in:
+
+1. **Clarify.** It restates the task and asks about anything material until nothing is open.
+2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, notes the build and test commands, and finds the existing conventions each task must match.
+3. **Plan.** It names the run, cuts a run branch from `main`, splits the work into independent tasks, and writes the QA rubric and harness (and, at `consolidate`, the engineering rubric) before any code exists.
+4. **Implement.** One worker per task, in parallel. Each opens a draft pull request against the run branch, marks it ready when its build passes, waits for checks, and squash-merges with the planned title. A worker's task is done only when its pull request is merged.
+5. **QA.** A fresh subagent uses the deliverable as the end user, attending to consistency across it, and scores every rubric item `strong`, `acceptable` or `unacceptable`. On any verdict below pass the loop goes back to step 4, with every item below `strong` becoming a task. The run merges only on pass. The one exception is a stuck loop, where the user may decide to merge with the limitation stated.
+6. **Review** (at `consolidate`). Another subagent reads the run's change against `main` as an engineer and scores an engineering rubric: quality, consistency with the codebase, cleanup. Findings inside the run's change become fix tasks; findings beyond it are recommendations in the final report.
+7. **Merge.** The orchestrator opens the final pull request into `main`, written to the pull request rules skill, and the mod merges it once its checks are green.
 
 ## What the mod enforces
 
