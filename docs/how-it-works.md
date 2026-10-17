@@ -37,7 +37,7 @@ The header reads like fastfetch: the task, elapsed time, branch, level, models a
 
 One color code throughout: teal in progress, green done, yellow done with limitations or recommendations, orange failed. The level has a color of its own in the header and the band above the prompt: grey for `build`, amber for `review`, violet for `consolidate`.
 
-`/dacapo-pane` reopens the pane; `/dacapo-config` prints the configuration in force.
+You can type while workers run. Your prompts become events in the timeline and are folded into the next round. `/dacapo-pane` reopens the pane; `/dacapo-config` prints the configuration in force.
 
 ## Tools
 
