@@ -67,7 +67,7 @@ The orchestrator then walks the phases of the level, and the pane shows which on
 4. **Implement.** One worker per task, in parallel. Each opens a draft pull request against the run branch, marks it ready when its build passes, waits for checks, and squash-merges with the planned title. A worker's task is done only when its pull request is merged.
 5. **QA.** A fresh subagent uses the deliverable as the end user, attending to consistency across it, and scores every rubric item `strong`, `acceptable` or `unacceptable`. On any verdict below pass the loop goes back to step 4, with every item below `strong` becoming a task. The run merges only on pass. The one exception is a stuck loop, where the user may decide to merge with the limitation stated.
 6. **Review** (at `consolidate`). Another subagent reads the run's change against `main` as an engineer and scores an engineering rubric: quality, consistency with the codebase, cleanup. Findings inside the run's change become fix tasks; findings beyond it are recommendations in the final report.
-7. **Merge.** The orchestrator opens the final pull request into `main`, written to the `clean-prs` rules, and the mod merges it once its checks are green.
+7. **Merge.** The orchestrator opens the final pull request into `main`, written to the pull request rules skill, and the mod merges it once its checks are green.
 
 You can type while workers run. Your prompts become events in the timeline and are folded into the next round. `/dacapo-pane` reopens the pane.
 
@@ -90,8 +90,10 @@ The keys:
 | `workers` | `opus, sonnet` | The models a worker may be given, strongest first. The first is the strong tier and the default, the last the fast tier. |
 | `qa` | `opus, sonnet` | The models QA may be given, likewise. |
 | `review` | `opus, sonnet` | The models the reviewer may be given, likewise. |
+| `commits-skill` | `dacapo:rules-commits` | The skill workers load for how to commit: titles, staging, what never to run. |
+| `prs-skill` | `dacapo:rules-prs` | The skill workers and the final pull request follow for the title and body. |
 
-Fable is listed in the shipped file, commented out; uncomment the lines in your copy to allow it. Lines starting with `#` are comments and lists are comma-separated. Agents never read these files: the orchestrator asks a tool for the values in force, so comments and commented-out lines never reach a model. `/dacapo-config` shows you the same values and the file each came from.
+Point `commits-skill` or `prs-skill` at a skill of your own, `my-rules` or `other-plugin:rules`, to have workers follow your conventions; the leading slash is optional. With the shipped skills dacapo also checks commit titles and refuses attribution lines in the final pull request; with any other skill it trusts the skill. Fable is listed in the shipped file, commented out; uncomment the lines in your copy to allow it. Lines starting with `#` are comments and lists are comma-separated. Agents never read these files: the orchestrator asks a tool for the values in force, so comments and commented-out lines never reach a model. `/dacapo-config` shows you the same values and the file each came from.
 
 Model prices for the pane's cost estimate are a plugin option, not a conf key: `claude plugin configure dacapo`.
 
@@ -101,7 +103,7 @@ Model prices for the pane's cost estimate are a plugin option, not a conf key: `
 
 **The loop outside this plugin.** The loop is specified apart from the mod that runs it, in the `dacapo:loop` skill (`/dacapo:loop` shows it): the roles, their boundaries, the levels, what a host must guarantee, the report contracts and the decision rules of each phase. Any orchestrator that can run agents and land their work its own way can follow it, [Conductor](https://www.conductor.build/) among them. The `dacapo:core` skill is this plugin's binding of the loop to its tools.
 
-**The commit and pull request rules** workers follow are skills of their own, `/dacapo:clean-commits` and `/dacapo:clean-prs`, usable outside a run.
+**The commit and pull request rules** workers follow are skills of their own, `/dacapo:rules-commits` and `/dacapo:rules-prs`, usable outside a run and replaceable through the `commits-skill` and `prs-skill` keys.
 
 ## Docs
 

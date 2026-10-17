@@ -76,24 +76,30 @@ describe('QA report validation', () => {
 
 describe('the configuration', () => {
   test('key = value lines with comments and lists; a wrong value is named and the earlier one kept', () => {
-    const parsed = parseConf('# a comment\nlevel = consolidate\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\n')
-    expect(parsed.values).toEqual({ level: ['consolidate'], workers: ['fable', 'opus', 'sonnet'] })
+    const parsed = parseConf(
+      '# a comment\nlevel = consolidate\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\nprs-skill = /my-prs\ncommits-skill = a, b\ncommits-skill = Not A Skill\n',
+    )
+    expect(parsed.values).toEqual({ level: ['consolidate'], workers: ['fable', 'opus', 'sonnet'], 'prs-skill': ['my-prs'] })
     expect(parsed.problems).toEqual([
       'line 4: "judges" must be one of sequential, parallel',
       'line 5: not "key = value": nope',
-      'line 6: unknown key "color" (one of level, judges, workers, qa, review)',
+      'line 6: unknown key "color" (one of level, judges, workers, qa, review, commits-skill, prs-skill)',
+      'line 8: "commits-skill" must be one skill name, like dacapo:rules-commits or my-rules',
+      'line 9: "commits-skill" must be one skill name, like dacapo:rules-commits or my-rules',
     ])
   })
 
   test('later files override earlier ones key by key, over the defaults, and each value names its file', () => {
     const loaded = loadConf([
       { path: '/plugin/dacapo.conf', text: 'level = review\nqa = opus, sonnet\n' },
-      { path: '/home/u/.claude/dacapo.conf', text: 'qa = sonnet\njudges = parallel\n' },
+      { path: '/home/u/.claude/dacapo.conf', text: 'qa = sonnet\njudges = parallel\ncommits-skill = other:rules\n' },
       { path: '/repo/.dacapo.conf', text: null },
     ])
-    expect(loaded.conf).toEqual({ ...DEFAULT_CONF, qa: ['sonnet'], judges: 'parallel' })
+    expect(loaded.conf).toEqual({ ...DEFAULT_CONF, qa: ['sonnet'], judges: 'parallel', 'commits-skill': 'other:rules' })
     expect(loaded.origin.qa).toBe('/home/u/.claude/dacapo.conf')
     expect(loaded.origin.workers).toBe('default')
+    expect(loaded.origin['prs-skill']).toBe('default')
+    expect(describeConf(loaded)).toMatch(/\ncommits-skill = other:rules  \(\/home\/u\/.claude\/dacapo.conf\)\nprs-skill = dacapo:rules-prs  \(default\)\n/)
     expect(loaded.read).toEqual(['/plugin/dacapo.conf', '/home/u/.claude/dacapo.conf'])
     expect(describeConf(loaded)).toMatch(/^level = review  \(\/plugin\/dacapo.conf\)\n/)
     expect(describeConf(loadConf([]))).toMatch(/Files read: none; defaults\./)
@@ -314,6 +320,7 @@ describe('the loop', () => {
     expect('result' in config && config.result).toMatch(/level = review  \(default\)/)
     expect('result' in config && config.result).toMatch(/judges = parallel  \(\/home\/u\/.claude\/dacapo.conf\)/)
     expect('result' in config && config.result).toMatch(/qa = sonnet, opus/)
+    expect('result' in config && config.result).toMatch(/commits-skill = dacapo:rules-commits  \(default\)/)
     expect('result' in config && config.result).toMatch(/Ignored:[\s\S]*unknown key "bogus"/)
     // a model the configuration does not list is refused
     const fable = await $.tool.call({
@@ -353,8 +360,11 @@ describe('the loop', () => {
     expect(brief).toMatch(/npm run build/)
     expect(brief).toMatch(new RegExp(`Base branch \\(the pull request's target\\): \`${RUN}\``))
     expect(brief).toMatch(/Pull request title.*`feat: add login page`/)
-    expect(brief).toMatch(/Verified:/)
-    expect(files.get(`/repo/.workspaces/.dacapo/${runId}/round-1-login.md`)).toMatch(/clean-commits/)
+    // the brief names the rules skills for the worker to load, and no longer carries their text
+    expect(brief).toMatch(/Commit rules: the `dacapo:rules-commits` skill\. Load it with the Skill tool/)
+    expect(brief).toMatch(/Pull request rules: the `dacapo:rules-prs` skill\. Load it with the Skill tool/)
+    expect(brief).not.toMatch(/Conventional Commits/)
+    expect(files.get(`/repo/.workspaces/.dacapo/${runId}/round-1-login.md`)).toMatch(/dacapo:rules-commits/)
     const pendingStatus = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in pendingStatus && pendingStatus.result).toMatch(/login \[pending-worker-1-login\] waiting to start/)
     expect('result' in pendingStatus && pendingStatus.result).toMatch(/level consolidate \(judges in parallel\), phase implement/)
@@ -563,6 +573,7 @@ describe('the loop', () => {
     expect('isError' in noTitle && noTitle.isError).toBe(true)
     const tainted = await $.tool.call({ tool: 'mcp__dacapo__finish', title: 'feat: add a login page', body: 'Adds login.\n\nCo-Authored-By: someone' } as never)
     expect('isError' in tainted && tainted.isError).toBe(true)
+    expect('result' in tainted && tainted.result).toMatch(/dacapo:rules-prs/)
     const finished = await $.tool.call({ tool: 'mcp__dacapo__finish', title: 'feat: add a login page', body: 'Users can log in with email and password.\n\nVerified: npm run build, npm test' } as never)
     expect('result' in finished && finished.result).toMatch(/Final pull request #9 opened: https:\/\/github.com\/x\/y\/pull\/9/)
     expect(ghCalls.some(c => c[1] === 'pr' && c[2] === 'create' && c.includes('--base') && c.includes('main') && c.includes('--head') && c.includes(RUN))).toBe(true)
@@ -586,5 +597,75 @@ describe('the loop', () => {
     const done = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in done && done.result).toMatch(/: done, /)
     expect('result' in done && done.result).toMatch(/Final PR #9 .*: merged/)
+  })
+
+  test('with rules skills of the user\'s own, workers are told to load them and the mod checks neither titles nor attribution', async ($, on) => {
+    mock.clock(on, { now: Date.UTC(2026, 9, 10, 12, 0, 0) })
+    mock.env(on, { HOME: '/home/u' })
+    const files = new Map<string, string>()
+    files.set('/repo/.dacapo.conf', 'commits-skill = /my-commits\nprs-skill = team:pull-requests\n')
+    const ghCalls: string[][] = []
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('prompt.submit', (_, e) => ({ text: e.text }))
+    on('session.cwd', () => ({ value: '/repo' }))
+    on('tool.register', (_, e) => ({ value: { tool: `mcp__dacapo__${e.name}` } }))
+    on('agent.register', (_, e) => ({ value: { agent: `dacapo:${e.name}` } }))
+    on('command.register', (_, e) => ({ value: { command: e.name } }))
+    on('ui.open', () => ({ value: { isPlaced: true as const } }))
+    on('ui.toast', () => ({ value: undefined }))
+    on('fs.write', (_, e) => {
+      files.set(e.path, e.text)
+      return { value: undefined }
+    })
+    on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
+    on('fs.exists', (_, e) => ({ value: files.has(e.path) || e.path.startsWith('/repo/.workspaces/') }))
+    on('process.run', (_, e) => {
+      const argv = e.argv
+      const out = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+      if (argv[0]?.endsWith('gh')) {
+        ghCalls.push([...argv.map(String)])
+        if (argv[1] === '--version') return out('gh version 2.80.0\n')
+        if (argv[1] === 'auth') return out('Logged in to github.com\n')
+        if (argv[1] === 'repo') return out(JSON.stringify({ nameWithOwner: 'x/y', url: 'https://github.com/x/y' }))
+        if (argv[1] === 'pr' && argv[2] === 'list') return out('[]')
+        if (argv[1] === 'pr' && argv[2] === 'create') return out('https://github.com/x/y/pull/4\n')
+        return out('')
+      }
+      if (argv[1] === 'rev-parse' && argv[2] === '--show-toplevel') return out('/repo\n')
+      if (argv[1] === 'rev-parse' && argv[2] === '--path-format=absolute') return out('/repo/.git\n')
+      if (argv[1] === 'rev-parse' && argv[2] === '--verify') return String(argv[4]) === 'refs/heads/main' ? out('abc\n') : out('', 1)
+      if (argv[1] === 'ls-remote') return out('')
+      if (argv[1] === 'worktree' && argv[2] === 'list') return out('worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n')
+      if (argv[1] === 'rev-list') return out('2\n')
+      if (argv[1] === 'remote') return out('git@github.com:x/y.git\n')
+      return out('')
+    })
+    on('turn.complete', (_, e) => ({ text: e.answer }))
+    on('turn.start', () => ({ turnId: 'wake' }))
+
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await $.prompt.submit({ text: '/dacapo:core --build add a login page', wait: false, origin: { kind: 'composer' } })
+    const config = await $.tool.call({ tool: 'mcp__dacapo__config' } as never)
+    expect('result' in config && config.result).toMatch(/commits-skill = my-commits  \(\/repo\/.dacapo.conf\)/)
+    expect('result' in config && config.result).toMatch(/prs-skill = team:pull-requests  \(\/repo\/.dacapo.conf\)/)
+    const started = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a login page' } as never)
+    expect('result' in started && started.result).toMatch(/rules: commits follow the my-commits skill, pull requests the team:pull-requests skill/)
+    // a commit title the shipped skill would refuse is the user's business now
+    const dispatched = await $.tool.call({
+      tool: 'mcp__dacapo__dispatch',
+      tasks: [{ id: 'login', title: 'Login page', prompt: 'Build the login page.', model: 'opus', commit: '[JIRA-12] Login page' }],
+    } as never)
+    expect('result' in dispatched && dispatched.result).toMatch(/prompt: "dacapo worker login"/)
+    const brief = files.get('/repo/.workspaces/add-a-login-page--login/.context/brief.md') ?? ''
+    expect(brief).toMatch(/Commit rules: the `my-commits` skill\. Load it with the Skill tool/)
+    expect(brief).toMatch(/Pull request rules: the `team:pull-requests` skill\. Load it with the Skill tool/)
+    const empty = await $.tool.call({ tool: 'mcp__dacapo__dispatch', tasks: [{ id: 'x', title: 'X', prompt: 'Build it.', model: 'opus', commit: '' }] } as never)
+    expect('isError' in empty && empty.isError).toBe(true)
+    // so are the final title and an attribution line in the body
+    const cancelled = await $.tool.call({ tool: 'mcp__dacapo__cancel', agentId: 'pending-worker-1-login', reason: 'not needed' } as never)
+    expect('result' in cancelled && cancelled.result).toMatch(/cancel/i)
+    const finished = await $.tool.call({ tool: 'mcp__dacapo__finish', title: '[JIRA-12] Login page', body: 'Adds login.\n\nSigned-off-by: someone' } as never)
+    expect('result' in finished && finished.result).toMatch(/Final pull request #4 opened/)
+    expect(ghCalls.some(c => c[1] === 'pr' && c[2] === 'create' && c.includes('[JIRA-12] Login page'))).toBe(true)
   })
 })

@@ -13,7 +13,7 @@ Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude 
 | --- | --- |
 | `skills/loop/SKILL.md` | The loop's specification: roles, levels, boundaries, host guarantees, report contracts, decision rules. Host-agnostic. |
 | `skills/core/SKILL.md` | How this plugin runs the loop: its tools, subagents, worktrees, pull requests and wake-ups. |
-| `skills/clean-commits`, `skills/clean-prs` | The commit and pull request rules workers follow. |
+| `skills/rules-commits`, `skills/rules-prs` | The commit and pull request rules workers follow by default; `commits-skill` and `prs-skill` in the configuration can name others. |
 | `hooks/register.tsx` | The mod: tools, agents, guards, the ticker, the run's state. |
 | `hooks/pane.tsx` | The pane and the band above the prompt. |
 | `hooks/prompts.ts` | The system prompts of the worker, QA and reviewer subagents, and the brief builders. |
