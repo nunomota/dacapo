@@ -4,7 +4,7 @@ import type { Level } from '../types'
 export type Conf = {
   /** The level of a run whose prompt carries no level flag. */
   level: Level
-  /** Whether QA and the engineering review run one after the other or side by side at level consolidate. */
+  /** Whether QA and the engineering review run one after the other or side by side at level polish. */
   judges: 'sequential' | 'parallel'
   /** The models a worker may be given, strongest first; the first is the default. */
   workers: string[]
@@ -27,7 +27,7 @@ export const SHIPPED_PRS = 'dacapo:rules-prs'
 
 /** What the plugin runs with when no file says otherwise: the same values `dacapo.conf` ships with. */
 export const DEFAULT_CONF: Conf = {
-  level: 'review',
+  level: 'verify',
   judges: 'sequential',
   workers: ['opus', 'sonnet'],
   qa: ['opus', 'sonnet'],
@@ -36,7 +36,7 @@ export const DEFAULT_CONF: Conf = {
   'prs-skill': SHIPPED_PRS,
 }
 
-const LEVELS = ['build', 'review', 'consolidate']
+const LEVELS = ['build', 'verify', 'polish']
 const JUDGES = ['sequential', 'parallel']
 const MODEL = /^[a-z][a-z0-9.-]*$/
 /** A skill name as the Skill tool takes it, `name` or `plugin:name`, with or without the leading slash a person types. */
