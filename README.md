@@ -67,21 +67,13 @@ The flag is the run's level, how far the work is judged before it merges. The le
 
 Without a flag the run takes the level your configuration names, `review` unless you changed it.
 
-The orchestrator then walks the phases of the level, and the pane shows which one it is in. Every verdict below pass sends the loop back to implement, and the run merges only on pass.
-
 ```
 clarify ──▶ research ──▶ plan ──▶ implement ──▶ QA ──▶ review ──▶ merge
                                       ▲          │         │
                                       └── fix ───┴─────────┘
-
-build        clarify · research · plan · implement · merge
-review       the same, with QA as the end user before the merge
-consolidate  the same, with an engineering review after QA passes
 ```
 
-[The phases](docs/how-it-works.md#the-phases) describes what each one does.
-
-You can type while workers run. Your prompts become events in the timeline and are folded into the next round. `/dacapo-pane` reopens the pane.
+[The phases](docs/how-it-works.md#the-phases) describes each one.
 
 ## Configure
 
