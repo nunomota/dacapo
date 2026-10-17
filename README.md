@@ -67,8 +67,10 @@ The flag is the run's level, how far the work is judged before it merges. The le
 
 Without a flag the run takes the level your configuration names, `review` unless you changed it.
 
+A run then walks these phases in order, as far as its level goes. A verdict below pass from QA or the review sends it back to implement, and it merges only on pass:
+
 ```
-clarify ──▶ research ──▶ plan ──▶ implement ──▶ QA ──▶ review ──▶ merge
+clarify ──▶ research ──▶ plan ──▶ implement ──▶ qa ──▶ review ──▶ merge
                                       ▲          │         │
                                       └── fix ───┴─────────┘
 ```
