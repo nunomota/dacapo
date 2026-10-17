@@ -12,17 +12,36 @@ export type Conf = {
   qa: string[]
   /** The models the reviewer may be given, strongest first; the first is the default. */
   review: string[]
+  /** The skill workers load for how to commit: titles, staging, what never to run. */
+  'commits-skill': string
+  /** The skill workers and the final pull request follow for the title and body. */
+  'prs-skill': string
 }
 
 export type ConfKey = keyof Conf
-export const CONF_KEYS: readonly ConfKey[] = ['level', 'judges', 'workers', 'qa', 'review']
+export const CONF_KEYS: readonly ConfKey[] = ['level', 'judges', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill']
+
+/** The skills the plugin ships; while one is the configured skill, the mod checks the rules it states (commit titles, attribution lines) itself. */
+export const SHIPPED_COMMITS = 'dacapo:rules-commits'
+export const SHIPPED_PRS = 'dacapo:rules-prs'
 
 /** What the plugin runs with when no file says otherwise: the same values `dacapo.conf` ships with. */
-export const DEFAULT_CONF: Conf = { level: 'review', judges: 'sequential', workers: ['opus', 'sonnet'], qa: ['opus', 'sonnet'], review: ['opus', 'sonnet'] }
+export const DEFAULT_CONF: Conf = {
+  level: 'review',
+  judges: 'sequential',
+  workers: ['opus', 'sonnet'],
+  qa: ['opus', 'sonnet'],
+  review: ['opus', 'sonnet'],
+  'commits-skill': SHIPPED_COMMITS,
+  'prs-skill': SHIPPED_PRS,
+}
 
 const LEVELS = ['build', 'review', 'consolidate']
 const JUDGES = ['sequential', 'parallel']
 const MODEL = /^[a-z][a-z0-9.-]*$/
+/** A skill name as the Skill tool takes it, `name` or `plugin:name`, with or without the leading slash a person types. */
+const SKILL = /^\/?([a-z0-9][a-z0-9_-]*:)?[a-z0-9][a-z0-9_-]*$/
+const SKILL_KEYS: readonly ConfKey[] = ['commits-skill', 'prs-skill']
 
 /** One `key = value` file, as read: the keys it set and what was wrong with the rest. */
 export type Parsed = { values: Partial<Record<ConfKey, string[]>>; problems: string[] }
@@ -34,7 +53,7 @@ export function parseConf(text: string): Parsed {
   text.split('\n').forEach((raw, i) => {
     const line = raw.replace(/\s+#.*$/, '').trim()
     if (!line || line.startsWith('#')) return
-    const m = /^([a-z]+)\s*=\s*(.*)$/.exec(line)
+    const m = /^([a-z][a-z-]*)\s*=\s*(.*)$/.exec(line)
     if (!m) {
       problems.push(`line ${i + 1}: not "key = value": ${raw.trim()}`)
       return
@@ -50,7 +69,7 @@ export function parseConf(text: string): Parsed {
       .filter(Boolean)
     const problem = check(key, list)
     if (problem) problems.push(`line ${i + 1}: ${problem}`)
-    else values[key] = list
+    else values[key] = SKILL_KEYS.includes(key) ? [list[0]!.replace(/^\//, '')] : list
   })
   return { values, problems }
 }
@@ -59,6 +78,7 @@ function check(key: ConfKey, list: string[]): string | null {
   if (list.length === 0) return `"${key}" has no value`
   if (key === 'level') return list.length === 1 && LEVELS.includes(list[0]!) ? null : `"level" must be one of ${LEVELS.join(', ')}`
   if (key === 'judges') return list.length === 1 && JUDGES.includes(list[0]!) ? null : `"judges" must be one of ${JUDGES.join(', ')}`
+  if (SKILL_KEYS.includes(key)) return list.length === 1 && SKILL.test(list[0]!) ? null : `"${key}" must be one skill name, like ${DEFAULT_CONF[key]} or my-rules`
   const bad = list.find(v => !MODEL.test(v))
   return bad ? `"${key}" has a model name that is not one (${bad})` : null
 }
@@ -92,6 +112,7 @@ export function loadConf(layers: readonly Layer[]): Loaded {
       if (!v) continue
       if (key === 'level') conf.level = v[0] as Level
       else if (key === 'judges') conf.judges = v[0] as Conf['judges']
+      else if (key === 'commits-skill' || key === 'prs-skill') conf[key] = v[0]!
       else conf[key] = v
       origin[key] = layer.path
     }

@@ -6,7 +6,7 @@ The [README](../README.md) covers installing, updating, configuring and using da
 
 - **Only workers change code.** While a run is active, the orchestrator cannot edit files, rewrite git history or touch pull requests by hand. Workers write inside their own worktree only.
 - **Everything lands through pull requests.** Workers merge their own after green checks; the final merge into `main` is a pull request too. The mod never merges a branch locally.
-- **Clean history.** Commits follow the bundled `clean-commits` skill: Conventional Commit titles, one unit of work each, no bodies, no attribution lines. Pull requests follow `clean-prs`: the planned title, one paragraph on the contribution, a `Verified:` line.
+- **Clean history.** Commits follow the configured commit rules skill, the bundled `rules-commits` by default: Conventional Commit titles, one unit of work each, no bodies, no attribution lines. Pull requests follow the configured pull request rules skill, `rules-prs` by default: the planned title, one paragraph on the contribution, a `Verified:` line. Workers load the skills from their brief. While the bundled skills are the configured ones, the mod also checks commit titles and refuses attribution lines itself; a skill of your own is trusted as it is.
 - **QA never reads source; the reviewer never changes it.** The QA subagent can only read the brief and rubric it was given and only write its report; the reviewer reads anything and writes only its report. The mod validates both reports and derives the verdicts.
 - **Agents never read the configuration files.** The orchestrator asks the `config` tool; comments and commented-out lines in `dacapo.conf` never reach a model.
 - **Nothing is fired and forgotten.** Report collection, pull request polling, the final merge and every wake-up run on the mod's own timer. A wake-up that does not arrive is sent again.
@@ -33,7 +33,7 @@ The orchestrator calls these; the `core` skill says when.
 
 | Tool | What it does |
 | --- | --- |
-| `config` | The configuration in force: default level, judges, and the models each kind of subagent may be given, each with the file it came from. |
+| `config` | The configuration in force: default level, judges, the models each kind of subagent may be given, and the skills commits and pull requests follow, each with the file it came from. |
 | `start` | Checks `gh`, pulls the base branch, cuts the run branch in its worktree and pushes it. Takes the level and, at `consolidate`, whether the judges run in parallel. |
 | `dispatch` | Prepares one worktree, branch and brief per task; `resume: true` continues an earlier worker. |
 | `sync` | Confirms which pull requests merged, prunes their branches, fast-forwards the run worktree. |

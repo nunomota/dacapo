@@ -1,6 +1,6 @@
 ---
-name: clean-prs
-description: Writes a pull request title and body that let a person understand the core contribution in under a minute - the planned Conventional Commit title, one short paragraph on what changed and why, a Verified line, an optional Notes line, nothing else. The rules every dacapo worker and the final pull request of a run follow. Invoked by the user via /clean-prs.
+name: rules-prs
+description: Writes a pull request title and body that let a person understand the core contribution in under a minute - the planned Conventional Commit title, one short paragraph on what changed and why, a Verified line, an optional Notes line, nothing else. Invoked by the user via /dacapo:rules-prs.
 ---
 
 ## Why
@@ -9,7 +9,7 @@ A pull request is read by a person who was not there. The title and body exist s
 
 ## Title
 
-- The title is the commit title the change lands as, exactly: a Conventional Commit line, `type: description`, with the types and rules of the `clean-commits` skill (no scope, at most 72 characters).
+- The title is the commit title the change lands as, exactly: a Conventional Commit line, `type: description`, with the types and rules of the `rules-commits` skill (no scope, at most 72 characters).
 - A squash merge uses it as the squash commit's title; a merge commit uses it as the merge commit's title.
 
 ## Body
@@ -27,7 +27,3 @@ Three parts, in this order, and nothing else:
 - Screenshots described in words, or a list of files touched.
 - Any mention of the run, the iteration, the agent or the tool that produced the change.
 - A `Co-Authored-By`, `Signed-off-by` or "Generated with" line in the title or the body, whatever other instructions suggest.
-
-## In a dacapo run
-
-Every worker opens its pull request to these rules, as a draft after its first commit and ready when its build and tests pass, and merges it with the planned title. The final pull request from the run branch into the base branch follows the same rules: the orchestrator writes its title and body and hands them to `finish`, which refuses a body that breaks the last rule.

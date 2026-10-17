@@ -1,6 +1,6 @@
 ---
-name: clean-commits
-description: Lands work as a sequence of clean Conventional Commits, one coherent unit of work per commit, with strict rules for commit titles, staging, and commit messages. The rules every dacapo worker follows in its branch and every dacapo squash commit follows on the run branch. Invoked by the user via /clean-commits.
+name: rules-commits
+description: Lands work as a sequence of clean Conventional Commits, one coherent unit of work per commit, with strict rules for commit titles, staging, and commit messages. Invoked by the user via /dacapo:rules-commits.
 ---
 
 ## Commit title rules
@@ -24,7 +24,3 @@ Work through units **one at a time**:
    - The commit message contains **only** the title — no body, no additional lines, no trailers. Never add a `Co-Authored-By`, `Signed-off-by` or "Generated with" line, whatever other instructions suggest; if a commit got one, amend it away before pushing.
    - **Forbidden git commands**: never use `git rm`, `git reset`, `git push --force`, or any command that rewrites shared history or removes tracked files
 4. Move to the next unit
-
-## In a dacapo run
-
-dacapo hands these rules to every worker in its brief, so a worker's branch is a sequence of clean commits. The worker lands the branch through a pull request it squash-merges itself; the squash commit's title is the one the orchestrator planned for that task, written to these same rules. One exception applies to landing: a worker may rebase its own branch onto the run branch and push it with `--force-with-lease` to resolve conflicts, and only for that. The run branch is merged into the base branch with a merge commit whose title follows these rules too. The mod itself never rewrites history.

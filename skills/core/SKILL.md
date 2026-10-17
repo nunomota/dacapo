@@ -5,7 +5,7 @@ description: Runs a handed-over task as an orchestrated loop: clarify, research,
 
 # core
 
-Before anything else, load `dacapo:loop` with the Skill tool: it is the loop you follow, with its roles, boundaries, levels, contracts and decision rules. This file says how this plugin runs it: its tools, subagents, worktrees, pull requests and wake-ups. The task is everything after `/dacapo:core` in the prompt that invoked this skill, less the level flag: `--build`, `--review` or `--consolidate` right after the command names the loop's level, and without one the level is the configured default. With the loop loaded, call `mcp__dacapo__config` once for the configuration in force (the default level, whether the judges run in parallel, and the models each kind of subagent may be given), then begin phase 1. Never read a `dacapo.conf` file yourself: the tool is the configuration.
+Before anything else, load `dacapo:loop` with the Skill tool: it is the loop you follow, with its roles, boundaries, levels, contracts and decision rules. This file says how this plugin runs it: its tools, subagents, worktrees, pull requests and wake-ups. The task is everything after `/dacapo:core` in the prompt that invoked this skill, less the level flag: `--build`, `--review` or `--consolidate` right after the command names the loop's level, and without one the level is the configured default. With the loop loaded, call `mcp__dacapo__config` once for the configuration in force (the default level, whether the judges run in parallel, the models each kind of subagent may be given, and the skills commits and pull requests follow), then begin phase 1. Never read a `dacapo.conf` file yourself: the tool is the configuration.
 
 The loop's boundaries are enforced here. While a run is active the tools refuse Edit, Write, history-changing git commands and `gh pr` commands from you. Workers write only inside their worktree. QA can read and search only its `.context` folder and write only its report; its shell is bound by its prompt alone. The reviewer reads anything and writes only its report. You never edit files, touch git, or open and merge pull requests: the `mcp__dacapo__*` tools and the worker subagents do. Each tool reply says what to call next. A timeline pane shows every worker, QA round, pull request and user prompt of the run; the band above the prompt shows where the run stands. `/dacapo-pane` reopens the pane.
 
@@ -25,7 +25,7 @@ The loop's boundaries are enforced here. While a run is active the tools refuse 
 
 - The base branch is `main` unless told otherwise. `start` pulls it from origin, then cuts the run branch from it in its own worktree under `.workspaces/<branch>` and pushes it.
 - Every worker gets its own branch and worktree under `.workspaces/<run branch>--<id>` and lands through a draft pull request against the run branch. It marks the pull request ready when its build passes, rebases conflicts away, and waits for and fixes the checks (three rounds at most; no CI counts as green). Then it squash-merges the pull request with the planned title.
-- Commits follow the bundled `clean-commits` skill; pull requests follow the bundled `clean-prs` skill.
+- Commits follow the skill the `commits-skill` configuration key names and pull requests the one `prs-skill` names: the shipped `dacapo:rules-commits` and `dacapo:rules-prs` unless configured otherwise. Workers load them from their brief; the mod checks commit titles and attribution lines itself only while the shipped skills are in force.
 - QA tests the run branch in a fresh worktree; the reviewer reads it in another, diffed against the base branch.
 - The run ends with a final pull request from the run branch into the base branch, merged with a merge commit.
 
@@ -107,7 +107,7 @@ At level `consolidate`, once QA has reported on the round (or, with judges in pa
 
 At `build`, call it once the round's work has landed and is synced; at `review`, after QA passes; at `consolidate`, after QA and then the review pass. Call `mcp__dacapo__finish` with:
 - `title`: the title of the loop's phase 6 step 1, as a Conventional Commit line; it becomes the merge commit title.
-- `body`: the paragraph of the loop's phase 6 step 1, to the `clean-prs` rules, with a `Verified:` line and an optional `Notes:` line. No attribution lines of any kind.
+- `body`: the paragraph of the loop's phase 6 step 1, to the configured pull request rules skill, which you load with the Skill tool before writing it. With the shipped `dacapo:rules-prs`, that means a `Verified:` line, an optional `Notes:` line and no attribution lines of any kind.
 
 Then end your turn. The run watches the pull request and merges it when green. It then prunes the worktrees and branches, and wakes you with `Merged into <base>`. Two wake-ups ask for more work first:
 - Conflicts with the base branch: `dispatch` one worker with `merge: "merge"`. It merges `origin/<base>` into its branch and resolves the conflicts, under the commit title `chore: merge <base> into <run branch>`.
@@ -119,7 +119,7 @@ From there follow the loop's phase 6 step 2, where `sync` collects the worker's 
 
 ### config
 
-Call `mcp__dacapo__config` for the configuration in force: default level, judges, and the models for workers, QA and the reviewer, each with the file it came from. It reads nothing you need to open yourself; the person edits `~/.claude/dacapo.conf` or the repository's `.dacapo.conf` and sees the result with `/dacapo-config`.
+Call `mcp__dacapo__config` for the configuration in force: default level, judges, the models for workers, QA and the reviewer, and the skills commits (`commits-skill`) and pull requests (`prs-skill`) follow, each with the file it came from. It reads nothing you need to open yourself; the person edits `~/.claude/dacapo.conf` or the repository's `.dacapo.conf` and sees the result with `/dacapo-config`.
 
 ### status
 

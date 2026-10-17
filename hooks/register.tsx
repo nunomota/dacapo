@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Activity, AgentStats, Gh, Level, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
-import { describeConf, loadConf, type Layer, type Loaded } from './conf'
+import { describeConf, loadConf, SHIPPED_COMMITS, SHIPPED_PRS, type Layer, type Loaded } from './conf'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as gh from './gh'
 import * as git from './git'
@@ -369,6 +369,7 @@ async function start(a: Args) {
       `- run folder ${run.runDir}`,
       `- level ${levelOf(run)}: ${levelOf(run) === 'build' ? 'no QA; the run merges once the work has landed' : levelOf(run) === 'review' ? 'QA as the end user, then merge' : run.judges === 'parallel' ? 'QA as the end user and an engineering review side by side, then merge' : 'QA as the end user, then an engineering review, then merge'}`,
       `- models: workers ${conf.conf.workers.join(', ')}; QA ${conf.conf.qa.join(', ')}; review ${conf.conf.review.join(', ')} (the first of each is the strong tier and the default, the last the fast tier)`,
+      `- rules: commits follow the ${conf.conf['commits-skill']} skill, pull requests the ${conf.conf['prs-skill']} skill; workers load them from their brief, and you load ${conf.conf['prs-skill']} before writing the final pull request`,
       `Plan the work, then call ${tool('dispatch')}.`,
     ].join('\n'),
   )
@@ -377,6 +378,9 @@ async function start(a: Args) {
 const rows_hadWork = (rows: Row[], iteration: number) => rows.some(r => isAgentRow(r) && r.iteration === iteration)
 
 const COMMIT_TITLE = /^(feat|fix|docs|style|refactor|test|chore|perf|ci|revert)!?: \S/
+/** Whether the shipped rules skills are the configured ones; only then does the mod check the rules they state itself. */
+const shippedCommits = () => conf.conf['commits-skill'] === SHIPPED_COMMITS
+const shippedPrs = () => conf.conf['prs-skill'] === SHIPPED_PRS
 
 async function dispatch(a: Args) {
   let run = await currentRun()
@@ -396,8 +400,9 @@ async function dispatch(a: Args) {
     if (!str(t.title).trim() || !str(t.prompt).trim()) return fail(`dispatch: task "${id}" needs a title and a prompt`)
     if (typeof t.model !== 'string' || !conf.conf.workers.includes(t.model)) return fail(`dispatch: task "${id}" model must be one of ${conf.conf.workers.join(', ')} (the configured worker models; see ${tool('config')})`)
     const commit = str(t.commit).trim()
-    if (!COMMIT_TITLE.test(commit) || /^\w+\(/.test(commit) || commit.length > 72) {
-      return fail(`dispatch: task "${id}" commit title "${commit}" must be "<type>: <description>" with an allowed type, no scope, at most 72 characters`)
+    if (!commit) return fail(`dispatch: task "${id}" needs a commit title`)
+    if (shippedCommits() && (!COMMIT_TITLE.test(commit) || /^\w+\(/.test(commit) || commit.length > 72)) {
+      return fail(`dispatch: task "${id}" commit title "${commit}" must be "<type>: <description>" with an allowed type, no scope, at most 72 characters (the ${SHIPPED_COMMITS} skill)`)
     }
     if (t.merge !== undefined && t.merge !== 'squash' && t.merge !== 'merge') return fail(`dispatch: task "${id}" merge must be "squash" or "merge"`)
     if (t.resume === true && !rows0.some(r => r.kind === 'worker' && r.taskId === id)) return fail(`dispatch: task "${id}" has no earlier worker to resume`)
@@ -463,6 +468,7 @@ async function dispatch(a: Args) {
         build: str(t.build) || undefined,
         test: str(t.test) || undefined,
         extras: names,
+        rules: { commits: conf.conf['commits-skill'], prs: conf.conf['prs-skill'] },
         resumed,
       })
       await io.write(`${path}/.context/brief.md`, brief)
@@ -687,12 +693,13 @@ async function finish(a: Args) {
   const unsynced = rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.status === 'finished')
   if (unsynced.length > 0) return fail(`finish: ${unsynced.length} finished worker(s) not yet synced; call ${tool('sync')} first`)
   const title = str(a.title).trim()
-  if (!COMMIT_TITLE.test(title) || /^\w+\(/.test(title) || title.length > 72) {
-    return fail('finish: "title" must be the merge commit title, "<type>: <description>" with an allowed type, no scope, at most 72 characters')
+  if (!title) return fail('finish: "title" is required: the merge commit title')
+  if (shippedCommits() && (!COMMIT_TITLE.test(title) || /^\w+\(/.test(title) || title.length > 72)) {
+    return fail(`finish: "title" must be the merge commit title, "<type>: <description>" with an allowed type, no scope, at most 72 characters (the ${SHIPPED_COMMITS} skill)`)
   }
   const body = str(a.body).trim()
-  if (!body) return fail('finish: "body" is required: the final pull request body, written to the clean-prs rules')
-  if (ATTRIBUTION.test(body) || ATTRIBUTION.test(title)) return fail('finish: the title and body carry no Co-Authored-By, Signed-off-by or "Generated with" line (clean-prs)')
+  if (!body) return fail(`finish: "body" is required: the final pull request body, written to the ${conf.conf['prs-skill']} skill`)
+  if (shippedPrs() && (ATTRIBUTION.test(body) || ATTRIBUTION.test(title))) return fail(`finish: the title and body carry no Co-Authored-By, Signed-off-by or "Generated with" line (the ${SHIPPED_PRS} skill)`)
   if (!run.gh?.ok) return fail(`finish: gh is not usable (${run.gh?.detail ?? 'not checked'}); call ${tool('start')} to check it again`)
   await refreshPrs(run)
   const fresh = (await io.getRun()) ?? run
@@ -838,7 +845,7 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   rubrics.delete(key)
   const s = checked.summary
   const weak = checked.items.filter(i => i.score !== 'strong').map(i => `- ${i.score}: ${i.title}${i.note ? ` — ${i.note}` : ''}`)
-  const toFinish = `call ${tool('finish')} with the final pull request's title and body (clean-prs rules) to open it from ${run.branch} into ${run.baseBranch}`
+  const toFinish = `call ${tool('finish')} with the final pull request's title and body (to the ${conf.conf['prs-skill']} skill) to open it from ${run.branch} into ${run.baseBranch}`
   // with judges in parallel, the other judge of the round may be running or already in; a QA verdict of fix stops a running review
   const others = (await io.getRows()).filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) !== role && r.iteration === row.iteration && r.status !== 'cancelled')
   const other = others[others.length - 1]
@@ -1175,7 +1182,7 @@ export const register: Register = (on, options) => {
       }),
       $.tool.register({
         name: 'config',
-        description: 'The configuration in force: the default level, whether judges run in parallel, and the models workers, QA and the reviewer may be given, each with the file it came from. Agents never read the conf files themselves.',
+        description: 'The configuration in force: the default level, whether judges run in parallel, the models workers, QA and the reviewer may be given, and the skills commits and pull requests follow, each with the file it came from. Agents never read the conf files themselves.',
         isDeferred: false,
         inputSchema: { type: 'object', properties: {} },
       }),
@@ -1208,13 +1215,13 @@ export const register: Register = (on, options) => {
       $.tool.register({
         name: 'finish',
         description:
-          'Opens the final pull request from the run branch into the base branch with the given title and body (clean-prs rules). The run then watches its checks, merges it with a merge commit when green, prunes the worktrees and wakes you; failing checks or conflicts wake you instead.',
+          `Opens the final pull request from the run branch into the base branch with the given title and body, written to the configured pull request rules skill (${conf.conf['prs-skill']}). The run then watches its checks, merges it with a merge commit when green, prunes the worktrees and wakes you; failing checks or conflicts wake you instead.`,
         isDeferred: false,
         inputSchema: {
           type: 'object',
           properties: {
-            title: { type: 'string', description: 'The merge commit title, a Conventional Commit line summing up the run, e.g. "feat: add login to the CLI".' },
-            body: { type: 'string', description: 'The pull request body to the clean-prs rules: one paragraph on what changed and why, a Verified line, an optional Notes line.' },
+            title: { type: 'string', description: `The merge commit title, to the ${conf.conf['commits-skill']} skill, e.g. "feat: add login to the CLI".` },
+            body: { type: 'string', description: `The pull request body, to the ${conf.conf['prs-skill']} skill.` },
             abort: { type: 'boolean', description: 'true ends the run without a final pull request.' },
           },
         },
@@ -1296,7 +1303,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'dacapo-config' }, async () => {
     const cwd = await io.cwd()
     const loaded = await readConf((await git.repoRoot(io, cwd)) ?? cwd)
-    return { text: `dacapo configuration\n${describeConf(loaded)}\nEdit ~/.claude/dacapo.conf for every repository, or .dacapo.conf at this repository's root; see dacapo.conf in the plugin for the keys.` }
+    return { text: `dacapo configuration\n${describeConf(loaded)}\nEdit ~/.claude/dacapo.conf for every repository, or .dacapo.conf at this repository's root; see dacapo.conf in the plugin for the keys. commits-skill and prs-skill name the skills commits and pull requests follow; point them at your own to use your conventions.` }
   })
 
   on('command.run', { command: 'dacapo-pane' }, async $ => {
