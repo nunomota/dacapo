@@ -77,29 +77,30 @@ describe('QA report validation', () => {
 describe('the configuration', () => {
   test('key = value lines with comments and lists; a wrong value is named and the earlier one kept', () => {
     const parsed = parseConf(
-      '# a comment\nlevel = deep\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\nprs-skill = /my-prs\ncommits-skill = a, b\ncommits-skill = Not A Skill\n',
+      '# a comment\nlevel = deep\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\nprs-skill = /my-prs\ncommits-skill = a, b\ncommits-skill = Not A Skill\nbase-branch = release/2.0\nbase-branch = Not A Branch\n',
     )
-    expect(parsed.values).toEqual({ level: ['deep'], workers: ['fable', 'opus', 'sonnet'], 'prs-skill': ['my-prs'] })
+    expect(parsed.values).toEqual({ level: ['deep'], workers: ['fable', 'opus', 'sonnet'], 'prs-skill': ['my-prs'], 'base-branch': ['release/2.0'] })
     expect(parsed.problems).toEqual([
       'line 4: "judges" must be one of sequential, parallel',
       'line 5: not "key = value": nope',
-      'line 6: unknown key "color" (one of level, judges, workers, qa, review, commits-skill, prs-skill)',
+      'line 6: unknown key "color" (one of level, judges, workers, qa, review, commits-skill, prs-skill, base-branch)',
       'line 8: "commits-skill" must be one skill name, like dacapo:rules-commits or my-rules',
       'line 9: "commits-skill" must be one skill name, like dacapo:rules-commits or my-rules',
+      'line 11: "base-branch" must be one git branch name, like main or develop',
     ])
   })
 
   test('later files override earlier ones key by key, over the defaults, and each value names its file', () => {
     const loaded = loadConf([
       { path: '/plugin/dacapo.conf', text: 'level = balanced\nqa = opus, sonnet\n' },
-      { path: '/home/u/.claude/dacapo.conf', text: 'qa = sonnet\njudges = parallel\ncommits-skill = other:rules\n' },
+      { path: '/home/u/.claude/dacapo.conf', text: 'qa = sonnet\njudges = parallel\ncommits-skill = other:rules\nbase-branch = develop\n' },
       { path: '/repo/.dacapo.conf', text: null },
     ])
-    expect(loaded.conf).toEqual({ ...DEFAULT_CONF, qa: ['sonnet'], judges: 'parallel', 'commits-skill': 'other:rules' })
+    expect(loaded.conf).toEqual({ ...DEFAULT_CONF, qa: ['sonnet'], judges: 'parallel', 'commits-skill': 'other:rules', 'base-branch': 'develop' })
     expect(loaded.origin.qa).toBe('/home/u/.claude/dacapo.conf')
     expect(loaded.origin.workers).toBe('default')
     expect(loaded.origin['prs-skill']).toBe('default')
-    expect(describeConf(loaded)).toMatch(/\ncommits-skill = other:rules  \(\/home\/u\/.claude\/dacapo.conf\)\nprs-skill = dacapo:rules-prs  \(default\)\n/)
+    expect(describeConf(loaded)).toMatch(/\ncommits-skill = other:rules  \(\/home\/u\/.claude\/dacapo.conf\)\nprs-skill = dacapo:rules-prs  \(default\)\nbase-branch = develop  \(\/home\/u\/.claude\/dacapo.conf\)\n/)
     expect(loaded.read).toEqual(['/plugin/dacapo.conf', '/home/u/.claude/dacapo.conf'])
     expect(describeConf(loaded)).toMatch(/^level = balanced  \(\/plugin\/dacapo.conf\)\n/)
     expect(describeConf(loadConf([]))).toMatch(/Files read: none; defaults\./)
@@ -603,7 +604,7 @@ describe('the loop', () => {
     mock.clock(on, { now: Date.UTC(2026, 9, 10, 12, 0, 0) })
     mock.env(on, { HOME: '/home/u' })
     const files = new Map<string, string>()
-    files.set('/repo/.dacapo.conf', 'commits-skill = /my-commits\nprs-skill = team:pull-requests\n')
+    files.set('/repo/.dacapo.conf', 'commits-skill = /my-commits\nprs-skill = team:pull-requests\nbase-branch = develop\n')
     const ghCalls: string[][] = []
     on('session.start', (_, e) => ({ cwd: e.cwd }))
     on('prompt.submit', (_, e) => ({ text: e.text }))
@@ -648,8 +649,11 @@ describe('the loop', () => {
     const config = await $.tool.call({ tool: 'mcp__dacapo__config' } as never)
     expect('result' in config && config.result).toMatch(/commits-skill = my-commits  \(\/repo\/.dacapo.conf\)/)
     expect('result' in config && config.result).toMatch(/prs-skill = team:pull-requests  \(\/repo\/.dacapo.conf\)/)
+    expect('result' in config && config.result).toMatch(/base-branch = develop  \(\/repo\/.dacapo.conf\)/)
+    // the configured base branch is the one the run is cut from when start names none
     const started = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a login page' } as never)
     expect('result' in started && started.result).toMatch(/rules: commits follow the my-commits skill, pull requests the team:pull-requests skill/)
+    expect('result' in started && started.result).toMatch(/run branch "add-a-login-page" cut from origin\/develop/)
     // a commit title the shipped skill would refuse is the user's business now
     const dispatched = await $.tool.call({
       tool: 'mcp__dacapo__dispatch',
@@ -667,5 +671,8 @@ describe('the loop', () => {
     const finished = await $.tool.call({ tool: 'mcp__dacapo__finish', title: '[JIRA-12] Login page', body: 'Adds login.\n\nSigned-off-by: someone' } as never)
     expect('result' in finished && finished.result).toMatch(/Final pull request #4 opened/)
     expect(ghCalls.some(c => c[1] === 'pr' && c[2] === 'create' && c.includes('[JIRA-12] Login page'))).toBe(true)
+    // and the final pull request goes into it
+    const create = ghCalls.find(c => c[1] === 'pr' && c[2] === 'create') ?? []
+    expect(create[create.indexOf('--base') + 1]).toBe('develop')
   })
 })

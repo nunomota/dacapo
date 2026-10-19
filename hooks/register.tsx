@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Activity, AgentStats, Gh, Level, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
-import { describeConf, loadConf, SHIPPED_COMMITS, SHIPPED_PRS, type Layer, type Loaded } from './conf'
+import { BRANCH_NAME, describeConf, loadConf, SHIPPED_COMMITS, SHIPPED_PRS, type Layer, type Loaded } from './conf'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as gh from './gh'
 import * as git from './git'
@@ -308,15 +308,13 @@ function statusText(snap: Snapshot): string {
 
 // ---------- tool handlers ----------
 
-const BRANCH_NAME = /^[a-z0-9][a-z0-9._/-]*$/
-
 async function start(a: Args) {
   const task = str(a.task).trim()
   if (!task) return fail('start: "task" is required')
   const root = str(a.root).trim()
   if (root && !(await git.repoRoot(io, root))) return fail(`start: ${root} is not inside a git repository`)
   const overview = str(a.overview).trim() || undefined
-  const baseBranch = str(a.baseBranch).trim() || 'main'
+  const baseBranch = str(a.baseBranch).trim() || conf.conf['base-branch']
   const askedLevel = str(a.level).trim()
   if (askedLevel && !LEVELS.includes(askedLevel as Level)) return fail(`start: "level" must be one of ${LEVELS.join(', ')}; got ${JSON.stringify(askedLevel)}`)
   const askedJudges = str(a.judges).trim()
@@ -1065,7 +1063,7 @@ export const register: Register = (on, options) => {
             task: { type: 'string', description: 'The task in one line: the heading of the run.' },
             overview: { type: 'string', description: 'One short paragraph on the whole task: deliverable, who it is for, what done looks like. Shown under the heading.' },
             branch: { type: 'string', description: 'The run branch, named after the change (kebab-case, e.g. "add-login"); default a slug of the task. Every worker pull request targets it.' },
-            baseBranch: { type: 'string', description: 'The branch the run is cut from and merged into; default "main".' },
+            baseBranch: { type: 'string', description: 'The branch the run is cut from and merged into; default the configured base-branch.' },
             level: { type: 'string', enum: ['fast', 'balanced', 'deep'], description: 'How far the run is judged before it merges: fast (no QA), balanced (QA as the end user), deep (QA, then an engineering review of the run\'s change). Default from the configuration. Fixed for the run.' },
             judges: { type: 'string', enum: ['sequential', 'parallel'], description: 'At deep: whether QA and the review run one after the other or side by side. Default from the configuration. Fixed for the run.' },
             root: { type: 'string', description: 'Absolute path inside the repository to run in; default the session working directory.' },
@@ -1182,7 +1180,7 @@ export const register: Register = (on, options) => {
       }),
       $.tool.register({
         name: 'config',
-        description: 'The configuration in force: the default level, whether judges run in parallel, the models workers, QA and the reviewer may be given, and the skills commits and pull requests follow, each with the file it came from. Agents never read the conf files themselves.',
+        description: 'The configuration in force: the default level, whether judges run in parallel, the models workers, QA and the reviewer may be given, the skills commits and pull requests follow, and the base branch, each with the file it came from. Agents never read the conf files themselves.',
         isDeferred: false,
         inputSchema: { type: 'object', properties: {} },
       }),
@@ -1303,7 +1301,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'dacapo-config' }, async () => {
     const cwd = await io.cwd()
     const loaded = await readConf((await git.repoRoot(io, cwd)) ?? cwd)
-    return { text: `dacapo configuration\n${describeConf(loaded)}\nEdit ~/.claude/dacapo.conf for every repository, or .dacapo.conf at this repository's root; see dacapo.conf in the plugin for the keys. commits-skill and prs-skill name the skills commits and pull requests follow; point them at your own to use your conventions.` }
+    return { text: `dacapo configuration\n${describeConf(loaded)}\nEdit ~/.claude/dacapo.conf for every repository, or .dacapo.conf at this repository's root; see dacapo.conf in the plugin for the keys. commits-skill and prs-skill name the skills commits and pull requests follow; point them at your own to use your conventions. base-branch names the branch runs are cut from and merged into.` }
   })
 
   on('command.run', { command: 'dacapo-pane' }, async $ => {
@@ -1331,7 +1329,7 @@ export const register: Register = (on, options) => {
       // a level flag right after the command (`--deep`) sets the level now, so the pane shows it while the task is clarified
       const cwd = await io.cwd()
       await readConf((await git.repoRoot(io, cwd)) ?? cwd)
-      run = await openRun('', 'main', undefined, (starts[1] as Level | undefined) ?? conf.conf.level)
+      run = await openRun('', conf.conf['base-branch'], undefined, (starts[1] as Level | undefined) ?? conf.conf.level)
       void $.ui.open({ id: PANE, title: 'Da capo' })
     }
     if (run) {
