@@ -8,16 +8,16 @@ A run walks the phases of its level in order, and the pane shows which one it is
 
 1. **Clarify.** It restates the task and asks about anything material until nothing is open.
 2. **Research.** It picks a stack if none is fixed, reads the docs for the versions in use, notes the build and test commands, and finds the existing conventions each task must match.
-3. **Plan.** It names the run, cuts a run branch from `main`, splits the work into independent tasks, and writes the QA rubric and harness (and, at `deep`, the engineering rubric) before any code exists.
+3. **Plan.** It names the run, cuts a run branch from the base branch, splits the work into independent tasks, and writes the QA rubric and harness (and, at `deep`, the engineering rubric) before any code exists.
 4. **Implement.** One worker per task, in parallel. Each opens a draft pull request against the run branch, marks it ready when its build passes, waits for checks, and squash-merges with the planned title. A worker's task is done only when its pull request is merged.
 5. **QA.** A fresh subagent uses the deliverable as the end user, attending to consistency across it, and scores every rubric item `strong`, `acceptable` or `unacceptable`. On any verdict below pass the loop goes back to step 4, with every item below `strong` becoming a task. The run merges only on pass. The one exception is a stuck loop, where the user may decide to merge with the limitation stated.
-6. **Review** (at `deep`). Another subagent reads the run's change against `main` as an engineer and scores an engineering rubric: quality, consistency with the codebase, cleanup. Findings inside the run's change become fix tasks; findings beyond it are recommendations in the final report.
-7. **Merge.** The orchestrator opens the final pull request into `main`, written to the pull request rules skill, and the mod merges it once its checks are green.
+6. **Review** (at `deep`). Another subagent reads the run's change against the base branch as an engineer and scores an engineering rubric: quality, consistency with the codebase, cleanup. Findings inside the run's change become fix tasks; findings beyond it are recommendations in the final report.
+7. **Merge.** The orchestrator opens the final pull request into the base branch, written to the pull request rules skill, and the mod merges it once its checks are green.
 
 ## What the mod enforces
 
 - **Only workers change code.** While a run is active, the orchestrator cannot edit files, rewrite git history or touch pull requests by hand. Workers write inside their own worktree only.
-- **Everything lands through pull requests.** Workers merge their own after green checks; the final merge into `main` is a pull request too. The mod never merges a branch locally.
+- **Everything lands through pull requests.** Workers merge their own after green checks; the final merge into the base branch is a pull request too. The mod never merges a branch locally.
 - **Clean history.** Commits follow the configured commit rules skill, the bundled `rules-commits` by default: Conventional Commit titles, one unit of work each, no bodies, no attribution lines. Pull requests follow the configured pull request rules skill, `rules-prs` by default: the planned title, one paragraph on the contribution, a `Verified:` line. Workers load the skills from their brief. While the bundled skills are the configured ones, the mod also checks commit titles and refuses attribution lines itself; a skill of your own is trusted as it is.
 - **QA never reads source; the reviewer never changes it.** The QA subagent can only read the brief and rubric it was given and only write its report; the reviewer reads anything and writes only its report. The mod validates both reports and derives the verdicts.
 - **Agents never read the configuration files.** The orchestrator asks the `config` tool; comments and commented-out lines in `dacapo.conf` never reach a model.
@@ -45,7 +45,7 @@ The orchestrator calls these; the `core` skill says when.
 
 | Tool | What it does |
 | --- | --- |
-| `config` | The configuration in force: default level, judges, the models each kind of subagent may be given, and the skills commits and pull requests follow, each with the file it came from. |
+| `config` | The configuration in force: default level, judges, the models each kind of subagent may be given, the skills commits and pull requests follow, and the base branch, each with the file it came from. |
 | `start` | Checks `gh`, pulls the base branch, cuts the run branch in its worktree and pushes it. Takes the level and, at `deep`, whether the judges run in parallel. |
 | `dispatch` | Prepares one worktree, branch and brief per task; `resume: true` continues an earlier worker. |
 | `sync` | Confirms which pull requests merged, prunes their branches, fast-forwards the run worktree. |
