@@ -16,10 +16,12 @@ export type Conf = {
   'commits-skill': string
   /** The skill workers and the final pull request follow for the title and body. */
   'prs-skill': string
+  /** The branch a run is cut from and merged into when `start` names none. */
+  'base-branch': string
 }
 
 export type ConfKey = keyof Conf
-export const CONF_KEYS: readonly ConfKey[] = ['level', 'judges', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill']
+export const CONF_KEYS: readonly ConfKey[] = ['level', 'judges', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill', 'base-branch']
 
 /** The skills the plugin ships; while one is the configured skill, the mod checks the rules it states (commit titles, attribution lines) itself. */
 export const SHIPPED_COMMITS = 'dacapo:rules-commits'
@@ -34,11 +36,14 @@ export const DEFAULT_CONF: Conf = {
   review: ['opus', 'sonnet'],
   'commits-skill': SHIPPED_COMMITS,
   'prs-skill': SHIPPED_PRS,
+  'base-branch': 'main',
 }
 
 const LEVELS = ['fast', 'balanced', 'deep']
 const JUDGES = ['sequential', 'parallel']
 const MODEL = /^[a-z][a-z0-9.-]*$/
+/** A git branch name as dacapo accepts it, for the base branch and the run branch alike. */
+export const BRANCH_NAME = /^[a-z0-9][a-z0-9._/-]*$/
 /** A skill name as the Skill tool takes it, `name` or `plugin:name`, with or without the leading slash a person types. */
 const SKILL = /^\/?([a-z0-9][a-z0-9_-]*:)?[a-z0-9][a-z0-9_-]*$/
 const SKILL_KEYS: readonly ConfKey[] = ['commits-skill', 'prs-skill']
@@ -79,6 +84,7 @@ function check(key: ConfKey, list: string[]): string | null {
   if (key === 'level') return list.length === 1 && LEVELS.includes(list[0]!) ? null : `"level" must be one of ${LEVELS.join(', ')}`
   if (key === 'judges') return list.length === 1 && JUDGES.includes(list[0]!) ? null : `"judges" must be one of ${JUDGES.join(', ')}`
   if (SKILL_KEYS.includes(key)) return list.length === 1 && SKILL.test(list[0]!) ? null : `"${key}" must be one skill name, like ${DEFAULT_CONF[key]} or my-rules`
+  if (key === 'base-branch') return list.length === 1 && BRANCH_NAME.test(list[0]!) ? null : `"base-branch" must be one git branch name, like main or develop`
   const bad = list.find(v => !MODEL.test(v))
   return bad ? `"${key}" has a model name that is not one (${bad})` : null
 }
@@ -112,7 +118,7 @@ export function loadConf(layers: readonly Layer[]): Loaded {
       if (!v) continue
       if (key === 'level') conf.level = v[0] as Level
       else if (key === 'judges') conf.judges = v[0] as Conf['judges']
-      else if (key === 'commits-skill' || key === 'prs-skill') conf[key] = v[0]!
+      else if (key === 'commits-skill' || key === 'prs-skill' || key === 'base-branch') conf[key] = v[0]!
       else conf[key] = v
       origin[key] = layer.path
     }
