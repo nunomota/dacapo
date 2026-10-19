@@ -1,11 +1,11 @@
 ---
 name: core
-description: Runs a handed-over task as an orchestrated loop: clarify, research, plan, dispatch parallel worker subagents in git worktrees, end-user QA with a scored rubric, iterate, merge. Workers land their work through GitHub pull requests into a run branch, and the run branch merges into main through a final pull request. Invoked by the user via /dacapo:core <task>.
+description: Runs a handed-over task as an orchestrated loop: clarify, research, plan, dispatch parallel worker subagents in git worktrees, end-user QA with a scored rubric, iterate, merge. Workers land their work through GitHub pull requests into a run branch, and the run branch merges into the base branch through a final pull request. Invoked by the user via /dacapo:core <task>.
 ---
 
 # core
 
-Before anything else, load `dacapo:loop` with the Skill tool: it is the loop you follow, with its roles, boundaries, levels, contracts and decision rules. This file says how this plugin runs it: its tools, subagents, worktrees, pull requests and wake-ups. The task is everything after `/dacapo:core` in the prompt that invoked this skill, less the level flag: `--fast`, `--balanced` or `--deep` right after the command names the loop's level, and without one the level is the configured default. With the loop loaded, call `mcp__dacapo__config` once for the configuration in force (the default level, whether the judges run in parallel, the models each kind of subagent may be given, and the skills commits and pull requests follow), then begin phase 1. Never read a `dacapo.conf` file yourself: the tool is the configuration.
+Before anything else, load `dacapo:loop` with the Skill tool: it is the loop you follow, with its roles, boundaries, levels, contracts and decision rules. This file says how this plugin runs it: its tools, subagents, worktrees, pull requests and wake-ups. The task is everything after `/dacapo:core` in the prompt that invoked this skill, less the level flag: `--fast`, `--balanced` or `--deep` right after the command names the loop's level, and without one the level is the configured default. With the loop loaded, call `mcp__dacapo__config` once for the configuration in force (the default level, whether the judges run in parallel, the models each kind of subagent may be given, the skills commits and pull requests follow, and the base branch), then begin phase 1. Never read a `dacapo.conf` file yourself: the tool is the configuration.
 
 The loop's boundaries are enforced here. While a run is active the tools refuse Edit, Write, history-changing git commands and `gh pr` commands from you. Workers write only inside their worktree. QA can read and search only its `.context` folder and write only its report; its shell is bound by its prompt alone. The reviewer reads anything and writes only its report. You never edit files, touch git, or open and merge pull requests: the `mcp__dacapo__*` tools and the worker subagents do. Each tool reply says what to call next. A timeline pane shows every worker, QA round, pull request and user prompt of the run; the band above the prompt shows where the run stands. `/dacapo-pane` reopens the pane.
 
@@ -23,7 +23,7 @@ The loop's boundaries are enforced here. While a run is active the tools refuse 
 
 ## How work lands here
 
-- The base branch is `main` unless told otherwise. `start` pulls it from origin, then cuts the run branch from it in its own worktree under `.workspaces/<branch>` and pushes it.
+- The base branch is the one the `base-branch` configuration key names, `main` by default, unless the user names another. `start` pulls it from origin, then cuts the run branch from it in its own worktree under `.workspaces/<branch>` and pushes it.
 - Every worker gets its own branch and worktree under `.workspaces/<run branch>--<id>` and lands through a draft pull request against the run branch. It marks the pull request ready when its build passes, rebases conflicts away, and waits for and fixes the checks (three rounds at most; no CI counts as green). Then it squash-merges the pull request with the planned title.
 - Commits follow the skill the `commits-skill` configuration key names and pull requests the one `prs-skill` names: the shipped `dacapo:rules-commits` and `dacapo:rules-prs` unless configured otherwise. Workers load them from their brief; the mod checks commit titles and attribution lines itself only while the shipped skills are in force.
 - QA tests the run branch in a fresh worktree; the reviewer reads it in another, diffed against the base branch.
@@ -58,7 +58,7 @@ Call `mcp__dacapo__start` once the request is clear, as you enter the loop's pha
 - `task`: the run's one line.
 - `overview`: one short paragraph.
 - `branch`: named after the change (`add-login`, `fix-export-crash`).
-- `baseBranch`: only when the run should merge into another branch than `main`.
+- `baseBranch`: only when the user wants the run merged into another branch than the configured one.
 - `level`: `fast`, `balanced` or `deep`, from the flag. Fixed once set up: a later `start` with another level is refused.
 - `judges`: `sequential` or `parallel`, only when the user asked for one; otherwise the configuration decides. Fixed once set up.
 
@@ -119,7 +119,7 @@ From there follow the loop's phase 6 step 2, where `sync` collects the worker's 
 
 ### config
 
-Call `mcp__dacapo__config` for the configuration in force: default level, judges, the models for workers, QA and the reviewer, and the skills commits (`commits-skill`) and pull requests (`prs-skill`) follow, each with the file it came from. It reads nothing you need to open yourself; the person edits `~/.claude/dacapo.conf` or the repository's `.dacapo.conf` and sees the result with `/dacapo-config`.
+Call `mcp__dacapo__config` for the configuration in force: default level, judges, the models for workers, QA and the reviewer, the skills commits (`commits-skill`) and pull requests (`prs-skill`) follow, and the base branch (`base-branch`), each with the file it came from. It reads nothing you need to open yourself; the person edits `~/.claude/dacapo.conf` or the repository's `.dacapo.conf` and sees the result with `/dacapo-config`.
 
 ### status
 

@@ -16,7 +16,7 @@
 
 ---
 
-**dacapo** is an orchestration plugin for [Claude Code](https://claude.com/claude-code). You hand it a task. The session clarifies it with you, researches the stack and splits the work. Worker subagents build the pieces in parallel, each in its own git worktree, and land them through GitHub pull requests into a run branch. A QA subagent then uses the result the way a user would, scores a rubric, and the loop runs again until it passes. A final pull request merges the run branch into `main`.
+**dacapo** is an orchestration plugin for [Claude Code](https://claude.com/claude-code). You hand it a task. The session clarifies it with you, researches the stack and splits the work. Worker subagents build the pieces in parallel, each in its own git worktree, and land them through GitHub pull requests into a run branch. A QA subagent then uses the result the way a user would, scores a rubric, and the loop runs again until it passes. A final pull request merges the run branch into the base branch, `main` unless you configure another.
 
 Everything in the mod is deterministic: it manages worktrees, branches and pull requests, validates reports, wakes the orchestrator, and draws the pane. No model is asked anything inside it. [How it works](docs/how-it-works.md) has the details.
 
@@ -98,6 +98,7 @@ The keys:
 | `review` | `opus, sonnet` | The models the reviewer may be given, likewise. |
 | `commits-skill` | `dacapo:rules-commits` | The skill workers load for how to commit: titles, staging, what never to run. |
 | `prs-skill` | `dacapo:rules-prs` | The skill workers and the final pull request follow for the title and body. |
+| `base-branch` | `main` | The branch a run is cut from and merged into, when you do not name another at hand-over. |
 
 Point `commits-skill` or `prs-skill` at a skill of your own, `my-rules` or `other-plugin:rules`, to have workers follow your conventions; the leading slash is optional. With the shipped skills dacapo also checks commit titles and refuses attribution lines in the final pull request; with any other skill it trusts the skill. Fable is listed in the shipped file, commented out; uncomment the lines in your copy to allow it. Lines starting with `#` are comments and lists are comma-separated. Agents never read these files: the orchestrator asks a tool for the values in force, so comments and commented-out lines never reach a model. `/dacapo-config` shows you the same values and the file each came from.
 
