@@ -16,7 +16,7 @@ Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude 
 | `skills/rules-commits`, `skills/rules-prs` | The commit and pull request rules workers follow by default; `commits-skill` and `prs-skill` in the configuration can name others. |
 | `hooks/register.tsx` | The mod: tools, agents, guards, the ticker, the run's state. |
 | `hooks/pane.tsx` | The pane and the band above the prompt. |
-| `hooks/prompts.ts` | The system prompts of the worker, QA and reviewer subagents, and the brief builders. |
+| `hooks/prompts.ts` | The system prompts of the worker, QA, QA collector and reviewer subagents, and the brief builders. |
 | `hooks/conf.ts` | Reading and merging `dacapo.conf` files. |
 | `hooks/report.ts` | Rubric and report validation, verdicts. |
 | `dacapo.conf` | The shipped defaults; the keys users copy and edit. |
@@ -25,7 +25,7 @@ Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude 
 
 ## Known limits
 
-- The QA agent keeps a shell so it can run the deliverable, so reading source through a shell command is forbidden by its prompt rather than by the tooling.
+- The QA agent and its collectors keep a shell so they can run the deliverable, so reading source through a shell command is forbidden by their prompts rather than by the tooling.
 - Branch protection that requires reviews stops a worker's merge and the final merge; the orchestrator is told, and merging on GitHub by hand finishes the run.
 - The timeline lives for the session; it is not kept across restarts.
 - The configuration is read when a session starts, when a `/dacapo:core` prompt opens a run and when `/dacapo-config` runs; a file edited mid-run applies to the next run.
