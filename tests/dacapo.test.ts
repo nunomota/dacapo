@@ -489,6 +489,7 @@ describe('the loop', () => {
     const spawned = agentCalls[agentCalls.length - 1]!
     expect(spawned.subagent_type).toBe('dacapo:qa-collector')
     expect(spawned.model).toBe('opus')
+    expect(spawned.run_in_background).toBe(false)
     expect(String(spawned.prompt)).toMatch(/^\[dacapo worktree: \/repo\/.workspaces\/qa\/1-1\]/)
     expect(String(spawned.prompt)).toMatch(/qa-brief\.md[\s\S]*## Your slice, from QA[\s\S]*fixture account/)
     const oneAtATime = await $.tool.call({ tool: 'Agent', prompt: 'Items: errors.', description: 'errors slice', subagent_type: 'dacapo:qa-collector', agentId: 'agent-2' } as never)

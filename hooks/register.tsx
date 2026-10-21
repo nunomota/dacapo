@@ -1324,7 +1324,9 @@ export const register: Register = (on, options) => {
       const allowed = conf.conf.qa
       const model = allowed.includes(str(a.model)) ? str(a.model) : allowed[allowed.length - 1]!
       const prompt = `[dacapo worktree: ${row.worktree}]\n\n${collectorPrompt(row.worktree)}\n\n## Your slice, from QA\n\n${slice}\n\nStart now. Your working directory is the worktree above; write only under its .context/evidence folder.`
-      const ran = await next({ ...e, prompt, subagent_type: COLLECTOR_AGENT, model })
+      // in the foreground: the Agent call blocks, so QA keeps its turn while a batch runs (several calls in one message still run at once);
+      // a QA turn that ended to wait on a background collector would end the round without a report
+      const ran = await next({ ...e, prompt, subagent_type: COLLECTOR_AGENT, model, run_in_background: false })
       const got = 'result' in ran && ran.result && typeof ran.result === 'object' ? (ran.result as { agentId?: unknown }).agentId : undefined
       if (typeof got === 'string') {
         const now = await io.now()
