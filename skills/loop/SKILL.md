@@ -82,6 +82,7 @@ Responsible for:
 - Setting the product up as the harness says and using it as its end user.
 - Exercising every rubric item; for ui-ux items, attending to clarity, feedback, errors, flow and consistency: like things look and behave alike across the product, and when they do not, the note names the pair.
 - Splitting the rubric among evidence collectors when the harness lets several testers use the product at once, each told its items, its share of the product and what is shared; walking itself what needs one continuous session or the only instance; and verifying what a collector brings back before scoring on it.
+- Owning the report whatever happens to its collectors, as the orchestrator owns a round whatever happens to its workers: a collector that failed or ended without a report is run again on the same slice, once; the gaps a collector names are walked by QA itself; what is still untested after that QA walks too, and the note says so. No item is scored on evidence nobody gathered, and no item is left unscored.
 - Scoring each item with a concrete note: what it did, what it saw, what it expected.
 - Writing one overview: what works, what does not, what to fix first, and feedback the items do not capture.
 - Stopping every process it started, and any a collector left running.
@@ -100,6 +101,13 @@ Cannot see:
 ### QA collectors
 
 An evidence collector is an agent QA starts on a slice of the rubric. It uses the product as its end user on the share QA gave it (an instance, pages, accounts, windows, ports) and brings back, in its report to QA, what it did, what it saw, what it expected and the evidence it captured. The scoring stays QA's.
+
+Its report is to QA what a worker's is to the orchestrator: short sections (one per item of its slice; what it could not exercise and why; what it noticed outside its slice) ending with exactly one of:
+- **collected**: every item of the slice was exercised.
+- **collected with gaps**: something in the slice could not be exercised, and the report says what and why.
+- **failed**: nothing usable was gathered.
+
+The host fixes the exact form of the last line, so it can be parsed, and tells QA when a collector ended without a report. A step refused only because a shared resource was busy is retried, not given up on.
 
 Never:
 - Read, search or open source by any means: it is bound exactly as QA is.
@@ -135,7 +143,7 @@ Cannot see:
 
 - **Isolation.** Each worker works in a sandbox it cannot leave; the host refuses its writes outside it.
 - **Deterministic integration.** Landed work enters the run under its planned landing title by the host's own mechanism, never by the orchestrator. Work counts as landed only when the host says so. At the end the host integrates the run into the base line when asked, and says why when it refuses (the base moved, checks fail).
-- **A clean QA environment.** QA gets a clean copy of the integrated state and a way to run the product. Source is unreachable to it, or at least forbidden by its instructions. Every collector QA starts is bound by the same guard, in the same environment, writing only its evidence; the host caps how many run at once, since one machine's product can only be shared so far.
+- **A clean QA environment.** QA gets a clean copy of the integrated state and a way to run the product. Source is unreachable to it, or at least forbidden by its instructions. Every collector QA starts is bound by the same guard, in the same environment, writing only its evidence; the host caps how many run at once, since one machine's product can only be shared so far. Each collector's report reaches QA, and a collector that ended without one is reported to QA as failed; a collector's outcome never reaches the orchestrator, since QA's method is not its to see.
 - **A read-only reviewer environment.** At `deep`, the reviewer gets a clean copy of the integrated state and the base it is compared against; it can write its report and nothing else.
 - **Validated reports.** For QA and the reviewer alike, the host checks that every rubric id is scored exactly once, every score is `strong`, `acceptable` or `unacceptable`, and the overview is not empty. It derives the verdict from the scores and never asks the judge for one. An invalid report goes to the orchestrator with the reasons.
 - **Reported outcomes.** Without being asked, the host tells the orchestrator each worker's report and whether its work landed. It also tells it about a worker that is stalled: still running, with no activity for a long time. A report is never lost on the way.
@@ -218,7 +226,7 @@ Show the plan (level; tasks, tiers, landing titles; rubrics and harness) in a co
 
 Skipped at `fast`.
 
-1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. QA is handed these, the run's one-line request and where to write its report. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms. In a fix round, list the items the round aimed at, so QA re-verifies them first; it still scores every item. QA may split the items among collectors as the harness allows; every score is still its own.
+1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. QA is handed these, the run's one-line request and where to write its report. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms. In a fix round, list the items the round aimed at, so QA re-verifies them first; it still scores every item. QA may split the items among collectors as the harness allows; every score is still its own, and a collector that fails is QA's to absorb (run again, or walk the slice itself), never a reason for an unscored item: only an invalid report reaches you.
 2. QA's report has `items`, one per rubric id, each with `id`, `score` and a `note` of one to three sentences, and an `overview`. Scores: `strong` (clearly met), `acceptable` (technically passes, improvements recommended), `unacceptable` (fails, must be fixed). The host derives the verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any is acceptable and none unacceptable; `pass` otherwise. You receive the verdict, the counts, every item below `strong` and the overview.
 3. If the host says the report is invalid, run QA again. Clarify the harness or the round note only if that caused the failure. An invalid report is never a pass. Step 5 says when invalid reports make the loop stuck.
 4. Decide as follows after every valid report, wherever QA ran: after a round, after a re-run following an invalid report, or after a reconciliation or fix in phase 6. Take the first case that applies.
