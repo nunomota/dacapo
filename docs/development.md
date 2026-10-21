@@ -26,7 +26,7 @@ Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude 
 ## Known limits
 
 - The QA agent and its collectors keep a shell so they can run the deliverable, so reading source through a shell command is forbidden by their prompts rather than by the tooling.
-- QA must stay on its turn while its collectors run: a collector is a background subagent of QA's, and a QA turn that ends is the round ending, collected without a report. The prompts say so; the tooling cannot hold the turn open.
+- Collectors run in the foreground of QA's turn: the Agent hook forces `run_in_background: false`, since a QA turn that ended to wait on a background collector would be the round ending, collected without a report. Several Agent calls in one message still run at once, so a batch costs its slowest collector, and QA cannot walk its own items while one runs.
 - Branch protection that requires reviews stops a worker's merge and the final merge; the orchestrator is told, and merging on GitHub by hand finishes the run.
 - The timeline lives for the session; it is not kept across restarts.
 - The configuration is read when a session starts, when a `/dacapo:core` prompt opens a run and when `/dacapo-config` runs; a file edited mid-run applies to the next run.
