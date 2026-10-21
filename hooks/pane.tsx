@@ -924,7 +924,7 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
     title: `${roundName(row)}${row.summary ? `: ${verdictWord(row)}` : ''}`,
     subline: (
       <Text wrap="truncate-end">
-        <Text dimColor>{`${[span, row.model, ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')} · `}</Text>
+        <Text dimColor>{`${[span, row.model, ...(row.restarts ? [`restarted ${row.restarts}x`] : []), ...(row.collectors?.length ? [`${row.collectors.length} collector${row.collectors.length === 1 ? '' : 's'}`] : [])].join(' · ')} · `}</Text>
         {row.summary ? (
           <Text>
             {scoreNumbers(els, row.summary, `score-${row.id}`)}

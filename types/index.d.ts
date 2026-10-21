@@ -180,6 +180,16 @@ export type WorkerRow = {
  * A scored report on the integrated state: QA's, as the end user, or the reviewer's, as an engineer reading the
  * run's diff. Both share this row; `role` tells them apart (absent means QA, for rows saved before reviews existed).
  */
+/** An evidence collector QA started: a subagent bound like QA that uses the product on a slice of the rubric. */
+export type Collector = {
+  /** The collector's agent id. */
+  id: string
+  /** The Agent call's short description of its slice. */
+  description: string
+  at: number
+  endedAt?: number
+}
+
 export type QaRow = {
   kind: 'qa'
   role?: 'qa' | 'review'
@@ -204,6 +214,8 @@ export type QaRow = {
   collect?: { failure: string | null }
   /** How many times the agent was resumed after it had ended. */
   restarts?: number
+  /** The evidence collectors QA started, live ones and ended ones alike. */
+  collectors?: Collector[]
 }
 
 export type Row = UserRow | OrchestratorRow | WorkerRow | QaRow
