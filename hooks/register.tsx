@@ -8,12 +8,14 @@ import * as gh from './gh'
 import * as git from './git'
 import type { Io } from './io'
 import { LEVELS, PHASES, drawBand, drawPane, elapsed, hhmm, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
-import { QA_SYSTEM, REVIEW_SYSTEM, WORKER_SYSTEM, qaBrief, reviewBrief, workerBrief } from './prompts'
+import { COLLECTOR_SYSTEM, QA_SYSTEM, REVIEW_SYSTEM, WORKER_SYSTEM, qaBrief, reviewBrief, workerBrief } from './prompts'
 import { QA_CATEGORIES, REVIEW_CATEGORIES, validateReport, validateRubric, type RubricItem } from './report'
 
 const PANE = 'dacapo'
 const WORKER_AGENT = 'dacapo:worker'
 const QA_AGENT = 'dacapo:qa'
+/** The evidence collectors QA may start: bound like QA, they use the product on a slice of the rubric and never score. */
+const COLLECTOR_AGENT = 'dacapo:qa-collector'
 const REVIEW_AGENT = 'dacapo:reviewer'
 const tool = (name: string) => `mcp__dacapo__${name}`
 
@@ -117,6 +119,25 @@ const patchWorker = (id: string, fn: (row: WorkerRow) => WorkerRow) =>
   io.setRows(rows => rows.map(r => (r.kind === 'worker' && r.id === id ? fn(r) : r)))
 const patchQa = (id: string, fn: (row: QaRow) => QaRow) =>
   io.setRows(rows => rows.map(r => (r.kind === 'qa' && r.id === id ? fn(r) : r)))
+
+const liveCollectors = (row: QaRow) => (row.collectors ?? []).filter(c => !c.endedAt)
+
+/** The row an agent id belongs to: its own, or the QA round whose evidence collector it is. */
+async function rowFor(agentId: string): Promise<{ row: WorkerRow | QaRow; collector: boolean } | undefined> {
+  const rows = await io.getRows()
+  const own = rows.find(isAgent(agentId))
+  if (own) return { row: own, collector: false }
+  const parent = rows.find((r): r is QaRow => r.kind === 'qa' && (r.collectors ?? []).some(c => c.id === agentId))
+  return parent ? { row: parent, collector: true } : undefined
+}
+
+/** Stops the collectors of a QA round that are still running and marks them ended; a stop that fails is not fatal. */
+async function stopCollectors(row: QaRow, now: number) {
+  const live = liveCollectors(row)
+  if (live.length === 0) return
+  for (const c of live) void io.stop(c.id).catch(() => undefined)
+  await patchQa(row.id, r => ({ ...r, collectors: (r.collectors ?? []).map(c => (c.endedAt ? c : { ...c, endedAt: now })) }))
+}
 
 async function snapshot(): Promise<Snapshot> {
   const [run, rows, ui] = await Promise.all([io.getRun(), io.getRows(), io.getUi()])
@@ -299,7 +320,8 @@ function statusText(snap: Snapshot): string {
         )
       } else {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
-        lines.push(`  ${t} ${roundName(row)} [${row.id}] ${statusWord[row.status]} (${span}): ${scoreLine(row)}`)
+        const collectors = row.collectors?.length ? `, ${liveCollectors(row).length} of ${row.collectors.length} collectors live` : ''
+        lines.push(`  ${t} ${roundName(row)} [${row.id}] ${statusWord[row.status]} (${span}${collectors}): ${scoreLine(row)}`)
       }
     }
   }
@@ -367,6 +389,7 @@ async function start(a: Args) {
       `- run folder ${run.runDir}`,
       `- level ${levelOf(run)}: ${levelOf(run) === 'fast' ? 'no QA; the run merges once the work has landed' : levelOf(run) === 'balanced' ? 'QA as the end user, then merge' : run.judges === 'parallel' ? 'QA as the end user and an engineering review side by side, then merge' : 'QA as the end user, then an engineering review, then merge'}`,
       `- models: workers ${conf.conf.workers.join(', ')}; QA ${conf.conf.qa.join(', ')}; review ${conf.conf.review.join(', ')} (the first of each is the strong tier and the default, the last the fast tier)`,
+      ...(levelOf(run) === 'fast' ? [] : [`- QA collectors: ${conf.conf['qa-collectors'] > 0 ? `up to ${conf.conf['qa-collectors']} at once, so the harness must say what the product can share between testers` : 'off; QA collects every piece of evidence itself'}`]),
       `- rules: commits follow the ${conf.conf['commits-skill']} skill, pull requests the ${conf.conf['prs-skill']} skill; workers load them from their brief, and you load ${conf.conf['prs-skill']} before writing the final pull request`,
       `Plan the work, then call ${tool('dispatch')}.`,
     ].join('\n'),
@@ -561,6 +584,8 @@ async function sync() {
 
 const qaPrompt = (worktree: string) =>
   `Read ${worktree}/.context/qa-brief.md and ${worktree}/.context/rubric.json, then test the deliverable as its user and write the report where the brief says. Your working directory is ${worktree}.`
+const collectorPrompt = (worktree: string) =>
+  `Read ${worktree}/.context/qa-brief.md (what was built, and the harness: how to run and use the product) and ${worktree}/.context/rubric.json (the items; your slice is below). Save screenshots and notes only under ${worktree}/.context/evidence/.`
 const reviewPrompt = (worktree: string) =>
   `Read ${worktree}/.context/review-brief.md and ${worktree}/.context/rubric.json, then review the run's change as an engineer and write the report where the brief says. Your working directory is ${worktree}.`
 
@@ -608,7 +633,7 @@ async function startJudge(role: Role, a: Args) {
     await io.write(`${worktree}/.context/rubric.json`, JSON.stringify(rubric.rubric, null, 2))
     const brief =
       role === 'qa'
-        ? qaBrief({ task: run.task, harness, brief: str(a.brief), reportPath, worktree })
+        ? qaBrief({ task: run.task, harness, brief: str(a.brief), reportPath, worktree, collectors: conf.conf['qa-collectors'] })
         : reviewBrief({ task: run.task, base: run.baseBranch, brief: str(a.brief), reportPath, worktree })
     await io.write(`${worktree}/.context/${role}-brief.md`, brief)
     await io.write(`${run.runDir}/${key}-rubric.json`, JSON.stringify(rubric.rubric, null, 2))
@@ -644,6 +669,7 @@ async function startJudge(role: Role, a: Args) {
       parallel && role === 'qa'
         ? `The judges run in parallel: call ${tool('review')} now as well, then start both agents in one message and end your turn; a prompt wakes you with each verdict.`
         : 'Then end your turn; a prompt wakes you with the verdict and overview.',
+      ...(role === 'qa' && conf.conf['qa-collectors'] > 0 ? [`QA may start up to ${conf.conf['qa-collectors']} ${COLLECTOR_AGENT} agents on slices of the rubric; its brief says so.`] : []),
     ].join('\n'),
   )
 }
@@ -662,6 +688,7 @@ async function cancel(a: Args) {
     } catch (error) {
       stopNote = ` (stop reported: ${String(error)})`
     }
+    if (row.kind === 'qa') await stopCollectors(row, await io.now())
   }
   const now = await io.now()
   await patchRow(agentId, r => ({ ...r, status: 'cancelled', endedAt: now, note: str(a.reason) || 'cancelled by the orchestrator' }))
@@ -807,6 +834,8 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   const role = roleOf(row)
   const key = judgeKey(row)
   const name = roundName(row)
+  // QA ended; a collector it left running would outlive the round
+  await stopCollectors(row, now)
   if (agentFailure) {
     await patchQa(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: agentFailure, collect: undefined }))
     await wake(key, `${name} failed before writing a report (${agentFailure}). Call ${tool('status')}, then ${tool(role)} again or ${tool('finish')} as you see fit.`)
@@ -970,6 +999,7 @@ async function tick() {
     if (idle >= TIMEOUT_MS) {
       await patchRow(row.id, r => ({ ...r, status: 'timeout', endedAt: now, note: `no activity for ${elapsed(row.lastActivityAt, now)}; stopped` }))
       void io.stop(row.id).catch(() => undefined)
+      if (row.kind === 'qa') await stopCollectors(row, now)
       await wake(`timeout-${row.id}`, `${who} [${row.id}] timed out: no activity for ${elapsed(row.lastActivityAt, now)}, so it was stopped. Call ${tool('status')} and decide: resume, re-dispatch or finish.`)
     } else if (idle >= STALE_MS && row.status === 'running') {
       await patchRow(row.id, r => ({ ...r, status: 'stale' }))
@@ -1123,7 +1153,7 @@ export const register: Register = (on, options) => {
       $.tool.register({
         name: 'qa',
         description:
-          'Starts the QA subagent in a fresh worktree of the run branch. It uses the deliverable as an end user, scores every rubric item strong/acceptable/unacceptable and writes a report the run collects. Returns at once; the run wakes you with the overview and verdict.',
+          'Starts the QA subagent in a fresh worktree of the run branch. It uses the deliverable as an end user, scores every rubric item strong/acceptable/unacceptable and writes a report the run collects. It may split the rubric among dacapo:qa-collector subagents (as many at once as qa-collectors allows), bound like itself, so the harness must say what the product can share between testers. Returns at once; the run wakes you with the overview and verdict.',
         isDeferred: false,
         inputSchema: {
           type: 'object',
@@ -1180,7 +1210,7 @@ export const register: Register = (on, options) => {
       }),
       $.tool.register({
         name: 'config',
-        description: 'The configuration in force: the default level, whether judges run in parallel, the models workers, QA and the reviewer may be given, the skills commits and pull requests follow, and the base branch, each with the file it came from. Agents never read the conf files themselves.',
+        description: 'The configuration in force: the default level, whether judges run in parallel, the models workers, QA and the reviewer may be given, the skills commits and pull requests follow, the base branch, and how many evidence collectors QA may run at once, each with the file it came from. Agents never read the conf files themselves.',
         isDeferred: false,
         inputSchema: { type: 'object', properties: {} },
       }),
@@ -1234,6 +1264,13 @@ export const register: Register = (on, options) => {
         name: 'qa',
         description: 'dacapo QA: uses the deliverable as the end user and scores a rubric. Spawned by the dacapo tools only.',
         prompt: QA_SYSTEM,
+        disallowedTools: ['Edit', 'NotebookEdit', 'EnterWorktree', 'ExitWorktree'],
+        omitClaudeMd: true,
+      }),
+      $.agent.register({
+        name: 'qa-collector',
+        description: 'dacapo QA collector: uses the deliverable as the end user on a slice of the rubric and brings the evidence back to QA. Spawned by the dacapo QA subagent only.',
+        prompt: COLLECTOR_SYSTEM,
         disallowedTools: ['Agent', 'Edit', 'NotebookEdit', 'EnterWorktree', 'ExitWorktree'],
         omitClaudeMd: true,
       }),
@@ -1256,8 +1293,35 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const a = e as unknown as Args
+    if (e.agentId !== undefined) {
+      // an agent of the run starting another: only QA may, and only an evidence collector bound like itself
+      const found = await rowFor(e.agentId)
+      if (!found) return next(e)
+      const { row, collector } = found
+      if (collector) return { deny: 'dacapo QA collector: collectors never start agents; bring what you found back to QA in your final message.' }
+      if (row.kind !== 'qa' || roleOf(row) !== 'qa') return { deny: `dacapo: ${row.kind === 'worker' ? 'a worker' : 'the reviewer'} never starts agents.` }
+      if (str(a.subagent_type) !== COLLECTOR_AGENT) {
+        return { deny: `dacapo QA: the only agent you may start is ${COLLECTOR_AGENT}: it collects evidence on a slice of the rubric, never opens source and never scores.` }
+      }
+      const cap = conf.conf['qa-collectors']
+      if (cap <= 0) return { deny: 'dacapo QA: collectors are off (qa-collectors = 0); collect the evidence yourself.' }
+      const live = liveCollectors(row).length
+      if (live >= cap) return { deny: `dacapo QA: ${cap} collector${cap === 1 ? '' : 's'} may run at once (qa-collectors) and ${live} ${live === 1 ? 'is' : 'are'} running; wait for one to report before starting another.` }
+      const slice = str(a.prompt).trim()
+      if (!slice) return { deny: 'dacapo QA: the prompt must tell the collector its rubric ids, its instance and what is shared.' }
+      const allowed = conf.conf.qa
+      const model = allowed.includes(str(a.model)) ? str(a.model) : allowed[allowed.length - 1]!
+      const prompt = `[dacapo worktree: ${row.worktree}]\n\n${collectorPrompt(row.worktree)}\n\n## Your slice, from QA\n\n${slice}\n\nStart now. Your working directory is the worktree above; write only under its .context/evidence folder.`
+      const ran = await next({ ...e, prompt, subagent_type: COLLECTOR_AGENT, model })
+      const got = 'result' in ran && ran.result && typeof ran.result === 'object' ? (ran.result as { agentId?: unknown }).agentId : undefined
+      if (typeof got === 'string') {
+        const now = await io.now()
+        await patchQa(row.id, r => ({ ...r, collectors: [...(r.collectors ?? []), { id: got, description: str(a.description).trim().slice(0, 80) || 'collector', at: now }] }))
+      }
+      return ran
+    }
     const ask = ASK_LINE.exec(str(a.prompt))
-    if (!ask || e.agentId !== undefined) return next(e)
+    if (!ask) return next(e)
     const run = await currentRun()
     if (!run) return { deny: 'dacapo: no active run; call mcp__dacapo__start first' }
     const rows = await io.getRows()
@@ -1383,10 +1447,11 @@ export const register: Register = (on, options) => {
       }
       return next(e)
     }
-    const rows = await io.getRows()
-    const row = rows.find(isAgent(e.agentId))
-    if (!row) return next(e)
-    await touch(row.id)
+    const found = await rowFor(e.agentId)
+    if (!found) return next(e)
+    const { row, collector } = found
+    // a collector acting after its round ended must not revive the round
+    if (!collector || !isTerminal(row)) await touch(row.id)
     if (row.kind === 'worker') {
       const target = str(a.file_path) || str(a.notebook_path)
       if ((e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') && target && !isUnder(target, row.worktree, row.worktree)) {
@@ -1403,20 +1468,24 @@ export const register: Register = (on, options) => {
       }
       return next(e)
     }
+    // QA and its collectors alike: the product, never the source; QA writes its report, a collector its evidence
+    const who = collector ? 'dacapo QA collector' : 'dacapo QA'
+    const evidenceDir = `${contextDir}/evidence`
     if (e.tool === 'Read' || e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') {
       const target = str(a.file_path) || str(a.notebook_path)
       if (!isUnder(target, contextDir, row.worktree)) {
-        return { deny: `dacapo QA: you judge the deliverable as its user and never open source. Only ${contextDir} is readable or writable.` }
+        return { deny: `${who}: you judge the deliverable as its user and never open source. Only ${contextDir} is readable or writable.` }
       }
-      if ((e.tool === 'Write' || e.tool === 'Edit') && normalize(target, row.worktree) !== row.reportPath) {
-        return { deny: `dacapo QA: the only file you write is ${row.reportPath}` }
+      if (e.tool === 'Write' || e.tool === 'Edit' || e.tool === 'NotebookEdit') {
+        if (collector && !isUnder(target, evidenceDir, row.worktree)) return { deny: `${who}: write only under ${evidenceDir}; QA writes the report.` }
+        if (!collector && normalize(target, row.worktree) !== row.reportPath) return { deny: `${who}: the only file you write is ${row.reportPath}` }
       }
     }
     const name: string = e.tool
     if (name === 'Glob' || name === 'Grep') {
       const target = str(a.path) || row.worktree
       if (!isUnder(target, contextDir, row.worktree)) {
-        return { deny: `dacapo QA: searching the checkout is not allowed; use the product instead. Only ${contextDir} may be searched.` }
+        return { deny: `${who}: searching the checkout is not allowed; use the product instead. Only ${contextDir} may be searched.` }
       }
     }
     return next(e)
@@ -1427,9 +1496,11 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const run = await io.getRun()
     const active = !!run && (run.status === 'planning' || run.status === 'active' || run.status === 'merging')
-    const row = active && e.agentId ? (await io.getRows()).find(isAgent(e.agentId)) : undefined
+    const found = active && e.agentId ? await rowFor(e.agentId) : undefined
+    const row = found?.row
     if (!active || (e.agentId && !row)) return yield* next(e)
-    if (row && isTerminal(row)) await revive(row, await io.now())
+    // a collector's steps count toward its QA round; only the round's own agent acting again revives it
+    if (row && isTerminal(row) && !found?.collector) await revive(row, await io.now())
     // one model step of a tracked agent (or of the orchestrator): collect its tool calls, text and usage, then store once
     const texts = new Map<number, string>()
     const tools = new Map<number, { name: string; json: string }>()
@@ -1485,9 +1556,14 @@ export const register: Register = (on, options) => {
       }
     }
     if (e.agentId) {
-      const rows = await io.getRows()
-      const row = rows.find(isAgent(e.agentId))
-      if (row && !isTerminal(row)) {
+      const found = await rowFor(e.agentId)
+      const row = found?.row
+      if (found?.collector && row?.kind === 'qa') {
+        // a collector ended: QA reads its answer itself; the round goes on
+        const ended = e.agentId
+        const now = await io.now()
+        await patchQa(row.id, r => ({ ...r, collectors: (r.collectors ?? []).map(c => (c.id === ended ? { ...c, endedAt: now } : c)) }))
+      } else if (row && !isTerminal(row)) {
         const now = await io.now()
         const failed = e.reason !== 'answer' || e.isAborted
         if (row.kind === 'worker') {

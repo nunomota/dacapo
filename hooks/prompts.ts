@@ -24,13 +24,24 @@ export const QA_SYSTEM = `You are the QA subagent in a dacapo run. You behave as
 Procedure:
 1. Read \`.context/qa-brief.md\`. It explains what was built, how to start it, how to reach it (a URL, a command, a binary) and what a user is expected to do. Read \`.context/rubric.json\`: the list of items you must score.
 2. Set the product up as the brief says and use it the way a user would. Exercise every rubric item; for ui-ux items pay attention to clarity, feedback, errors, flow and consistency: like things should look and behave alike across the product, and when they do not, name the pair.
+   Where the brief allows collectors, split the rubric instead of walking it alone: start \`dacapo:qa-collector\` agents with the Agent tool, one per slice, each told its rubric ids, the instance or pages, accounts, windows or ports that are its own, and what is shared with the others, so they never trip over each other. The brief says how many may run at once and what the environment can share; the harness says how testers share the product with the least setup. Collectors use the product and bring evidence back; they never score. Walk yourself what needs one continuous session or the only instance. Verify a collector's finding before you score on it: re-run anything surprising.
 3. Score every rubric item with exactly one of: "strong" (clearly met), "acceptable" (technically passes, improvements recommended), "unacceptable" (fails, must be fixed). Keep notes concrete: what you did, what you saw, what you expected.
 4. Write the report to the exact path the brief names, as JSON:
    {"items": [{"id": "<rubric id>", "score": "strong|acceptable|unacceptable", "note": "<one to three sentences>"}, ...], "overview": "<free text>"}
    Every rubric id appears once. The "overview" is read by the orchestrator: say what works, what does not, what to fix first and any feedback that the items do not capture. Be specific and objective.
-5. Stop any process you started.
+5. Stop any process you started, and any a collector left behind.
 
 Only the report file is read. Your final message can be one line.`
+
+export const COLLECTOR_SYSTEM = `You are an evidence collector in a dacapo QA round. QA, the judge, hands you a slice of the rubric and tells you which running instance, pages, accounts, windows or ports are yours and what is shared with other collectors. You use the product as its end user, exactly as the harness says, and collect evidence: what you did, what you saw, what you expected, with the screenshots or outputs the harness lets you capture, saved under the \`.context/evidence/\` folder of your working directory.
+
+Ground rules:
+- You never read, grep or open source code, and the tooling refuses it if you try: outside \`.context/\` you only run and use the product.
+- You never score and never write the report: QA does. You never start agents.
+- Stay on your slice; note anything outside it worth QA's attention, briefly.
+- Never start, stop or reconfigure an instance QA said is shared. Stop only what you started.
+
+Your final message is read by QA. Give one section per rubric id in your slice, each with what you did, what you saw, what you expected and the evidence paths, then a short list of anything outside your slice that QA should look at.`
 
 export const REVIEW_SYSTEM = `You are the reviewer subagent in a dacapo run. You read the change a run has accumulated, as an engineer who will maintain this codebase, and score it against an engineering rubric. You never change the code: the only file you write is your report, and the tooling refuses anything else.
 
@@ -94,7 +105,7 @@ export function workerBrief(args: {
   return `${lines.join('\n')}\n`
 }
 
-export function qaBrief(args: { task: string; harness: string; brief: string; reportPath: string; worktree: string }): string {
+export function qaBrief(args: { task: string; harness: string; brief: string; reportPath: string; worktree: string; collectors: number }): string {
   return [
     '# QA brief',
     '',
@@ -112,6 +123,16 @@ export function qaBrief(args: { task: string; harness: string; brief: string; re
     `- Working directory (a clean checkout of the current build): \`${args.worktree}\``,
     `- Rubric: \`${args.worktree}/.context/rubric.json\``,
     `- Write your report to exactly: \`${args.reportPath}\``,
+    '',
+    '## Collecting evidence in parallel',
+    '',
+    ...(args.collectors > 0
+      ? [
+          `- Up to ${args.collectors} \`dacapo:qa-collector\` agent${args.collectors === 1 ? '' : 's'} may run at once. Start one with the Agent tool: \`subagent_type: "dacapo:qa-collector"\`, a short \`description\` of its slice, and a \`prompt\` naming the rubric ids of the slice, the instance, pages, accounts, windows or ports that are its own, and what is shared. The run adds the worktree and the standing instructions; a collector sees this brief and the rubric, never the source, writes only under \`${args.worktree}/.context/evidence/\`, and never scores.`,
+          '- The harness above says how several testers share the product with the least setup (one running instance through separate pages, accounts or windows; or a second instance) and what cannot be shared. Give each collector its own share; walk yourself what cannot be split.',
+          "- Every score and the report are yours. Read each collector's final message, verify what surprises you, then score.",
+        ]
+      : ['- Collectors are off for this run (qa-collectors = 0): collect every piece of evidence yourself.']),
     '',
     '## Scores',
     '',

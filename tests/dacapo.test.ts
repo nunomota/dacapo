@@ -215,7 +215,7 @@ describe('the loop', () => {
     mock.env(on, { HOME: '/home/u' })
     const files = new Map<string, string>()
     // the user's conf: judges in parallel, QA on the fast tier first, one line the plugin does not know
-    files.set('/home/u/.claude/dacapo.conf', '# mine\njudges = parallel\nqa = sonnet, opus  # fast first\nbogus = 1\n')
+    files.set('/home/u/.claude/dacapo.conf', '# mine\njudges = parallel\nqa = sonnet, opus  # fast first\nqa-collectors = 1\nbogus = 1\n')
     const prompts: string[] = []
     const ghCalls: string[][] = []
     let ghMissing = true
@@ -324,6 +324,7 @@ describe('the loop', () => {
     expect('result' in config && config.result).toMatch(/level = balanced  \(default\)/)
     expect('result' in config && config.result).toMatch(/judges = parallel  \(\/home\/u\/.claude\/dacapo.conf\)/)
     expect('result' in config && config.result).toMatch(/qa = sonnet, opus/)
+    expect('result' in config && config.result).toMatch(/qa-collectors = 1  \(\/home\/u\/.claude\/dacapo.conf\)/)
     expect('result' in config && config.result).toMatch(/commits-skill = dacapo:rules-commits  \(default\)/)
     expect('result' in config && config.result).toMatch(/Ignored:[\s\S]*unknown key "bogus"/)
     // a model the configuration does not list is refused
@@ -478,6 +479,40 @@ describe('the loop', () => {
     const wrongWrite = await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/qa/1-1/.context/notes.md', content: 'x', agentId: 'agent-2' } as never)
     expect('deny' in wrongWrite && typeof wrongWrite.deny === 'string').toBe(true)
 
+    // QA may split the rubric among evidence collectors: only its own kind, as many at once as the conf allows, on the fast tier, bound like QA
+    expect('result' in qa && qa.result).toMatch(/QA may start up to 1 dacapo:qa-collector agents/)
+    expect(files.get('/repo/.workspaces/qa/1-1/.context/qa-brief.md')).toMatch(/Up to 1 `dacapo:qa-collector` agent may run at once/)
+    const notCollector = await $.tool.call({ tool: 'Agent', prompt: 'read the login code', description: 'x', subagent_type: 'dacapo:worker', agentId: 'agent-2' } as never)
+    expect('deny' in notCollector && String(notCollector.deny)).toMatch(/only agent you may start is dacapo:qa-collector/)
+    const collector = await $.tool.call({ tool: 'Agent', prompt: 'Items: login. Use the fixture account on the login page; the server is shared.', description: 'login slice', subagent_type: 'dacapo:qa-collector', model: 'fable', agentId: 'agent-2' } as never)
+    expect('result' in collector).toBe(true)
+    const spawned = agentCalls[agentCalls.length - 1]!
+    expect(spawned.subagent_type).toBe('dacapo:qa-collector')
+    expect(spawned.model).toBe('opus')
+    expect(String(spawned.prompt)).toMatch(/^\[dacapo worktree: \/repo\/.workspaces\/qa\/1-1\]/)
+    expect(String(spawned.prompt)).toMatch(/qa-brief\.md[\s\S]*## Your slice, from QA[\s\S]*fixture account/)
+    const oneAtATime = await $.tool.call({ tool: 'Agent', prompt: 'Items: errors.', description: 'errors slice', subagent_type: 'dacapo:qa-collector', agentId: 'agent-2' } as never)
+    expect('deny' in oneAtATime && String(oneAtATime.deny)).toMatch(/1 collector may run at once/)
+    const withCollector = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
+    expect('result' in withCollector && withCollector.result).toMatch(/QA round 1 \[agent-2\] running \([^)]*1 of 1 collectors live\)/)
+    // the collector is bound like QA: the product, never the source; it writes evidence, not the report; it starts no agents
+    const collectorPeek = await $.tool.call({ tool: 'Read', file_path: '/repo/.workspaces/qa/1-1/src/login.ts', agentId: 'agent-4' } as never)
+    expect('deny' in collectorPeek && String(collectorPeek.deny)).toMatch(/dacapo QA collector: .*never open source/)
+    const collectorBrief = await $.tool.call({ tool: 'Read', file_path: '/repo/.workspaces/qa/1-1/.context/qa-brief.md', agentId: 'agent-4' } as never)
+    expect('result' in collectorBrief && collectorBrief.result).toBe('read')
+    const evidence = await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/qa/1-1/.context/evidence/login.md', content: 'x', agentId: 'agent-4' } as never)
+    expect('result' in evidence && evidence.result).toBe('written')
+    const collectorReport = await $.tool.call({ tool: 'Write', file_path: reportPath, content: 'x', agentId: 'agent-4' } as never)
+    expect('deny' in collectorReport && String(collectorReport.deny)).toMatch(/write only under .*\.context\/evidence/)
+    const nested = await $.tool.call({ tool: 'Agent', prompt: 'Items: errors.', description: 'x', subagent_type: 'dacapo:qa-collector', agentId: 'agent-4' } as never)
+    expect('deny' in nested && String(nested.deny)).toMatch(/collectors never start agents/)
+    // a collector ending is not QA ending: the round goes on, and its slot frees
+    await $.turn.complete({ answer: 'login: entered the fixture account, saw the dashboard.', durationMs: 1, isAborted: false, turnId: 'tc', agentId: 'agent-4', reason: 'answer' })
+    await clock.advance(1_000)
+    expect(prompts.some(p => /QA round 1:/.test(p))).toBe(false)
+    const afterCollector = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
+    expect('result' in afterCollector && afterCollector.result).toMatch(/QA round 1 \[agent-2\] running \([^)]*0 of 1 collectors live\)/)
+
     files.set(reportPath, JSON.stringify({ items: [{ id: 'login', score: 'strong', note: 'ok' }, { id: 'copy', score: 'unacceptable', note: 'says "error"' }], overview: 'Login works; the error copy needs words.' }))
     await $.turn.complete({ answer: 'Report written.', durationMs: 1, isAborted: false, turnId: 't2', agentId: 'agent-2', reason: 'answer' })
     await clock.advance(1_000)
@@ -517,16 +552,16 @@ describe('the loop', () => {
     expect(files.get('/repo/.workspaces/review/1-2/.context/review-brief.md')).toMatch(/existing form components/)
     const startedReview = await startAgent('dacapo review 1-2')
     expect('result' in startedReview).toBe(true)
-    expect(agentCalls[3]?.subagent_type).toBe('dacapo:reviewer')
-    const reviewerReads = await $.tool.call({ tool: 'Read', file_path: '/repo/.workspaces/review/1-2/src/login.ts', agentId: 'agent-4' } as never)
+    expect(agentCalls[4]?.subagent_type).toBe('dacapo:reviewer')
+    const reviewerReads = await $.tool.call({ tool: 'Read', file_path: '/repo/.workspaces/review/1-2/src/login.ts', agentId: 'agent-5' } as never)
     expect('result' in reviewerReads && reviewerReads.result).toBe('read')
-    const reviewerEdits = await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/review/1-2/src/login.ts', content: 'x', agentId: 'agent-4' } as never)
+    const reviewerEdits = await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/review/1-2/src/login.ts', content: 'x', agentId: 'agent-5' } as never)
     expect('deny' in reviewerEdits && typeof reviewerEdits.deny === 'string').toBe(true)
     const reviewReport = '/repo/.workspaces/review/1-2/.context/review-report.json'
-    const reviewerWrites = await $.tool.call({ tool: 'Write', file_path: reviewReport, content: 'x', agentId: 'agent-4' } as never)
+    const reviewerWrites = await $.tool.call({ tool: 'Write', file_path: reviewReport, content: 'x', agentId: 'agent-5' } as never)
     expect('result' in reviewerWrites && reviewerWrites.result).toBe('written')
     files.set(reviewReport, JSON.stringify({ items: [{ id: 'errors', score: 'strong', note: 'uses the shared toast' }, { id: 'dead', score: 'strong', note: 'nothing left over' }], overview: 'Clean; the legacy form helper could be shared later.' }))
-    await $.turn.complete({ answer: 'Report written.', durationMs: 1, isAborted: false, turnId: 't3', agentId: 'agent-4', reason: 'answer' })
+    await $.turn.complete({ answer: 'Report written.', durationMs: 1, isAborted: false, turnId: 't3', agentId: 'agent-5', reason: 'answer' })
     await clock.advance(1_000)
     const wakeReview = prompts.find(p => /Review round 2:/.test(p))
     expect(wakeReview).toMatch(/2 strong, 0 acceptable, 0 unacceptable → verdict: pass/)
@@ -534,7 +569,7 @@ describe('the loop', () => {
     expect(wakeReview).toMatch(/call mcp__dacapo__finish/)
     expect(files.get(`/repo/.workspaces/.dacapo/${runId}/review-1-2.json`)).toMatch(/"verdict": "pass"/)
     const afterReview = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
-    expect('result' in afterReview && afterReview.result).toMatch(/Review round 2 \[agent-4\] finished .*2 strong/)
+    expect('result' in afterReview && afterReview.result).toMatch(/Review round 2 \[agent-5\] finished .*2 strong/)
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
       expect(await ui.find({ text: /Review \(2\)/ })).toBeDefined()
@@ -558,18 +593,18 @@ describe('the loop', () => {
 
     // a silent worker is marked stale after 30 minutes and the orchestrator is told; activity clears it
     await clock.advance(31 * 60_000)
-    expect(prompts.some(p => /Worker login \[agent-5\] looks stale/.test(p))).toBe(true)
+    expect(prompts.some(p => /Worker login \[agent-6\] looks stale/.test(p))).toBe(true)
     const stale = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
-    expect('result' in stale && stale.result).toMatch(/login \[agent-5\] stale/)
-    await $.tool.call({ tool: 'Write', file_path: `/repo/.workspaces/${WORK}/a.ts`, content: 'x', agentId: 'agent-5' } as never)
+    expect('result' in stale && stale.result).toMatch(/login \[agent-6\] stale/)
+    await $.tool.call({ tool: 'Write', file_path: `/repo/.workspaces/${WORK}/a.ts`, content: 'x', agentId: 'agent-6' } as never)
     const back = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
-    expect('result' in back && back.result).toMatch(/login \[agent-5\] running/)
+    expect('result' in back && back.result).toMatch(/login \[agent-6\] running/)
 
     // two idle hours stop it, distinct from a failure; the wake-up lists the options
     await clock.advance(2 * 60 * 60_000 + 1_000)
     const timed = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
-    expect('result' in timed && timed.result).toMatch(/login \[agent-5\] timed out/)
-    expect(prompts.some(p => /Worker login \[agent-5\] timed out/.test(p))).toBe(true)
+    expect('result' in timed && timed.result).toMatch(/login \[agent-6\] timed out/)
+    expect(prompts.some(p => /Worker login \[agent-6\] timed out/.test(p))).toBe(true)
     expect(prompts.some(p => /Round 2: all 1 worker\(s\) have ended/.test(p) && /resume it: dispatch the same task id with resume: true/.test(p))).toBe(true)
 
     // the end: a final pull request from the run branch into main, merged by the run once green
