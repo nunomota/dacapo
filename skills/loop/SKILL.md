@@ -81,20 +81,35 @@ Cannot see:
 Responsible for:
 - Setting the product up as the harness says and using it as its end user.
 - Exercising every rubric item; for ui-ux items, attending to clarity, feedback, errors, flow and consistency: like things look and behave alike across the product, and when they do not, the note names the pair.
+- Splitting the rubric among evidence collectors when the harness lets several testers use the product at once, each told its items, its share of the product and what is shared; walking itself what needs one continuous session or the only instance; and verifying what a collector brings back before scoring on it.
 - Scoring each item with a concrete note: what it did, what it saw, what it expected.
 - Writing one overview: what works, what does not, what to fix first, and feedback the items do not capture.
-- Stopping every process it started.
+- Stopping every process it started, and any a collector left running.
 
 Never:
 - Read, search or open source by any means, including the shell it keeps to run the product.
 - Edit anything but its report.
-- Spawn agents.
+- Spawn anything but evidence collectors, and never more at once than the host allows.
 - Talk to the user.
 - Decide the verdict.
 
 Cannot see:
 - The source, the workers' reports and the orchestrator's conversation.
 - Anything beyond what the host hands it.
+
+### QA collectors
+
+An evidence collector is an agent QA starts on a slice of the rubric. It uses the product as its end user on the share QA gave it (an instance, pages, accounts, windows, ports) and brings back, in its report to QA, what it did, what it saw, what it expected and the evidence it captured. The scoring stays QA's.
+
+Never:
+- Read, search or open source by any means: it is bound exactly as QA is.
+- Score an item or write the report.
+- Spawn agents.
+- Start, stop or reconfigure anything QA said is shared.
+- Talk to the user.
+
+Cannot see:
+- Anything beyond the harness, the rubric and its slice.
 
 ### Reviewer
 
@@ -120,7 +135,7 @@ Cannot see:
 
 - **Isolation.** Each worker works in a sandbox it cannot leave; the host refuses its writes outside it.
 - **Deterministic integration.** Landed work enters the run under its planned landing title by the host's own mechanism, never by the orchestrator. Work counts as landed only when the host says so. At the end the host integrates the run into the base line when asked, and says why when it refuses (the base moved, checks fail).
-- **A clean QA environment.** QA gets a clean copy of the integrated state and a way to run the product. Source is unreachable to it, or at least forbidden by its instructions.
+- **A clean QA environment.** QA gets a clean copy of the integrated state and a way to run the product. Source is unreachable to it, or at least forbidden by its instructions. Every collector QA starts is bound by the same guard, in the same environment, writing only its evidence; the host caps how many run at once, since one machine's product can only be shared so far.
 - **A read-only reviewer environment.** At `deep`, the reviewer gets a clean copy of the integrated state and the base it is compared against; it can write its report and nothing else.
 - **Validated reports.** For QA and the reviewer alike, the host checks that every rubric id is scored exactly once, every score is `strong`, `acceptable` or `unacceptable`, and the overview is not empty. It derives the verdict from the scores and never asks the judge for one. An invalid report goes to the orchestrator with the reasons.
 - **Reported outcomes.** Without being asked, the host tells the orchestrator each worker's report and whether its work landed. It also tells it about a worker that is stalled: still running, with no activity for a long time. A report is never lost on the way.
@@ -176,6 +191,8 @@ Produce everything below before any code exists.
 
    It also names: the hooks that shorten long waits (flags for timers, seeds, fixtures), so a flow is walked in minutes; how to run a second instance when the deliverable needs a peer; the environment's own limits and how to tell them from product failures (a window the OS stops drawing, a port another process holds, a stalled instance to restart), so QA attributes them to the environment; and the known non-issues of this run (behaviour that looks wrong but is by design), so they are not reported.
 
+   And, so QA can split the rubric among collectors, how several testers use the product at once with the least setup: what one running instance can share (separate pages, accounts, sessions, windows or ports; a web app needs its frontend and backend started once, and different testers visit different pages), when a second instance is needed and what it costs, and what cannot be shared at all (a single display, a stateful fixture, a flow that must run uninterrupted), so QA knows what to split and what to walk itself.
+
 Show the plan (level; tasks, tiers, landing titles; rubrics and harness) in a compact form. If the user is present and the plan is large, give them a moment to object; otherwise proceed.
 
 ## Phase 4: implement
@@ -201,7 +218,7 @@ Show the plan (level; tasks, tiers, landing titles; rubrics and harness) in a co
 
 Skipped at `fast`.
 
-1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. QA is handed these, the run's one-line request and where to write its report. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms. In a fix round, list the items the round aimed at, so QA re-verifies them first; it still scores every item.
+1. When the round's work has landed, hand the host the rubric, the harness and a note on what this round built or changed. QA is handed these, the run's one-line request and where to write its report. Write the note in user-visible terms (what a user can now do or will see differently), never in implementation terms. In a fix round, list the items the round aimed at, so QA re-verifies them first; it still scores every item. QA may split the items among collectors as the harness allows; every score is still its own.
 2. QA's report has `items`, one per rubric id, each with `id`, `score` and a `note` of one to three sentences, and an `overview`. Scores: `strong` (clearly met), `acceptable` (technically passes, improvements recommended), `unacceptable` (fails, must be fixed). The host derives the verdict: `fix` if any item is unacceptable; `pass-with-recommendations` if any is acceptable and none unacceptable; `pass` otherwise. You receive the verdict, the counts, every item below `strong` and the overview.
 3. If the host says the report is invalid, run QA again. Clarify the harness or the round note only if that caused the failure. An invalid report is never a pass. Step 5 says when invalid reports make the loop stuck.
 4. Decide as follows after every valid report, wherever QA ran: after a round, after a re-run following an invalid report, or after a reconciliation or fix in phase 6. Take the first case that applies.
@@ -233,7 +250,7 @@ At `deep` only, after QA passes.
 
 - Only workers change the codebase; the host integrates what they land.
 - Workers never see each other mid-flight: contracts go in the briefs.
-- QA never reads source; the reviewer never changes it: judge their reports, not their methods.
+- QA never reads source, and neither does a collector it starts; the reviewer never changes it: judge their reports, not their methods.
 - The verdict is derived from the scores, never negotiated.
 - A worker matches what exists before inventing; what it decided alone is reported, never silent.
 - The orchestrator never widens a run beyond the parts the change touches; what it deferred is reported.

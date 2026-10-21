@@ -16,7 +16,7 @@
 
 ---
 
-**dacapo** is an orchestration plugin for [Claude Code](https://claude.com/claude-code). You hand it a task. The session clarifies it with you, researches the stack and splits the work. Worker subagents build the pieces in parallel, each in its own git worktree, and land them through GitHub pull requests into a run branch. A QA subagent then uses the result the way a user would, scores a rubric, and the loop runs again until it passes. A final pull request merges the run branch into the base branch, `main` unless you configure another.
+**dacapo** is an orchestration plugin for [Claude Code](https://claude.com/claude-code). You hand it a task. The session clarifies it with you, researches the stack and splits the work. Worker subagents build the pieces in parallel, each in its own git worktree, and land them through GitHub pull requests into a run branch. A QA subagent then uses the result the way a user would, splitting the rubric among evidence collectors where the product can be shared, scores it, and the loop runs again until it passes. A final pull request merges the run branch into the base branch, `main` unless you configure another.
 
 Everything in the mod is deterministic: it manages worktrees, branches and pull requests, validates reports, wakes the orchestrator, and draws the pane. No model is asked anything inside it. [How it works](docs/how-it-works.md) has the details.
 
