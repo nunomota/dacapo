@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Activity, AgentStats, Gh, Level, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
+import type { Activity, AgentStats, Collector, Gh, Level, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
 import { BRANCH_NAME, describeConf, loadConf, SHIPPED_COMMITS, SHIPPED_PRS, type Layer, type Loaded } from './conf'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as gh from './gh'
@@ -110,6 +110,8 @@ const WORKTREE_LINE = /^\[dacapo worktree: (.+)\]$/m
 const ASK_LINE = /^\s*dacapo (worker|qa|review) (\S+)\s*$/
 /** The last line of a worker's answer: `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`. */
 const STATUS_LINE = /^\s*dacapo:\s*(done with limitations|done|failed)\s*\.?\s*$/im
+/** The last line of a collector's answer to QA: `dacapo: collected`, `dacapo: collected with gaps` or `dacapo: failed`. */
+const COLLECTED_LINE = /^\s*dacapo:\s*(collected with gaps|collected|failed)\s*\.?\s*$/im
 
 const isAgent = (id: string) => (r: Row): r is WorkerRow | QaRow => isAgentRow(r) && r.id === id
 
@@ -121,6 +123,16 @@ const patchQa = (id: string, fn: (row: QaRow) => QaRow) =>
   io.setRows(rows => rows.map(r => (r.kind === 'qa' && r.id === id ? fn(r) : r)))
 
 const liveCollectors = (row: QaRow) => (row.collectors ?? []).filter(c => !c.endedAt)
+/** The collectors of a QA round in a phrase: how many ended of how many, and how many of those failed or left gaps. */
+function collectorsText(row: QaRow): string {
+  const all = row.collectors ?? []
+  if (all.length === 0) return ''
+  const live = liveCollectors(row).length
+  const failed = all.filter(c => c.outcome === 'failed').length
+  const gaps = all.filter(c => c.outcome === 'gaps').length
+  const tail = [...(failed ? [`${failed} failed`] : []), ...(gaps ? [`${gaps} with gaps`] : [])]
+  return `${live > 0 ? `${live} of ${all.length} collectors live` : `${all.length} collector${all.length === 1 ? '' : 's'} ended`}${tail.length ? `, ${tail.join(', ')}` : ''}`
+}
 
 /** The row an agent id belongs to: its own, or the QA round whose evidence collector it is. */
 async function rowFor(agentId: string): Promise<{ row: WorkerRow | QaRow; collector: boolean } | undefined> {
@@ -320,7 +332,7 @@ function statusText(snap: Snapshot): string {
         )
       } else {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
-        const collectors = row.collectors?.length ? `, ${liveCollectors(row).length} of ${row.collectors.length} collectors live` : ''
+        const collectors = row.collectors?.length ? `, ${collectorsText(row)}` : ''
         lines.push(`  ${t} ${roundName(row)} [${row.id}] ${statusWord[row.status]} (${span}${collectors}): ${scoreLine(row)}`)
       }
     }
@@ -1559,10 +1571,14 @@ export const register: Register = (on, options) => {
       const found = await rowFor(e.agentId)
       const row = found?.row
       if (found?.collector && row?.kind === 'qa') {
-        // a collector ended: QA reads its answer itself; the round goes on
+        // a collector ended: QA reads its answer itself and the round goes on; the run records how it ended, as it does for a worker
         const ended = e.agentId
         const now = await io.now()
-        await patchQa(row.id, r => ({ ...r, collectors: (r.collectors ?? []).map(c => (c.id === ended ? { ...c, endedAt: now } : c)) }))
+        const failed = e.reason !== 'answer' || e.isAborted
+        const said = COLLECTED_LINE.exec(e.answer)?.[1]?.toLowerCase()
+        const outcome: Collector['outcome'] = failed || said === 'failed' ? 'failed' : said === 'collected with gaps' ? 'gaps' : 'collected'
+        const note = failed ? `${e.reason}${e.reason === 'refusal' ? `: ${e.refusal.explanation ?? ''}` : ''}` : e.answer.replace(/\s+/g, ' ').trim().slice(0, 200)
+        await patchQa(row.id, r => ({ ...r, collectors: (r.collectors ?? []).map(c => (c.id === ended ? { ...c, endedAt: now, outcome, note } : c)) }))
       } else if (row && !isTerminal(row)) {
         const now = await io.now()
         const failed = e.reason !== 'answer' || e.isAborted
