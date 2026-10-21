@@ -188,6 +188,10 @@ export type Collector = {
   description: string
   at: number
   endedAt?: number
+  /** What the collector said of its slice on its last line: collected, collected with gaps, or failed; the agent ending in error is failed too. */
+  outcome?: 'collected' | 'gaps' | 'failed'
+  /** The first words of its answer, or the failure reason. */
+  note?: string
 }
 
 export type QaRow = {
