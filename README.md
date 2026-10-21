@@ -95,6 +95,7 @@ The keys:
 | `judges` | `sequential` | At `deep`: `sequential` runs the review after QA passes; `parallel` runs both side by side. |
 | `workers` | `opus, sonnet` | The models a worker may be given, strongest first. The first is the strong tier and the default, the last the fast tier. |
 | `qa` | `opus, sonnet` | The models QA may be given, likewise. |
+| `qa-collectors` | `3` | How many evidence collectors QA may run at once; `0` keeps QA on its own. |
 | `review` | `opus, sonnet` | The models the reviewer may be given, likewise. |
 | `commits-skill` | `dacapo:rules-commits` | The skill workers load for how to commit: titles, staging, what never to run. |
 | `prs-skill` | `dacapo:rules-prs` | The skill workers and the final pull request follow for the title and body. |
