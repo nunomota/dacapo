@@ -77,30 +77,33 @@ describe('QA report validation', () => {
 describe('the configuration', () => {
   test('key = value lines with comments and lists; a wrong value is named and the earlier one kept', () => {
     const parsed = parseConf(
-      '# a comment\nlevel = deep\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\nprs-skill = /my-prs\ncommits-skill = a, b\ncommits-skill = Not A Skill\nbase-branch = release/2.0\nbase-branch = Not A Branch\n',
+      '# a comment\nlevel = deep\nworkers = fable, opus , sonnet  # trailing comment\njudges = sideways\nnope\ncolor = red\nprs-skill = /my-prs\ncommits-skill = a, b\ncommits-skill = Not A Skill\nbase-branch = release/2.0\nbase-branch = Not A Branch\nqa-collectors = 2\nqa-collectors = many\nqa-collectors = 9\n',
     )
-    expect(parsed.values).toEqual({ level: ['deep'], workers: ['fable', 'opus', 'sonnet'], 'prs-skill': ['my-prs'], 'base-branch': ['release/2.0'] })
+    expect(parsed.values).toEqual({ level: ['deep'], workers: ['fable', 'opus', 'sonnet'], 'prs-skill': ['my-prs'], 'base-branch': ['release/2.0'], 'qa-collectors': ['2'] })
     expect(parsed.problems).toEqual([
       'line 4: "judges" must be one of sequential, parallel',
       'line 5: not "key = value": nope',
-      'line 6: unknown key "color" (one of level, judges, workers, qa, review, commits-skill, prs-skill, base-branch)',
+      'line 6: unknown key "color" (one of level, judges, workers, qa, review, commits-skill, prs-skill, base-branch, qa-collectors)',
       'line 8: "commits-skill" must be one skill name, like dacapo:rules-commits or my-rules',
       'line 9: "commits-skill" must be one skill name, like dacapo:rules-commits or my-rules',
       'line 11: "base-branch" must be one git branch name, like main or develop',
+      'line 13: "qa-collectors" must be a whole number from 0 to 8',
+      'line 14: "qa-collectors" must be a whole number from 0 to 8',
     ])
   })
 
   test('later files override earlier ones key by key, over the defaults, and each value names its file', () => {
     const loaded = loadConf([
       { path: '/plugin/dacapo.conf', text: 'level = balanced\nqa = opus, sonnet\n' },
-      { path: '/home/u/.claude/dacapo.conf', text: 'qa = sonnet\njudges = parallel\ncommits-skill = other:rules\nbase-branch = develop\n' },
+      { path: '/home/u/.claude/dacapo.conf', text: 'qa = sonnet\njudges = parallel\ncommits-skill = other:rules\nbase-branch = develop\nqa-collectors = 0\n' },
       { path: '/repo/.dacapo.conf', text: null },
     ])
-    expect(loaded.conf).toEqual({ ...DEFAULT_CONF, qa: ['sonnet'], judges: 'parallel', 'commits-skill': 'other:rules', 'base-branch': 'develop' })
+    expect(loaded.conf).toEqual({ ...DEFAULT_CONF, qa: ['sonnet'], judges: 'parallel', 'commits-skill': 'other:rules', 'base-branch': 'develop', 'qa-collectors': 0 })
+    expect(loaded.origin['qa-collectors']).toBe('/home/u/.claude/dacapo.conf')
     expect(loaded.origin.qa).toBe('/home/u/.claude/dacapo.conf')
     expect(loaded.origin.workers).toBe('default')
     expect(loaded.origin['prs-skill']).toBe('default')
-    expect(describeConf(loaded)).toMatch(/\ncommits-skill = other:rules  \(\/home\/u\/.claude\/dacapo.conf\)\nprs-skill = dacapo:rules-prs  \(default\)\nbase-branch = develop  \(\/home\/u\/.claude\/dacapo.conf\)\n/)
+    expect(describeConf(loaded)).toMatch(/\ncommits-skill = other:rules  \(\/home\/u\/.claude\/dacapo.conf\)\nprs-skill = dacapo:rules-prs  \(default\)\nbase-branch = develop  \(\/home\/u\/.claude\/dacapo.conf\)\nqa-collectors = 0  \(\/home\/u\/.claude\/dacapo.conf\)\n/)
     expect(loaded.read).toEqual(['/plugin/dacapo.conf', '/home/u/.claude/dacapo.conf'])
     expect(describeConf(loaded)).toMatch(/^level = balanced  \(\/plugin\/dacapo.conf\)\n/)
     expect(describeConf(loadConf([]))).toMatch(/Files read: none; defaults\./)

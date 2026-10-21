@@ -18,10 +18,12 @@ export type Conf = {
   'prs-skill': string
   /** The branch a run is cut from and merged into when `start` names none. */
   'base-branch': string
+  /** How many evidence collectors QA may run at once; 0 means QA collects every piece of evidence itself. */
+  'qa-collectors': number
 }
 
 export type ConfKey = keyof Conf
-export const CONF_KEYS: readonly ConfKey[] = ['level', 'judges', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill', 'base-branch']
+export const CONF_KEYS: readonly ConfKey[] = ['level', 'judges', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill', 'base-branch', 'qa-collectors']
 
 /** The skills the plugin ships; while one is the configured skill, the mod checks the rules it states (commit titles, attribution lines) itself. */
 export const SHIPPED_COMMITS = 'dacapo:rules-commits'
@@ -37,6 +39,7 @@ export const DEFAULT_CONF: Conf = {
   'commits-skill': SHIPPED_COMMITS,
   'prs-skill': SHIPPED_PRS,
   'base-branch': 'main',
+  'qa-collectors': 3,
 }
 
 const LEVELS = ['fast', 'balanced', 'deep']
@@ -47,6 +50,9 @@ export const BRANCH_NAME = /^[a-z0-9][a-z0-9._/-]*$/
 /** A skill name as the Skill tool takes it, `name` or `plugin:name`, with or without the leading slash a person types. */
 const SKILL = /^\/?([a-z0-9][a-z0-9_-]*:)?[a-z0-9][a-z0-9_-]*$/
 const SKILL_KEYS: readonly ConfKey[] = ['commits-skill', 'prs-skill']
+/** The most collectors a conf may allow QA at once: enough to split a rubric, few enough for one machine's product. */
+export const MAX_COLLECTORS = 8
+const COUNT = /^[0-9]+$/
 
 /** One `key = value` file, as read: the keys it set and what was wrong with the rest. */
 export type Parsed = { values: Partial<Record<ConfKey, string[]>>; problems: string[] }
@@ -85,6 +91,7 @@ function check(key: ConfKey, list: string[]): string | null {
   if (key === 'judges') return list.length === 1 && JUDGES.includes(list[0]!) ? null : `"judges" must be one of ${JUDGES.join(', ')}`
   if (SKILL_KEYS.includes(key)) return list.length === 1 && SKILL.test(list[0]!) ? null : `"${key}" must be one skill name, like ${DEFAULT_CONF[key]} or my-rules`
   if (key === 'base-branch') return list.length === 1 && BRANCH_NAME.test(list[0]!) ? null : `"base-branch" must be one git branch name, like main or develop`
+  if (key === 'qa-collectors') return list.length === 1 && COUNT.test(list[0]!) && Number(list[0]) <= MAX_COLLECTORS ? null : `"qa-collectors" must be a whole number from 0 to ${MAX_COLLECTORS}`
   const bad = list.find(v => !MODEL.test(v))
   return bad ? `"${key}" has a model name that is not one (${bad})` : null
 }
@@ -119,6 +126,7 @@ export function loadConf(layers: readonly Layer[]): Loaded {
       if (key === 'level') conf.level = v[0] as Level
       else if (key === 'judges') conf.judges = v[0] as Conf['judges']
       else if (key === 'commits-skill' || key === 'prs-skill' || key === 'base-branch') conf[key] = v[0]!
+      else if (key === 'qa-collectors') conf[key] = Number(v[0])
       else conf[key] = v
       origin[key] = layer.path
     }
