@@ -4,18 +4,18 @@ import type { Register } from 'claude-code'
 import type { Activity, AgentStats, Collector, Gh, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
 import type { Loop, LoopLevel, LoopNode, LoopRef, Stage, Transition, ViewerFocus, ViewerState } from '../types/loops'
 import { applyOps, loopDelete, loopMove, loopNew, loopRename, parseOp, saveDraft, setDefaultLoop, type Op } from './architect'
-import { BRANCH_NAME, describeConf, loadConf, SHIPPED_COMMITS, SHIPPED_PRS, type Layer, type Loaded } from './conf'
+import { BRANCH_NAME, describeConf, loadConf, parseConf, SHIPPED_COMMITS, SHIPPED_PRS, userConfPath, type Layer, type Loaded } from './conf'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as gh from './gh'
 import * as git from './git'
 import type { Io } from './io'
-import { ID, countsOf, discardDraft, draftKey, draftsRoot, graphFromJson, listLoops, nodeOrder, openDraft, readDraft, readLoop, roots, validateLoop, withDefaultTransitions, writeDraft, type LoopFs, type Roots } from './loops'
+import { ID, countsOf, discardDraft, draftKey, draftsRoot, fnv1a, graphFromJson, listLoops, nodeOrder, openDraft, readDraft, readLoop, roots, validateLoop, withDefaultTransitions, writeDraft, type LoopFs, type Roots } from './loops'
 import { fromD2 } from './loopd2'
-import { transitionId } from './looplayout'
+import { layout, renderTerminal, transitionId } from './looplayout'
 import { PHASES, currentStages, drawBand, drawPane, elapsed, hhmm, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
 import { COLLECTS_SUFFIX, LANDS_SUFFIX, SCORES_SUFFIX, qaBrief, reviewBrief, workerBrief } from './prompts'
 import { validateReport, validateRubric, type RubricItem } from './report'
-import { LOOPS_PANE, drawViewer, focusText, viewerText, type ViewerActions } from './viewer'
+import { LOOPS_PANE, drawViewer, focusText, type ViewerActions } from './viewer'
 
 const PANE = 'dacapo'
 /** The agent types of rows saved before loops, which name no node. */
@@ -54,17 +54,22 @@ let prices: Record<string, Price> = parsePrices(undefined)
 /** The configuration in force: the shipped `dacapo.conf`, then the user's, then the repository's. */
 let conf: Loaded = loadConf([])
 const SHIPPED_CONF = `${import.meta.dir}/../dacapo.conf`
+/** The user's conf file, set at session start: `$DACAPO_HOME/dacapo.conf` when DACAPO_HOME is set, else `~/.claude/dacapo.conf`. */
+let userConf: string | null = null
 
 /** Reads the conf files that exist, in the order they apply; agents never read them, the config tool and command tell. */
 async function readConf(root: string): Promise<Loaded> {
-  const home = await io.home().catch(() => undefined)
-  const paths = [SHIPPED_CONF, ...(home ? [`${home}/.claude/dacapo.conf`] : []), `${root}/.dacapo.conf`]
+  const paths: Array<Pick<Layer, 'path' | 'role'>> = [
+    { path: SHIPPED_CONF, role: 'plugin' },
+    ...(userConf ? [{ path: userConf, role: 'user' as const }] : []),
+    { path: `${root}/.dacapo.conf`, role: 'project' },
+  ]
   const layers: Layer[] = []
-  for (const path of paths) {
+  for (const { path, role } of paths) {
     try {
-      layers.push({ path, text: (await io.exists(path)) ? await io.read(path) : null })
+      layers.push({ path, role, text: (await io.exists(path)) ? await io.read(path) : null })
     } catch {
-      layers.push({ path, text: null })
+      layers.push({ path, role, text: null })
     }
   }
   conf = loadConf(layers)
@@ -93,13 +98,18 @@ let loopDrafts = ''
 /** The loop the session resolved at start from the `loop` conf key; null when it could not be loaded (see `activeProblem`). */
 let active: { ref: LoopRef; loop: Loop } | null = null
 let activeProblem = ''
-/** The loop the /dacapo:core prompt asked for when it could not be loaded: `start` and `config` name it and its problems. */
-let asked: string | null = null
 /** Loops read this session, by name, so a run's nodes are at hand once its loop was read. */
 const loaded = new Map<string, { ref: LoopRef; loop: Loop }>()
-/** Agent types this session registered, by node id: the loop that registered each, and the spec as JSON. */
-const agents = new Map<string, { loop: string; spec: string }>()
 type AgentSpec = { name: string; description: string; prompt: string; disallowedTools: string[]; skills: string[]; omitClaudeMd?: true }
+/**
+ * Agent types this session registered, by node id: the loops whose node it is (the first registered it), and the
+ * spec's key, its fields but the description: two loops whose node has the same key share one agent type.
+ */
+const agents = new Map<string, { loops: string[]; key: string }>()
+/** Agent types registered after the session began: the engine's Agent tool may not know them until a new session. */
+const lateAgents = new Set<string>()
+/** What session start found of each loop it did not register, by name: a loop that cannot load, or one whose node differs from the agent type registered under its id. */
+const notRegistered = new Map<string, string>()
 /** Registers an agent type; set at session start over `$.agent.register`. */
 let registerAgent: (spec: AgentSpec) => Promise<unknown> = async () => undefined
 /** Registers the dispatch tool again with the model enum of a loop's lands node; set at session start. */
@@ -127,6 +137,12 @@ async function resolveLoop(name: string): Promise<Resolved> {
     const names = [...new Set(refs.map(r => r.name))]
     return { ok: false, problem: `there is no loop "${name}"; the loops available: ${names.length > 0 ? names.join(', ') : 'none'}` }
   }
+  return checkLoop(ref)
+}
+
+/** Reads the loop a listing found and checks it as `resolveLoop` does. */
+async function checkLoop(ref: LoopRef): Promise<Resolved> {
+  const name = ref.name
   let read: Awaited<ReturnType<typeof readLoop>>
   try {
     read = await readLoop(loopFs, ref.dir)
@@ -203,11 +219,11 @@ const CONTRACT_WORDS: Record<LoopNode['contract'], string> = {
 }
 
 /** The agent type of a node: its role and the contract's suffix as the system prompt, its skills, its denied tools. */
-function agentSpec(loopName: string, node: LoopNode): AgentSpec {
+function agentSpec(loops: readonly string[], node: LoopNode): AgentSpec {
   const suffix = node.contract === 'lands' ? LANDS_SUFFIX : node.contract === 'scores' ? SCORES_SUFFIX(node.categories ?? []) : node.contract === 'collects' ? COLLECTS_SUFFIX : ''
   return {
     name: node.id,
-    description: `dacapo ${node.id} of the loop ${loopName}: ${node.summary}; ${CONTRACT_WORDS[node.contract]}. Spawned through the dacapo tools only.`,
+    description: `dacapo ${node.id} of the loop${loops.length === 1 ? '' : 's'} ${loops.join(', ')}: ${node.summary}; ${CONTRACT_WORDS[node.contract]}. Spawned through the dacapo tools only.`,
     prompt: [node.role.trim(), suffix].filter(Boolean).join('\n\n'),
     disallowedTools: [...node.tools.deny],
     skills: [...node.skills],
@@ -215,37 +231,110 @@ function agentSpec(loopName: string, node: LoopNode): AgentSpec {
   }
 }
 
+/** The nodes of a loop that run as agents: every node but entry and exit. */
+const agentNodes = (loop: Loop): LoopNode[] => Object.values(loop.nodes).filter(n => n.type !== 'entry' && n.type !== 'exit')
+/** What makes two loops' nodes one agent type: every field of the spec but the description, which names the loops. */
+const specKey = (spec: AgentSpec): string => JSON.stringify({ ...spec, description: undefined })
+
+/** Where a person sets the loop a session's agents come from: the conf files, user and project. */
+const confWhere = () => `${userConf ?? '~/.claude/dacapo.conf'} or the repository's .dacapo.conf`
+/** The refusal of a loop whose node differs from the agent type of its id this session holds. */
+function clashText(name: string, ids: string[]): string {
+  const owner = agents.get(ids[0]!)?.loops[0] ?? 'another'
+  const names = ids.map(agentType).join(', ')
+  return `the agent type${ids.length === 1 ? '' : 's'} ${names} ${ids.length === 1 ? 'is' : 'are'} registered in this session by the loop "${owner}" with a different role, and a session holds one role per agent type. Ask the user to begin a new session with loop = ${name} in your conf (${confWhere()}): the configured loop's agents win when a session begins.`
+}
+
+/** The node ids of a loop whose spec differs from the agent type this session holds under the id. */
+function clashesOf(name: string, loop: Loop): string[] {
+  return agentNodes(loop)
+    .filter(node => {
+      const held = agents.get(node.id)
+      return !!held && held.key !== specKey(agentSpec([name], node))
+    })
+    .map(n => n.id)
+}
+
 /**
- * Registers one agent type per node of the loop other than entry and exit, unless this session already holds it. A node
- * id another loop registered with a different role is refused: a session holds one role per agent type, so the run
- * of the other loop would lose its agent. Returns the agent types registered now.
+ * At session start: registers the agent types of every loop at the three levels, so a run picked by `--loop` or by
+ * `start` finds its agents, which the engine's Agent tool takes only from a session's start. A loop hidden by one of
+ * the same name at a higher level is left out. A node id two loops share with the same spec registers once; with
+ * different specs the configured loop's wins, then the first listed (project, user, plugin), and the other loop is
+ * remembered as unable to run in this session. A loop that cannot load is skipped with its problem kept for config.
  */
-async function ensureAgents(name: string, loop: Loop): Promise<{ problem?: string; added: string[] }> {
-  const specs = Object.values(loop.nodes)
-    .filter(n => n.type !== 'entry' && n.type !== 'exit')
-    .map(node => ({ node, spec: agentSpec(name, node) }))
-  const clashes = specs.filter(({ node, spec }) => {
-    const held = agents.get(node.id)
-    return !!held && held.loop !== name && (JSON.parse(held.spec) as AgentSpec).prompt !== spec.prompt
-  })
-  if (clashes.length > 0) {
-    const owner = agents.get(clashes[0]!.node.id)!.loop
-    const names = clashes.map(c => agentType(c.node.id)).join(', ')
-    return {
-      problem: `the agent type${clashes.length === 1 ? '' : 's'} ${names} ${clashes.length === 1 ? 'is' : 'are'} registered in this session by the loop "${owner}" with a different role, and a session holds one role per agent type. Ask the user to begin a new session with \`/dacapo:core --loop ${name} <task>\` to run this loop.`,
-      added: [],
+async function registerEveryLoop(): Promise<void> {
+  agents.clear()
+  notRegistered.clear()
+  lateAgents.clear()
+  offered.clear()
+  let refs: LoopRef[] = []
+  try {
+    refs = (await listLoops(loopFs, loopRoots)).filter(r => !r.shadowedBy)
+  } catch {
+    return
+  }
+  const ordered = [...refs.filter(r => r.name === conf.conf.loop), ...refs.filter(r => r.name !== conf.conf.loop)]
+  const plan = new Map<string, { loops: string[]; key: string; node: LoopNode }>()
+  for (const ref of ordered) {
+    const r = await checkLoop(ref)
+    if (!r.ok) {
+      notRegistered.set(ref.name, r.problem)
+      continue
+    }
+    const differ: string[] = []
+    for (const node of agentNodes(r.loop)) {
+      const key = specKey(agentSpec([ref.name], node))
+      const held = plan.get(node.id)
+      if (!held) plan.set(node.id, { loops: [ref.name], key, node })
+      else if (held.key === key) held.loops.push(ref.name)
+      else differ.push(node.id)
+    }
+    if (differ.length > 0) notRegistered.set(ref.name, `${differ.map(agentType).join(', ')} differ${differ.length === 1 ? 's' : ''} from the agent type${differ.length === 1 ? '' : 's'} of the loop "${plan.get(differ[0]!)!.loops[0]}"`)
+  }
+  for (const [id, { loops, key, node }] of plan) {
+    try {
+      await registerAgent(agentSpec(loops, node))
+      agents.set(id, { loops, key })
+    } catch (error) {
+      for (const name of loops) notRegistered.set(name, `${agentType(id)} could not be registered: ${String(error)}`)
     }
   }
+}
+
+/**
+ * The second attempt, for a loop saved after the session began: registers the agent types of its nodes this session
+ * does not hold yet. A node whose id another loop registered with a different spec is refused: a session holds one
+ * role per agent type, so the run of the other loop would lose its agent. Returns the agent types registered now.
+ */
+async function ensureAgents(name: string, loop: Loop): Promise<{ problem?: string; added: string[] }> {
+  const clashes = clashesOf(name, loop)
+  if (clashes.length > 0) return { problem: clashText(name, clashes), added: [] }
   const added: string[] = []
-  for (const { node, spec } of specs) {
-    const text = JSON.stringify(spec)
-    if (agents.get(node.id)?.spec === text) continue
+  for (const node of agentNodes(loop)) {
+    const held = agents.get(node.id)
+    if (held) {
+      if (!held.loops.includes(name)) held.loops.push(name)
+      continue
+    }
+    const spec = agentSpec([name], node)
     await registerAgent(spec)
-    agents.set(node.id, { loop: name, spec: text })
+    agents.set(node.id, { loops: [name], key: specKey(spec) })
+    lateAgents.add(agentType(node.id))
     added.push(agentType(node.id))
   }
   return { added }
 }
+
+/**
+ * The dacapo agent types the engine offered the model (its agent listing, or a dispatch): the evidence that the Agent
+ * tool knows a type registered after the session began.
+ */
+const offered = new Set<string>()
+/** The agent types of a loop registered after the session began that the engine has not offered the model yet. */
+const unlistedOf = (loop: Loop): string[] => agentNodes(loop).map(n => agentType(n.id)).filter(t => lateAgents.has(t) && !offered.has(t))
+/** What the orchestrator is told of a loop whose agent types the Agent tool does not list. */
+const lateText = (name: string, types: string[]) =>
+  `the loop "${name}" was saved after this session began, so the Agent tool does not list its agent type${types.length === 1 ? '' : 's'} ${types.join(', ')}: agent types register when a session begins. A new session is needed to run this loop; ask the user to begin one and run \`/dacapo:core --loop ${name} <task>\` there.`
 
 /** Marks the run's stage; `activeStages` names the stages of its step with a live agent when several run side by side. */
 async function markStage(stage: string, activeStages: string[] = []) {
@@ -325,12 +414,16 @@ function loopText(r: { ref: LoopRef; loop: Loop }): string[] {
 
 /** The configuration in force and the loop a run would walk now, for the config tool and the command. */
 async function configText(): Promise<string> {
+  await readConf(loopRepo ?? (await io.cwd()))
   const run = await currentRun()
-  const name = run?.loop?.name ?? asked ?? conf.conf.loop
+  const name = run?.loop?.name ?? conf.conf.loop
   const r = await resolveLoop(name)
   const head = [describeConf(conf), '']
-  if (!r.ok) return [...head, `Loop: "${name}" cannot be used: ${r.problem}`, `No run can start on it until it is fixed or another loop is named (\`loop\` of ${tool('start')}, or the loop conf key).`].join('\n')
-  return [...head, ...loopText(r)].join('\n')
+  // the loops whose agents session start left out: a run on one of them cannot start in this session
+  const skipped = [...notRegistered].map(([loop, why]) => `- ${loop}: ${why}`)
+  const tail = skipped.length > 0 ? ['', 'Loops whose agents this session did not register, so no run of theirs starts here:', ...skipped] : []
+  if (!r.ok) return [...head, `Loop: "${name}" cannot be used: ${r.problem}`, `No run can start on it until it is fixed or another loop is named (\`loop\` of ${tool('start')}, or the loop conf key).`, ...tail].join('\n')
+  return [...head, ...loopText(r), ...tail].join('\n')
 }
 // ---------- small helpers ----------
 
@@ -571,14 +664,16 @@ const latestPr = (run: Run, branch: string): Pr | undefined => prsOf(run, branch
 function statusText(snap: Snapshot): string {
   const { run, rows, ui } = snap
   if (!run) return `No dacapo run.${activeProblem ? ` The configured loop cannot run: ${activeProblem}` : ''}`
+  // a live run on a loop is where its stage says, so its status word (planning, active, merging) shows only beside a phase or once the run ended
+  const isOver = run.status === 'done' || run.status === 'aborted'
   const lines = [
-    `Run ${run.id}${run.task ? ` (${run.task.replace(/\s+/g, ' ')})` : ' (task not yet named; call start when it is clear)'}: ${run.status}, round ${run.iteration}, branch=${run.branch || '(not started)'}, base=${run.baseBranch}`,
+    `Run ${run.id}${run.task ? ` (${run.task.replace(/\s+/g, ' ')})` : ' (task not yet named; call start when it is clear)'}: ${run.loop && !isOver ? '' : `${run.status}, `}round ${run.iteration}, branch=${run.branch || '(not started)'}, base=${run.baseBranch}`,
   ]
   const total = spendText(spend(rows.filter(isAgentRow), prices, run.orchestrator))
   const stages = currentStages(run)
   const where = run.loop
     ? `loop ${run.loop.name} (${run.loop.level}), stage${stages.length > 1 ? 's' : ''} ${stages.join(' ∥ ')}`
-    : `no loop yet${asked ? ` (asked for "${asked}", which could not be loaded; see ${tool('config')})` : ''}, level ${levelOf(run)}, phase ${run.phase}`
+    : `no loop yet, level ${levelOf(run)}, phase ${run.phase}`
   lines[0] += `, ${where}${total ? `, ${total}` : ''}`
   if (run.overview) lines.push(`  ${run.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
   if (run.gh && !run.gh.ok) lines.push(`gh: ${run.gh.problem} (${run.gh.detail})`)
@@ -628,15 +723,17 @@ async function start(a: Args) {
     return fail(`start: "branch" must be a lowercase git branch name without "--" and different from ${baseBranch}; got ${JSON.stringify(wanted)}`)
   }
   let run = await currentRun()
-  const name = str(a.loop).trim() || run?.loop?.name || asked || conf.conf.loop
+  const name = str(a.loop).trim() || run?.loop?.name || conf.conf.loop
   // the loop is fixed once work can exist: a start after setup keeps it
   if (run?.worktree && run.loop && name !== run.loop.name) return fail(`start: the run walks the loop "${run.loop.name}" and a loop is never changed mid-run`)
   const resolved = await resolveLoop(name)
   if (!resolved.ok) return fail(`start: ${resolved.problem}`)
+  // every loop's agents registered when the session began; a loop saved since gets its own now, which the Agent tool takes only once it lists them
   const registered = await ensureAgents(name, resolved.loop)
   if (registered.problem) return fail(`start: ${registered.problem}`)
+  const unlisted = unlistedOf(resolved.loop)
+  if (unlisted.length > 0) return fail(`start: ${lateText(name, unlisted)}`)
   if (dispatchFor !== name) await registerDispatch(resolved.loop).catch(() => undefined)
-  asked = null
   if (!run) run = await openRun(task, baseBranch, resolved)
   const loopInfo = runLoopOf(resolved)
   const sameLoop = run.loop?.name === loopInfo.name && !!run.stage
@@ -689,7 +786,6 @@ async function start(a: Args) {
       `- run folder ${run.runDir}`,
       `- loop ${name} (${resolved.ref.level}): ${loopInfo.steps.map(s => s.stages.map(st => st.id).join(' ∥ ')).join(' → ')}`,
       `- nodes: ${nodes.length > 0 ? nodes.map(nodeWords).join('; ') : 'none'} (the first model of each is the strong tier and the default, the last the fast tier)`,
-      ...(registered.added.length > 0 ? [`- agent types ${registered.added.join(', ')} registered now; the Agent tool takes them from your next turn, so end this turn before you start them`] : []),
       `- rules: commits follow the ${conf.conf['commits-skill']} skill, pull requests the ${conf.conf['prs-skill']} skill; workers load them from their brief, and you load ${conf.conf['prs-skill']} before writing the final pull request`,
       landers.length > 0 ? `Plan the work, then call ${tool('dispatch')}.` : 'Plan the work, then follow the loop: its stages say what comes next.',
     ].join('\n'),
@@ -1495,14 +1591,23 @@ function textOf(result: unknown): string {
 
 // ---------- the loop viewer and the architect ----------
 
-/** The store key of the loop last open in the viewer, so the next session reopens it. */
-const LAST_KEY = 'viewer.last'
+/**
+ * The store key of the loop last open in the viewer, so the next session reopens it: one per scope, the user's dacapo
+ * home and the repository, since the plugin's store is shared by every session on the machine.
+ */
+const lastKey = (dacapoHome: string, repoRoot: string | null) => `viewer.last:${fnv1a(`${dacapoHome}\n${repoRoot ?? ''}`)}`
 type LastView = { name: string; level: LoopLevel; view: ViewerState['view'] }
 const LEVEL_WORDS: readonly LoopLevel[] = ['plugin', 'user', 'project']
 /** The skill's loop ops that change folders, not the draft: run here through the on-disk functions, never with draft edits. */
 const FOLDER_OPS = ['loop.new', 'loop.move', 'loop.delete', 'loop.default']
 const NOT_SAVED = 'The draft is not saved: press Save in the pane or say "save".'
-const NO_LOOP = 'No loop is open. Open one with loops, action open, or start one with loop.new.'
+const NO_LOOP = 'No loop is open.'
+/** What a tool that acts on the open loop says when none is: the loops there are, and to name one. */
+async function noLoop(): Promise<string> {
+  const library = await refreshLibrary().catch(() => [] as LoopRef[])
+  const names = library.map(r => `${r.name} (${r.level})`)
+  return `${NO_LOOP} The loops: ${names.length > 0 ? names.join(', ') : 'none'}. Name one with "name" (and "level" when the name lives at more than one), open one with loops, action open, or start one with loop.new.`
+}
 const FRESH_VIEW: ViewerState['view'] = { folded: false, tab: 'canvas' }
 
 /** The viewer's state, the pane and the store, as closures made in `session.start`. */
@@ -1677,8 +1782,17 @@ function placeWords(loop: Loop, id: string): string {
   return p ? `in stage ${p.stage.id}` : 'nowhere'
 }
 
-/** The `open` reply's header: where the loop is, its draft and changes, its problems, the entry's whole role, its nodes, transitions and handovers. */
-function openHeader(open: NonNullable<ViewerState['open']>): string[] {
+/** The words of the notice that loop.d2 was edited by hand, as the viewer shows it. */
+const D2_HAND_EDITED = 'loop.d2 was edited by hand since the last save; say “import the diagram” to fold it in'
+/** How many of a draft's changes the `open` reply lists. */
+const CHANGES_SHOWN = 5
+
+/**
+ * The `open` reply: where the loop is and what it is for, its draft and changes, its notices, the canvas as text, and
+ * one line per node. Roles, transitions and handovers are the focus's to tell (`loops focus` on a node or an edge).
+ */
+function openReply(state: ViewerState): string {
+  const open = state.open!
   const { ref, loop, draft } = open
   const nodeLine = (n: LoopNode) => {
     const parts = [n.type, `contract ${n.contract}`, placeWords(loop, n.id)]
@@ -1687,27 +1801,27 @@ function openHeader(open: NonNullable<ViewerState['open']>): string[] {
     if (n.categories) parts.push(`categories ${n.categories.join(', ')}`)
     if (n.collectors !== undefined) parts.push(`up to ${n.collectors} collectors`)
     if (n.tools.deny.length > 0) parts.push(`denied ${n.tools.deny.join(', ')}`)
-    const role = n.role.split('\n').map(l => l.trim()).find(Boolean)
-    return `- ${n.id}: ${n.summary}. ${parts.join('; ')}.${role && n.id !== loop.entry ? ` Role: ${role}` : ''}`
+    return `- ${n.id}: ${n.summary}. ${parts.join('; ')}.`
   }
+  const changes = draft?.changes ?? []
+  const shown = changes.slice(-CHANGES_SHOWN)
+  const view = { folded: state.view.folded, ...(state.view.focus ? { focus: state.view.focus } : {}) }
+  const canvas = renderTerminal(layout(loop, view), view, 100).map(line => line.map(span => span.text).join('').trimEnd())
   return [
     `Loop ${loop.name} (${ref.level}) at ${ref.dir}`,
     loop.description,
-    ...(draft ? [`DRAFT: ${plural(draft.changes.length, 'change')}, kept in ${draft.dir}`, ...draft.changes.map(c => `- ${c}`)] : ['No draft: this is the saved loop.']),
+    ...(draft
+      ? [`DRAFT: ${plural(changes.length, 'change')}, kept in ${draft.dir}${changes.length > shown.length ? `; the last ${shown.length}:` : ''}`, ...shown.map(c => `- ${c}`)]
+      : ['No draft: this is the saved loop.']),
     ...(ref.level === 'plugin' ? ['A plugin loop is read-only: save is refused. Copy it with loop.new to edit it.'] : []),
-    ...(open.d2Newer ? ['loop.d2 edited by hand since the last save: import-d2 {} folds it into the draft.'] : []),
+    ...(open.d2Newer ? [`${D2_HAND_EDITED} (the import-d2 op).`] : []),
     ...(open.problems.length > 0 ? ['Problems in the saved folder:', ...open.problems.map(p => `- ${p.path}: ${p.message}`)] : []),
     '',
-    `Entry ${loop.entry}, its whole role:`,
-    loop.nodes[loop.entry]?.role.trim() || 'none',
+    ...canvas,
     '',
     'Nodes:',
     ...nodeOrder(loop).map(id => nodeLine(loop.nodes[id]!)),
-    'Transitions:',
-    ...loop.transitions.map(t => `- ${t.from} → ${t.to.join(' + ')}${t.back ? ' (back)' : ''}: ${t.label || 'default'}${t.when ? `. When ${t.when.replace(/\.$/, '')}` : ''}${t.then ? `. Then ${t.then.replace(/\.$/, '')}` : ''}`),
-    'Handovers:',
-    ...(loop.handovers.length > 0 ? loop.handovers.map(h => `- ${h.from} → ${h.to}: ${h.label}. ${h.spec}`) : ['- none']),
-  ]
+  ].join('\n')
 }
 
 /** A focus target as the tool takes it: a stage id, a node id (`stage:<id>` or `node:<id>` when both share it), or `from>to` for an edge. */
@@ -1742,6 +1856,23 @@ function focusReply(state: ViewerState): string {
   return [...focusText(state), ...(node ? ['', `The whole role of ${node.id}:`, node.role.trim() || 'none'] : [])].join('\n')
 }
 
+/**
+ * A tool's `name` and `level`: when given, the loop they name is opened first, its draft included, and the tool acts on
+ * it; when absent, the tool acts on the loop open now. Returns a problem when they name no loop.
+ */
+async function openNamed(a: Args): Promise<string | null> {
+  if (a.name === undefined && a.level === undefined) return null
+  const name = str(a.name).trim()
+  if (!name) return 'name must be the loop to act on; level alone names none.'
+  if (a.level !== undefined && !isLevel(a.level)) return 'level must be plugin, user or project.'
+  const found = findRef(await refreshLibrary(), name, a.level as LoopLevel | undefined)
+  if ('problem' in found) return found.problem
+  const state = await views.get()
+  if (state.screen === 'loop' && sameLoop(state.open?.ref, found)) return null
+  await openLoop(found)
+  return null
+}
+
 async function loopsTool(a: Args) {
   const action = str(a.action)
   if (action === 'list') {
@@ -1756,24 +1887,28 @@ async function loopsTool(a: Args) {
     if (a.level !== undefined && !isLevel(a.level)) return fail('level must be plugin, user or project.')
     const found = findRef(await refreshLibrary(), name, a.level as LoopLevel | undefined)
     if ('problem' in found) return fail(found.problem)
-    const open = await openLoop(found)
-    return ok([...openHeader(open), '', viewerText(await views.get(), 100)].join('\n'))
+    await openLoop(found)
+    return ok(openReply(await views.get()))
   }
+  if (action !== 'focus' && action !== 'fold') return fail('action must be list, open, focus or fold.')
+  const named = await openNamed(a)
+  if (named) return fail(named)
   const state = await views.get()
+  if (!state.open) return fail(await noLoop())
+  // the loop stays open while the library is on screen; acting on it shows it again
+  if (state.screen !== 'loop') {
+    await views.set(s => ({ ...s, screen: 'loop' }))
+    await views.open()
+  }
   if (action === 'focus') {
-    if (!state.open || state.screen !== 'loop') return fail(NO_LOOP)
     const target = str(a.target).trim()
     if (!target) return ok(focusReply(await setView(v => ({ folded: v.folded, tab: v.tab }))))
     const focus = parseTarget(state.open.loop, target)
     if ('problem' in focus) return fail(focus.problem)
     return ok(focusReply(await setView(v => ({ ...v, focus, tab: 'canvas' }))))
   }
-  if (action === 'fold') {
-    if (!state.open || state.screen !== 'loop') return fail(NO_LOOP)
-    const next = await setView(v => ({ ...v, folded: !v.folded }))
-    return ok(next.view.folded ? 'The on-call section is folded.' : 'The on-call section is unfolded.')
-  }
-  return fail('action must be list, open, focus or fold.')
+  const next = await setView(v => ({ ...v, folded: !v.folded }))
+  return ok(next.view.folded ? 'The on-call section is folded.' : 'The on-call section is unfolded.')
 }
 
 /** The element a batch changed first, for the viewer to focus: a stage, a node or an edge it names and did not remove. */
@@ -1831,7 +1966,7 @@ async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } 
 
   if (name === 'loop.move') {
     if (raw.level !== 'user' && raw.level !== 'project') return { problem: 'loop.move: "level" must be user or project' }
-    if (!state.open) return { problem: `loop.move moves the open loop. ${NO_LOOP}` }
+    if (!state.open) return { problem: `loop.move moves the open loop. ${await noLoop()}` }
     const { ref } = state.open
     const problem = await loopMove(loopFs, loopRoots, loopDrafts, loopRepo, { name: ref.name, from: ref.level, to: raw.level })
     if (problem) return { problem }
@@ -1849,10 +1984,24 @@ async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } 
     const problem = await loopDelete(loopFs, loopRoots, loopDrafts, loopRepo, { name: loopName, level })
     if (problem) return { problem }
     if (sameLoop(await lastView(), { name: loopName, level })) await views.remember(null)
-    await refreshLibrary()
+    const left = await refreshLibrary()
+    // a conf that named the deleted loop as the default, with no loop of that name left, falls back to core
+    const reset: string[] = []
+    if (!left.some(r => r.name === loopName)) {
+      for (const path of [conf.paths.user, conf.paths.project]) {
+        if (!path || !(await loopFs.exists(path))) continue
+        const named = parseConf(await loopFs.read(path)).values.loop?.[0]
+        if (named !== loopName) continue
+        const problem = await setDefaultLoop(loopFs, path, 'core')
+        if (problem) return { problem: `${loopName} (${level}) was deleted, but ${path} still names it: ${problem}` }
+        reset.push(path)
+      }
+      if (reset.length > 0) await refreshLibrary()
+    }
     await views.set(s => ({ ...s, screen: 'library', notice: undefined, ...(sameLoop(s.open?.ref, { name: loopName, level }) ? { open: undefined, view: FRESH_VIEW } : {}) }))
     await views.open()
-    return { text: `Deleted ${loopName} (${level}): its folder and its draft are gone.\n\n${libraryLines(await views.get())}` }
+    const confNote = reset.length > 0 ? ` It was the default loop for runs: ${reset.join(' and ')} now say${reset.length === 1 ? 's' : ''} loop = core.` : ''
+    return { text: `Deleted ${loopName} (${level}): its folder and its draft are gone.${confNote}\n\n${libraryLines(await views.get())}` }
   }
 
   // loop.default: the conf beside the loop's level, the repository's for a project loop
@@ -1860,10 +2009,11 @@ async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } 
   if (!loopName) return { problem: 'loop.default needs "name", a string' }
   const found = findRef(await refreshLibrary(), loopName)
   if ('problem' in found) return found
-  const home = (await io.home().catch(() => undefined)) ?? ''
-  const confPath = found.level === 'project' && loopRepo ? `${loopRepo}/.dacapo.conf` : `${home}/.claude/dacapo.conf`
+  const confPath = found.level === 'project' && loopRepo ? `${loopRepo}/.dacapo.conf` : userConf
+  if (!confPath) return { problem: 'loop.default: the user conf file is unknown: the session found no home folder and no DACAPO_HOME' }
   const problem = await setDefaultLoop(loopFs, confPath, loopName)
   if (problem) return { problem }
+  // the conf is read again, so config, start and the library's default go by the new line in this session
   await refreshLibrary()
   const inForce = conf.conf.loop
   return {
@@ -1879,6 +2029,8 @@ async function loopEdit(a: Args) {
   if (folders > 0 && folders < ops.length) {
     return fail('loop.new, loop.move, loop.delete and loop.default change loop folders and go in a batch of their own. Send them first, then the draft edits in a second loop_edit call. Nothing was written.')
   }
+  const named = await openNamed(a)
+  if (named) return fail(`${named} Nothing was written.`)
   if (folders > 0) {
     const lines: string[] = []
     for (let i = 0; i < ops.length; i++) {
@@ -1896,7 +2048,7 @@ async function loopEdit(a: Args) {
     parsed.push(p.op)
   }
   const state = await views.get()
-  if (!state.open) return fail(`${NO_LOOP} Nothing was written.`)
+  if (!state.open) return fail(`${await noLoop()} Nothing was written.`)
   const { ref } = state.open
   // the ops apply to the draft on disk, or to the saved loop as stored; the draft is opened only once they pass
   const existing = await readDraft(loopFs, loopDrafts, keyOf(ref))
@@ -1925,18 +2077,25 @@ async function loopEdit(a: Args) {
   )
 }
 
-/** Saves the open loop's draft: the tool and the pane's Save button. */
-async function saveLoop(force: boolean) {
+/** The words that send a plugin loop's edits into a copy of it. */
+const copyHint = (name: string) => `Copy it with loop.new { name, level: user or project, from: { name: ${name}, level: plugin } }, then edit the copy.`
+
+/** Saves the open loop's draft, or the named loop's: the tool and the pane's Save button. */
+async function saveLoop(force: boolean, a: Args = {}) {
+  const named = await openNamed(a)
+  if (named) return fail(named)
   const state = await views.get()
-  if (!state.open) return fail(NO_LOOP)
+  if (!state.open) return fail(await noLoop())
   const { ref } = state.open
   const draft = await readDraft(loopFs, loopDrafts, keyOf(ref))
-  if (!draft) return fail(`There is no draft of ${ref.name} (${ref.level}) to save.`)
+  if (!draft) {
+    return fail(`There is no draft of ${ref.name} (${ref.level}) to save.${ref.level === 'plugin' ? ` A plugin loop is read-only, so it changes only as a copy: ${copyHint(ref.name)}` : ''}`)
+  }
   const problem = await saveDraft(loopFs, { ref, loop: draft.loop, info: draft.info, opaque: state.open.opaque ?? [], force })
   if (problem) {
     const hint =
       ref.level === 'plugin'
-        ? ` Copy it with loop.new { name, level: user or project, from: { name: ${ref.name}, level: plugin } }, then edit the copy.`
+        ? ` ${copyHint(ref.name)}`
         : /save with force/.test(problem)
           ? ' Ask the user before saving with force: true, which overwrites it.'
           : ''
@@ -1956,10 +2115,12 @@ async function saveLoop(force: boolean) {
   return ok([`Saved ${name} (${ref.level}) to ${found.dir}. The draft is cleared.${note}`, 'Files:', ...open.files.map(f => `- ${f}`), `Run it with /dacapo:core --loop ${name} <task>.`].join('\n'))
 }
 
-/** Discards the open loop's draft: the tool and the pane's Discard button. */
-async function discardLoop() {
+/** Discards the open loop's draft, or the named loop's: the tool and the pane's Discard button. */
+async function discardLoop(a: Args = {}) {
+  const named = await openNamed(a)
+  if (named) return fail(named)
   const state = await views.get()
-  if (!state.open) return fail(NO_LOOP)
+  if (!state.open) return fail(await noLoop())
   const { ref } = state.open
   const draft = await readDraft(loopFs, loopDrafts, keyOf(ref))
   if (!draft) return fail(`There is no draft of ${ref.name} (${ref.level}) to discard.`)
@@ -2175,14 +2336,14 @@ const LOOP_TOOL_SPECS = [
   {
     name: 'loops',
     description:
-      "The loop viewer. list: every loop at the plugin, user and project levels, one line each (level, description, counts, folder, default, draft, hidden by a higher level) and the roots; the pane opens on the library. open: one loop as text (its draft when one exists, DRAFT and its changes, the entry's role, every node, transition and handover, the canvas) and the pane shows it. focus: points the viewer at a stage, a node or an edge and returns what the focus panel shows. fold: folds or unfolds the on-call section.",
+      "The loop viewer. list: every loop at the plugin, user and project levels, one line each (level, description, counts, folder, default, draft, hidden by a higher level) and the roots; the pane opens on the library. open: one loop as text (its draft when one exists, DRAFT and its last changes, its notices, the canvas, one line per node) and the pane shows it. focus: points the viewer at a stage, a node or an edge and returns what the focus panel shows: a node's whole role (the entry's included), a transition's label, When and Then, a handover's spec. fold: folds or unfolds the on-call section. focus and fold act on the open loop, or on the loop name and level give, which they open first.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['list', 'open', 'focus', 'fold'] },
-        name: { type: 'string', description: 'open: the loop, by name.' },
-        level: { type: 'string', enum: ['plugin', 'user', 'project'], description: 'open: the level, when the same name lives at more than one; default the level that wins (project over user over plugin).' },
+        name: { type: 'string', description: 'open: the loop, by name. focus and fold: the loop to act on, opened first; default the open loop.' },
+        level: { type: 'string', enum: ['plugin', 'user', 'project'], description: 'With name: the level, when the same name lives at more than one; default the level that wins (project over user over plugin).' },
         target: {
           type: 'string',
           description: 'focus: a stage id, a node id, or from>to for an edge (a handover between two nodes, else a transition with its stages joined by +, like implement>qa+review). stage:<id> or node:<id> picks one when a stage and a node share the id. Empty clears the focus.',
@@ -2194,7 +2355,7 @@ const LOOP_TOOL_SPECS = [
   {
     name: 'loop_edit',
     description:
-      "Applies operations in order to the open loop's draft, and opens the draft when none exists. The first failing op stops the batch: nothing is written and the reply names the op and the rule it broke. loop.new, loop.move, loop.delete and loop.default change folders and go in a batch of their own. The reply lists what changed and the draft's change count; the viewer focuses the first changed element.",
+      "Applies operations in order to the open loop's draft, or to the draft of the loop name and level give (opened first), and opens the draft when none exists. The first failing op stops the batch: nothing is written and the reply names the op and the rule it broke. loop.new, loop.move, loop.delete and loop.default change folders and go in a batch of their own. The reply lists what changed and the draft's change count; the viewer focuses the first changed element.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
@@ -2205,24 +2366,36 @@ const LOOP_TOOL_SPECS = [
           items: { type: 'object', properties: { op: { type: 'string', description: 'stage.add, stage.remove, stage.move, stage.split, stage.rename, stage.summary, node.add, node.remove, node.move, node.set, node.role, node.rename, transition.set, transition.remove, handover.set, handover.remove, loop.new, loop.rename, loop.move, loop.delete, loop.default, loop.describe or import-d2' } }, required: ['op'] },
           description: 'The operations, each an object with "op" and its fields, as the design skill lists them.',
         },
+        name: { type: 'string', description: 'The loop to act on, opened first with its draft; default the open loop.' },
+        level: { type: 'string', enum: ['plugin', 'user', 'project'], description: 'With name: the level, when the same name lives at more than one; default the level that wins.' },
       },
       required: ['ops'],
     },
   },
   {
     name: 'loop_save',
-    description: "Saves the open loop's draft: validates it, writes loop.json, nodes/*.md, loop.d2 and LOOP.md, and clears the draft. Refused for a plugin loop, and when the saved loop changed on disk since the draft began unless force. Only on the user's word.",
+    description: "Saves the open loop's draft, or the draft of the loop name and level give: validates it, writes loop.json, nodes/*.md, loop.d2 and LOOP.md, and clears the draft. Refused for a plugin loop, and when the saved loop changed on disk since the draft began unless force. Only on the user's word.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
-      properties: { force: { type: 'boolean', description: 'true overwrites a loop that changed on disk since the draft began. Only when the user says to.' } },
+      properties: {
+        force: { type: 'boolean', description: 'true overwrites a loop that changed on disk since the draft began. Only when the user says to.' },
+        name: { type: 'string', description: 'The loop to act on, opened first with its draft; default the open loop.' },
+        level: { type: 'string', enum: ['plugin', 'user', 'project'], description: 'With name: the level, when the same name lives at more than one; default the level that wins.' },
+      },
     },
   },
   {
     name: 'loop_discard',
-    description: "Deletes the open loop's draft; the viewer shows the saved loop again.",
+    description: "Deletes the open loop's draft, or the draft of the loop name and level give; the viewer shows the saved loop again.",
     isDeferred: false,
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The loop to act on, opened first with its draft; default the open loop.' },
+        level: { type: 'string', enum: ['plugin', 'user', 'project'], description: 'With name: the level, when the same name lives at more than one; default the level that wins.' },
+      },
+    },
   },
 ]
 
@@ -2248,6 +2421,41 @@ function elementsFor(surface: string, resolved: Els): Els {
   if (surface !== 'terminal') return resolved
   const { Box, Text, Button, Link } = resolved
   return { Box, Text, Button, Link }
+}
+
+/** The loop each flag of the levels became, for the refusal that names it. */
+const LEVEL_LOOPS: Record<string, string> = { fast: 'core-fast', balanced: 'core', deep: 'core-deep' }
+
+/**
+ * Reads the flags right after `/dacapo:core`: `--loop <name>` (or `--loop=<name>`), and the flags of the levels
+ * (`--fast`, `--balanced`, `--deep`, `--level`, `--judges`), removed in 0.22, as the refusal that names their loop.
+ * Null for a prompt that is not `/dacapo:core`.
+ */
+function coreFlags(text: string): { loop?: string; stale?: string } | null {
+  const m = /^\s*\/dacapo:core(?=\s|$)([\s\S]*)$/.exec(text)
+  if (!m) return null
+  const words = m[1]!.trim().split(/\s+/).filter(Boolean)
+  let loop: string | undefined
+  let i = 0
+  while (i < words.length) {
+    const flag = /^--([a-z-]+)(?:=(.*))?$/.exec(words[i]!)
+    if (!flag) break
+    const [, key, inline] = flag as unknown as [string, string, string | undefined]
+    const value = inline ?? (words[i + 1] && !words[i + 1]!.startsWith('--') ? words[i + 1] : undefined)
+    const used = inline === undefined && value !== undefined ? 2 : 1
+    if (key === 'loop') {
+      loop = value
+      i += used
+      continue
+    }
+    if (key in LEVEL_LOOPS || key === 'level' || key === 'judges') {
+      const target = key in LEVEL_LOOPS ? LEVEL_LOOPS[key]! : key === 'level' && value && value in LEVEL_LOOPS ? LEVEL_LOOPS[value]! : 'core-deep'
+      const rest = words.slice(i + (key in LEVEL_LOOPS ? 1 : used)).filter(w => !/^--(fast|balanced|deep|level|judges)(=|$)/.test(w))
+      return { stale: `"--${key}" was removed in 0.22; depth is a loop now: /dacapo:core --loop ${target} ${rest.join(' ') || '...'}` }
+    }
+    break
+  }
+  return loop ? { loop } : {}
 }
 
 // ---------- the module ----------
@@ -2278,9 +2486,11 @@ export const register: Register = (on, options) => {
 
     const cwd = await io.cwd()
     const repo = await git.repoRoot(io, cwd)
-    await readConf(repo ?? cwd)
-    // where loops live: the plugin's, the user's (DACAPO_HOME or ~/.claude/dacapo) and this repository's, kept out of git
+    // where loops live: the plugin's, the user's (DACAPO_HOME or ~/.claude/dacapo) and this repository's, kept out of git;
+    // the user's conf sits beside them under DACAPO_HOME, else in ~/.claude
     const env = { home: (await io.home().catch(() => undefined)) ?? '', dacapoHome: (await $.env.get('DACAPO_HOME').catch(() => undefined)) || null }
+    userConf = env.home || env.dacapoHome ? userConfPath(env) : null
+    await readConf(repo ?? cwd)
     loopRoots = roots({ ...env, pluginRoot: $.plugin.root, repoRoot: repo })
     loopDrafts = draftsRoot(env)
     loopFs = {
@@ -2300,13 +2510,15 @@ export const register: Register = (on, options) => {
     }
     if (repo) await git.ensureExclude(io, repo, ['.claude/dacapo/']).catch(() => undefined)
     loopRepo = repo
+    // the store is the machine's, shared by every session: the open loop is kept under this scope's key alone
+    const key = lastKey(env.dacapoHome ?? `${env.home}/.claude/dacapo`, repo)
     views = {
       get: () => read($, viewerAtom),
       set: fn => update($, viewerAtom, fn),
       open: focus => $.ui.open(focus ? { id: LOOPS_PANE, title: 'Loops', focus: true } : { id: LOOPS_PANE, title: 'Loops' }),
-      recall: () => $.store.get(LAST_KEY),
+      recall: () => $.store.get(key),
       // the store only remembers the view: a failure there never fails a tool
-      remember: last => (last ? $.store.set(LAST_KEY, last) : $.store.delete(LAST_KEY)).catch(() => undefined),
+      remember: last => (last ? $.store.set(key, last) : $.store.delete(key)).catch(() => undefined),
     }
     viewerReady = true
     registerAgent = spec => $.agent.register(spec)
@@ -2315,6 +2527,8 @@ export const register: Register = (on, options) => {
       return $.tool.register(dispatchSpec(loop))
     }
 
+    // every loop's agents, now: the Agent tool takes agent types only as a session begins, and a run may pick any loop
+    await registerEveryLoop()
     // the active loop: the one the loop conf key names; a loop that fails to load leaves the tools working, and config and start say why
     const resolved = await resolveLoop(conf.conf.loop)
     active = resolved.ok ? { ref: resolved.ref, loop: resolved.loop } : null
@@ -2335,7 +2549,8 @@ export const register: Register = (on, options) => {
       $.command.register({ name: 'dacapo-loops', description: 'Opens the dacapo loop viewer: the library of loops, or the loop last open.' }),
     ])
 
-    // the loop open in the viewer last time, draft included, comes back without taking focus
+    // the loop open in the viewer last time in this scope, draft included, comes back without taking focus: a resumed or
+    // continued session finds it open
     await reopenLast().catch(() => undefined)
 
     $.clock.every(TICK_MS, () => void tick())
@@ -2432,7 +2647,10 @@ export const register: Register = (on, options) => {
     const got = 'result' in ran && ran.result && typeof ran.result === 'object' ? (ran.result as { agentId?: unknown }).agentId : undefined
     const agentId = typeof got === 'string' ? got : undefined
     const now = await io.now()
-    const refused = 'deny' in ran && ran.deny ? String(ran.deny) : 'isError' in ran && ran.isError ? String(ran.result ?? 'the Agent tool reported an error') : ''
+    const said = 'deny' in ran && ran.deny ? String(ran.deny) : 'isError' in ran && ran.isError ? textOf(ran.result) || 'the Agent tool reported an error' : ''
+    // the engine does not know the type: its loop's agents registered after the session began, which the Agent tool takes only at a session's start
+    const unknownType = !!said && said.includes(subagent) && /not found/i.test(said)
+    const refused = unknownType ? `${said.trim()}. dacapo: ${lateText(run.loop?.name ?? conf.conf.loop, [subagent])}` : said
     if (!background) {
       // the foreground call has ended: the answer is its result, whatever id the agent ran under
       spawning.delete(prompt)
@@ -2451,8 +2669,15 @@ export const register: Register = (on, options) => {
       const note = refused || 'the Agent tool answered without an agent id'
       await patchRow(row.id, r => ({ ...r, note: `not started: ${note.slice(0, 300)}` }))
     }
-    return ran
+    return unknownType ? fail(refused) : ran
   }).catch(($, e, next) => (next.called ? next(e) : { deny: 'dacapo: the Agent call could not be prepared' }))
+
+  // the agent types the engine lists for the model: a loop saved after the session began runs only once its types are here
+  on('agent.offer', async ($, e, next) => {
+    const out = await next(e)
+    if (out.isOffered && e.agent.startsWith('dacapo:')) offered.add(e.agent)
+    return out
+  }).catch(($, e, next) => next(e))
 
   on('agent.spawn', async ($, e, next) => {
     const line = WORKTREE_LINE.exec(e.prompt)
@@ -2467,10 +2692,10 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'dacapo-config' }, async () => {
-    const cwd = await io.cwd()
-    await readConf((await git.repoRoot(io, cwd)) ?? cwd)
+    const text = await configText()
+    const where = conf.paths.user ?? '~/.claude/dacapo.conf'
     return {
-      text: `dacapo configuration\n${await configText()}\n\nEdit ~/.claude/dacapo.conf for every repository, or .dacapo.conf at this repository's root; see dacapo.conf in the plugin for the keys. loop names the loop a run walks; commits-skill and prs-skill name the skills commits and pull requests follow; base-branch names the branch runs are cut from and merged into.`,
+      text: `dacapo configuration\n${text}\n\nEdit ${where} for every repository${conf.paths.project ? `, or ${conf.paths.project} for this one` : ''}; see dacapo.conf in the plugin for the keys. loop names the loop a run walks; commits-skill and prs-skill name the skills commits and pull requests follow; base-branch names the branch runs are cut from and merged into.`,
     }
   })
 
@@ -2504,20 +2729,25 @@ export const register: Register = (on, options) => {
       await views.set(s => ({ ...s, screen: 'library', notice: undefined }))
       void views.open()
     }
-    const starts = /^\s*\/dacapo:core(?:\s+--loop(?:\s+|=)(\S+))?(\s|$)/.exec(text)
+    const flags = coreFlags(text)
     let run = await currentRun()
-    if (starts) {
+    if (flags) {
+      // a flag of the levels, or a loop that cannot run, refuses the prompt before the turn: the person sees why and types it again
+      if (flags.stale) return { drop: flags.stale }
       // the run has no heading yet: the prompt is the person's words, the title and overview come from `start` once the task is clear;
       // a --loop flag right after the command names the loop now, so the pane shows its stages while the task is clarified
       const cwd = await io.cwd()
       await readConf((await git.repoRoot(io, cwd)) ?? cwd)
-      const name = starts[1] ?? conf.conf.loop
+      const name = flags.loop ?? conf.conf.loop
       const resolved = await resolveLoop(name)
+      // the loop's agents registered when the session began; a loop saved since gets them now, and start checks the Agent tool lists them
       const registered = resolved.ok ? await ensureAgents(name, resolved.loop).catch(error => ({ problem: String(error), added: [] })) : { problem: resolved.problem, added: [] }
-      asked = registered.problem ? name : null
-      if (resolved.ok && !registered.problem && dispatchFor !== name) await registerDispatch(resolved.loop).catch(() => undefined)
-      run = await openRun('', conf.conf['base-branch'], resolved.ok && !registered.problem ? resolved : undefined)
-      if (registered.problem) io.toast(`dacapo: the loop "${name}" cannot run: ${registered.problem.split('\n')[0]}`)
+      const problem = resolved.ok && registered.problem ? `the loop "${name}" cannot run in this session: ${registered.problem}` : registered.problem
+      // a loop the prompt named is the person's to fix now; the configured loop leaves the run open, and config and start say why
+      if (problem && flags.loop) return { drop: `dacapo: ${problem}` }
+      if (resolved.ok && !problem && dispatchFor !== name) await registerDispatch(resolved.loop).catch(() => undefined)
+      run = await openRun('', conf.conf['base-branch'], resolved.ok && !problem ? resolved : undefined)
+      if (problem) io.toast(`dacapo: ${problem.split('\n')[0]}`)
       void $.ui.open({ id: PANE, title: 'Da capo' })
     }
     if (run) {
@@ -2546,8 +2776,8 @@ export const register: Register = (on, options) => {
   // the architect's tools: the viewer and the draft of one loop
   on('tool.call', { tool: 'mcp__dacapo__loops' }, ($, e) => loopsTool(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__loop_edit' }, ($, e) => loopEdit(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__loop_save' }, ($, e) => saveLoop((e as unknown as Args).force === true)).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__loop_discard' }, () => discardLoop()).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__loop_save' }, ($, e) => saveLoop((e as unknown as Args).force === true, e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__loop_discard' }, ($, e) => discardLoop(e as unknown as Args)).catch(crashed)
   // ----- guards: the orchestrator does not edit, merge or open pull requests; workers stay in their worktree; QA never reads source; the reviewer writes only its report -----
 
   on('tool.call', async ($, e, next) => {
