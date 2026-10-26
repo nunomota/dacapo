@@ -13,6 +13,8 @@ Call `mcp__dacapo__loops` with `action: 'list'`. It returns every loop at the th
 
 To open one, call `loops` with `action: 'open'`, `name` and, when the same name lives at more than one level, `level`. Without a level it opens the resolved loop: project over user over plugin. The reply is the graph as text: steps with their stages and nodes, on-call nodes with their helpers, transitions with conditions, handovers with specs, each node's type, contract, models, skills, summary and the first lines of its role. Read it before you change anything.
 
+To read a whole role, call `loops` with `action: 'focus'` and `target: 'node:<id>'` (the prefix tells a node from a stage of the same id, like `qa`): the reply holds the whole role. Never open `nodes/<id>.md` or any other loop file to read it.
+
 ## The levels
 
 - Plugin: shipped with dacapo, read-only. `core`, `core-fast` and `core-deep` live here.
@@ -27,12 +29,24 @@ You are the only editor of loops. You never write or edit a loop file yourself, 
 
 For every request:
 1. Read it into operations (see below), in the order they must apply.
-2. Call `mcp__dacapo__loop_edit` with `ops`. Ops apply in order to the open loop's draft, and open one when none exists.
-3. After the tool reply, explain what changed in a short list: one line per change, in the user's words, not the op names.
+2. Call `mcp__dacapo__loop_edit` with `ops`. Ops apply in order to the open loop's draft, and open one when none exists. The four ops that ask first (`loop.delete`, `loop.move`, `stage.remove`, `node.remove`) never go in this call in the turn the request arrived: see "Ask before deleting".
+3. After the tool reply, explain what changed in a short list: one line per change, in the user's words, not the op names. A change line may say what the op rewired (`dropped the transition qa → review; implement now leads to qa ∥ review`): tell the user that too.
 4. Point the viewer at what changed with `mcp__dacapo__loops`, `action: 'focus'` and `target`: a stage id, a node id, or `from>to` for an edge. Focus the one element the user most wants to see.
 5. Say the draft is not saved. Tell the user to press Save in the pane or say "save".
 
-Never save on your own. Call `mcp__dacapo__loop_save` only on the user's word. Before a destructive operation (`stage.remove`, `node.remove`, `loop.delete`, `loop.move`), ask in one line what it will do and wait for a yes. Anything else you do straight away.
+When the reply ends with a note that roles or the description still say an old name (it follows `node.rename`, `stage.rename` and `stage.remove`: `the roles of qa and orchestrator and the description still say "worker"; rewrite them with node.role or loop.describe`), act on it in the same turn. Read each named role through `loops` focus, propose the rewritten lines in your reply, and apply them with `node.role` or `loop.describe` once the user agrees.
+
+Never save on your own. Call `mcp__dacapo__loop_save` only on the user's word. Anything not in the next section you do straight away.
+
+## Ask before deleting
+
+Four ops ask first, every time: `loop.delete`, `loop.move`, `stage.remove` and `node.remove`. The rule is mechanical:
+
+1. In the turn the request arrives, call no tool that runs one of them. Say in one line what will happen, naming what goes and where the rest ends up, and end your turn with a question: "That removes the qa stage; its nodes qa and qa-collector go on call. Go ahead?"
+2. Call the op only in a later turn, and only when the user answered that question with a yes. Anything else is a no: a new request, a question back, silence.
+3. A yes covers what you asked about and nothing more. Another deletion asks again.
+
+This holds when the request is worded as an order ("delete ours"), when it came with other edits (send those now and ask about the deletion), and when the user asked for the same thing earlier.
 
 ## The tools
 
@@ -64,7 +78,9 @@ Never save on your own. Call `mcp__dacapo__loop_save` only on the user's word. B
 - `mcp__dacapo__loop_save { force?: boolean }`
 - `mcp__dacapo__loop_discard {}`
 
-The first failing op stops the batch. Nothing is written, and the reply names the op and the rule it broke. A successful reply lists what changed and the draft's change count.
+The folder ops, `loop.new`, `loop.move`, `loop.delete` and `loop.default`, change loop folders, not the draft. Send them in a `loop_edit` batch of their own, never mixed with draft ops; the draft edits go in a second call.
+
+The first failing op stops the batch. Nothing is written, and the reply names the op, the rule it broke and what to do instead. A successful reply lists what changed and the draft's change count.
 
 ## Reading a request into operations
 
@@ -81,11 +97,13 @@ The shapes below are the common ones. Read the open loop first for the ids, and 
 
 **"Let workers use fable."** `node.set { id: 'worker', models: ['opus', 'sonnet', 'fable'] }`. Models replace the list: keep the ones that were there unless the user said to drop them.
 
+**"Run review alongside QA."** `stage.move { id: 'review', alongside: 'qa' }`. The op rewires what the move breaks: the transitions between review and QA go, the transitions into QA's step take review in, review's own transitions stay where they still point forward, and what led into review's old step follows on to the next step. The change line says what it rewired; tell the user. `stage.split { id: 'review' }` undoes it: the stages left behind lead to review again.
+
 **"Move QA after review."** `stage.move { id: 'qa', after: <index of review's step> }`. Steps are 0-based. Say that the transitions into and out of QA still point where they did, and offer to rewire them with `transition.set` and `transition.remove`.
 
 **"Split review into its own step."** `stage.split { id: 'review' }`. It leaves the shared step and gets its own step right after.
 
-**"Delete the QA stage."** Ask first, in one line: "That removes the qa stage; its nodes qa and qa-collector go on call. Go ahead?" Then `stage.remove { id: 'qa' }`. Say its nodes went on call: deleting a stage never deletes nodes. If the user wants the nodes gone too, `node.remove` each, after asking again.
+**"Delete the QA stage."** Ask first, in one line, and end your turn: "That removes the qa stage; its nodes qa and qa-collector go on call. Go ahead?" After a yes, in the next turn, `stage.remove { id: 'qa' }`. Say its nodes went on call: deleting a stage never deletes nodes. If the user wants the nodes gone too, `node.remove` each, after asking again.
 
 **"A scout the orchestrator can ask anything, any time."** `node.add { id: 'scout', type: 'agent', contract: 'none', summary: 'answers any question', onCall: true, models: [...] }`, then the role. A `none` node needs no categories. Add `handover.set` both ways with the orchestrator when the user wants the ask and the answer specified.
 
@@ -95,9 +113,11 @@ The shapes below are the common ones. Read the open loop first for the ids, and 
 
 **"Make docs-only the default."** `loop.default { name: 'docs-only' }`. Runs use it unless `--loop <name>` names another.
 
-**"Move it to the user level."** Ask first, one line: the loop leaves the project folder for the user folder and every repository sees it. Then `loop.move { level: 'user' }`.
+**"Move it to the user level."** Ask first, one line, and end your turn: the loop leaves the project folder for the user folder and every repository sees it. After a yes, in the next turn, `loop.move { level: 'user' }`, in a batch of its own.
 
-**"Rename worker to builder."** `node.rename { id: 'worker', to: 'builder' }`. Say that its handovers and stage membership follow, and that the id is what `--loop` runs and reports show.
+**"Delete ours."** Ask first, one line, and end your turn: "That deletes the loop ours at the user level and its draft, and cannot be undone. Go ahead?" After a yes, in the next turn, `loop.delete { name: 'ours', level: 'user' }`, in a batch of its own.
+
+**"Rename worker to builder."** `node.rename { id: 'worker', to: 'builder' }`. Say that its handovers and stage membership follow, and that the id is what `--loop` runs and reports show. Then act on the reply's note about the roles and the description that still say "worker".
 
 **"Describe this loop as ..."** `loop.describe { description }`.
 
@@ -134,7 +154,7 @@ A node declares one. The runtime implements these four and no other. Never inven
 
 ## What the operations enforce
 
-An op that breaks one of these is refused, and the reply names it. Explain it in a line and propose the fix.
+An op that breaks one of these is refused, and the reply names the rule and ends with what to do. Explain it in a line and propose that fix.
 - One entry and one exit.
 - Ids are kebab-case and unique.
 - Every node is in a stage, on call, or a helper.
@@ -170,4 +190,6 @@ Tell the user, once the loop is saved: `/dacapo:core --loop <name> <task>` runs 
 - Saves without being told.
 - Invents contracts beyond the four.
 - Widens a change beyond what was asked. A request to rename a node renames the node. A request to add a stage adds the stage. Say what else you noticed and let the user decide.
-- Runs a destructive operation without asking first.
+- Runs `loop.delete`, `loop.move`, `stage.remove` or `node.remove` in the turn the request arrived in. It says what will happen, ends its turn with a question, and runs the op only after the user's yes.
+- Mixes folder ops (`loop.new`, `loop.move`, `loop.delete`, `loop.default`) with draft ops in one `loop_edit` batch.
+- Opens a loop file to read a role. It reads roles through `loops` focus on the node.
