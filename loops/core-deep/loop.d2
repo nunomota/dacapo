@@ -11,50 +11,57 @@ classes: {
   handover: {}
 }
 
-orchestrator: { class: entry; summary: talks to you }
+orchestrator: { class: entry; tooltip: talks to you }
 
 step1: {
-  clarify: { class: stage; summary: until nothing is open }
+  label: step 1
+  clarify: { class: stage; tooltip: until nothing is open }
 }
 
 step2: {
-  research: { class: stage; summary: stack, commands, hazards }
+  label: step 2
+  research: { class: stage; tooltip: stack, commands, hazards }
 }
 
 step3: {
-  plan: { class: stage; summary: tasks, rubric, harness }
+  label: step 3
+  plan: { class: stage; tooltip: tasks, rubric, harness }
 }
 
 step4: {
+  label: step 4
   implement: {
     class: stage
-    summary: build in parallel
-    worker: { class: swarm; summary: builds one task }
+    tooltip: build in parallel
+    worker: { class: swarm; tooltip: builds one task }
   }
 }
 
 step5: {
+  label: step 5
   qa: {
     class: stage
-    summary: as the end user
-    qa: { class: agent; summary: judges as the user }
-    qa-collector: { class: swarm; summary: gathers evidence }
+    tooltip: as the end user
+    qa: { class: agent; tooltip: judges as the user }
+    qa-collector: { class: swarm; tooltip: gathers evidence }
   }
 }
 
 step6: {
+  label: step 6
   review: {
     class: stage
-    summary: as an engineer
-    reviewer: { class: agent; summary: judges the change }
+    tooltip: as an engineer
+    reviewer: { class: agent; tooltip: judges the change }
   }
 }
 
 step7: {
-  merge: { class: stage; summary: integrate the run }
+  label: step 7
+  merge: { class: stage; tooltip: integrate the run }
 }
 
-done: { class: exit; summary: the run ends }
+done: { class: exit; tooltip: the run ends }
 
 orchestrator -> step1: handed over { class: transition }
 step1 -> step2: nothing open { class: transition }

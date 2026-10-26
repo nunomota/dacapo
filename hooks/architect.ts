@@ -1,6 +1,6 @@
 import type { Contract, DraftInfo, Handover, Loop, LoopLevel, LoopNode, LoopRef, Problem, Stage, Step, Transition } from '../types/loops'
 import { fromD2, toD2 } from './loopd2'
-import { blankLoop, countsOf, discardDraft, draftKey, graphOf, hashLoop, ID, readLoop, stageIndex, validateLoop, withDefaultTransitions, writeLoop, type LoopFs, type Roots } from './loops'
+import { blankLoop, countsOf, discardDraft, draftKey, endName, graphOf, hashLoop, ID, readLoop, stageIndex, transitionWords, validateLoop, withDefaultTransitions, writeLoop, type LoopFs, type Roots } from './loops'
 
 // The architect edits a draft of one loop through a fixed set of operations. `applyOps` checks and applies them to a
 // copy of the loop; the on-disk operations create, rename, move, delete and save loop folders and their drafts.
@@ -56,8 +56,6 @@ const sameSet = (a: string[], b: string[]) => a.length === b.length && new Set(a
 const list = (items: string[]) => (items.length ? items.join(', ') : 'none')
 /** Names in prose: `a`, `a and b`, `a, b and c`; `or` for a choice. */
 const series = (items: string[], conj: 'and' | 'or' = 'and') => (items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} ${conj} ${items.at(-1)}`)
-/** A transition as a change line names it: `qa → review`, `merge ⇢ implement`, `implement → qa ∥ review`. */
-const arrow = (t: { from: string; to: string[]; back?: boolean }) => `${t.from} ${t.back ? '⇢' : '→'} ${t.to.join(' ∥ ')}`
 /** An id to suggest for a name that is not one: `Docs Only` becomes `docs-only`. */
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 const stageIdsOf = (loop: Loop) => loop.steps.flatMap(s => s.stages.map(st => st.id))
@@ -83,8 +81,13 @@ function position(o: { after?: number; alongside?: string }): string {
   return `after step ${o.after + 1}`
 }
 
-/** One line in the user's words for the change list: `added stage security alongside qa`, `moved worker on call`, ... */
-export function describeOp(op: Op): string {
+/**
+ * One line in the user's words for the change list: `added stage security alongside qa`, `moved worker on call`, ...
+ * With the loop, a transition's entry and exit are named by their node ids, as everywhere a person reads them.
+ */
+export function describeOp(op: Op, loop?: Pick<Loop, 'entry' | 'exit'>): string {
+  const end = (word: string) => (loop ? endName(loop, word) : word)
+  const ends = (words: string[]) => words.map(end).join(' and ')
   switch (op.op) {
     case 'stage.add':
       return `added stage ${op.id} ${position(op)}`
@@ -120,9 +123,9 @@ export function describeOp(op: Op): string {
     case 'node.rename':
       return `renamed node ${op.id} to ${op.to}`
     case 'transition.set':
-      return `set ${op.back ? 'back transition' : 'transition'} ${op.from} to ${op.to.join(' and ')}${op.label ? `: ${op.label}` : ''}`
+      return `set ${op.back ? 'back transition' : 'transition'} ${end(op.from)} to ${ends(op.to)}${op.label ? `: ${op.label}` : ''}`
     case 'transition.remove':
-      return `removed transition ${op.from} to ${op.to.join(' and ')}`
+      return `removed transition ${end(op.from)} to ${ends(op.to)}`
     case 'handover.set':
       return `set handover ${op.from} to ${op.to}: ${op.label}`
     case 'handover.remove':
@@ -175,7 +178,7 @@ const FIELD_WORDS: Record<Field, string> = {
   int: 'a whole number',
   true: 'true',
   bool: 'true or false',
-  tools: 'like { deny: [Edit] }',
+  tools: 'the tools to deny: deny with a list of tool names, like Edit',
   contract: `one of ${CONTRACTS.join(', ')}`,
   type: 'agent or swarm',
 }
@@ -202,28 +205,36 @@ function fits(value: unknown, field: Field): boolean {
   }
 }
 
+/** What an op takes, in words: `stage.add takes id, summary, after and alongside`; node.set, its id and the fields to change. */
+function takesWords(name: Op['op']): string {
+  const shape = SHAPES[name]
+  const keys = [...Object.keys(shape.required), ...Object.keys(shape.optional)]
+  if (name === 'node.set') return `node.set takes id and the fields to change (${series(Object.keys(shape.optional), 'or')})`
+  return keys.length > 0 ? `${name} takes ${series(keys)}` : `${name} takes nothing but op`
+}
+
 /** Parses an untyped tool argument into an Op, or says what is wrong. */
 export function parseOp(value: unknown): { op: Op } | { problem: string } {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return { problem: 'an op is an object like { "op": "stage.add", ... }' }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { problem: 'an op is one object that names itself in op, like stage.add, beside its fields; send each op so' }
   const raw = value as Record<string, unknown>
   const name = raw.op
-  if (typeof name !== 'string') return { problem: 'the op has no "op" naming it, like "stage.add"' }
-  if (FOLDER_OPS.includes(name)) return { problem: `${name} changes loop folders, not the draft; it is not an edit the draft takes` }
+  if (typeof name !== 'string') return { problem: 'the op does not name itself; give op, like stage.add' }
+  if (FOLDER_OPS.includes(name)) return { problem: `${name} changes loop folders, not the draft; send it in a batch of its own` }
   const shape = SHAPES[name as Op['op']]
-  if (!shape) return { problem: `"${name}" is not an op (one of ${Object.keys(SHAPES).join(', ')})` }
+  if (!shape) return { problem: `"${name}" is not an op; name one of ${series(Object.keys(SHAPES), 'or')}` }
   const known = { ...shape.required, ...shape.optional }
   const out: Record<string, unknown> = { op: name }
   for (const key of Object.keys(raw)) {
     if (key === 'op') continue
-    if (!(key in known)) return { problem: `${name} does not take "${key}"${Object.keys(known).length ? ` (it takes ${Object.keys(known).join(', ')})` : ''}` }
+    if (!(key in known)) return { problem: `${takesWords(name as Op['op'])}; "${key}" is not one of them` }
   }
   for (const [key, field] of Object.entries(known)) {
     const v = raw[key]
     if (v === undefined) {
-      if (key in shape.required) return { problem: `${name} needs "${key}", ${FIELD_WORDS[field]}` }
+      if (key in shape.required) return { problem: `${name} needs ${key}; give it as ${FIELD_WORDS[field]}` }
       continue
     }
-    if (!fits(v, field)) return { problem: `${name}: "${key}" must be ${FIELD_WORDS[field]}` }
+    if (!fits(v, field)) return { problem: `${name}: ${key} is not ${FIELD_WORDS[field]}; give ${key} as ${FIELD_WORDS[field]}` }
     out[key] = field === 'strings' ? [...(v as string[])] : field === 'tools' ? { deny: [...(v as { deny: string[] }).deny] } : v
   }
   return { op: out as Op }
@@ -418,8 +429,29 @@ class Draft {
 
   /** Says what an op rewired: the transitions it dropped, then where each changed one now leads. */
   say(dropped: Transition[], led: Set<Transition>) {
-    if (dropped.length > 0) this.rewired.push(`dropped the transition${dropped.length > 1 ? 's' : ''} ${series(dropped.map(arrow))}`)
-    for (const t of this.loop.transitions) if (led.has(t)) this.rewired.push(`${t.from} now leads ${t.back ? 'back ' : ''}to ${t.to.join(' ∥ ')}`)
+    const loop = this.loop
+    if (dropped.length > 0) this.rewired.push(`dropped the transition${dropped.length > 1 ? 's' : ''} ${series(dropped.map(t => transitionWords(loop, t)))}`)
+    for (const t of loop.transitions) if (led.has(t)) this.rewired.push(`${endName(loop, t.from)} now leads ${t.back ? 'back ' : ''}to ${t.to.map(w => endName(loop, w)).join(' ∥ ')}`)
+  }
+
+  /**
+   * After a stage joins a step: a stage of the step that leads on only by default, to where a sibling's stored forward
+   * transition leads, takes that transition's label, so the step reads alike (`qa → merge: all pass` beside
+   * `review → merge: all pass`). Each one taken is said.
+   */
+  matchSiblings(step: Step) {
+    const loop = this.loop
+    const ids = step.stages.map(s => s.id)
+    const defaults = withDefaultTransitions(loop).transitions.slice(loop.transitions.length)
+    for (const id of ids) {
+      const own = defaults.find(t => t.from === id && !t.back)
+      if (!own) continue
+      const like = loop.transitions.find(t => !t.back && t.label && t.from !== id && ids.includes(t.from) && sameSet(t.to, own.to))
+      if (!like) continue
+      const t: Transition = { from: id, to: [...own.to], label: like.label }
+      loop.transitions.push(t)
+      this.rewired.push(`${transitionWords(loop, t)}: ${t.label}, the label of ${transitionWords(loop, like)}`)
+    }
   }
 
   /** Takes a node out of its place. An on-call node's helpers stay on call, as on-call nodes of their own. */
@@ -459,18 +491,21 @@ class Draft {
     }
   }
 
-  /** A transition end: a stage id, or entry or exit. */
-  end(id: string) {
-    if (id === ENTRY || id === EXIT) return
-    if (stageIndex(this.loop).has(id)) return
-    const JOINS = 'a transition joins stages, entry and exit'
-    if (id === this.loop.entry) refuse(`"${id}" is the entry node; ${JOINS}, so say entry`)
-    if (id === this.loop.exit) refuse(`"${id}" is the exit node; ${JOINS}, so say exit`)
+  /**
+   * A transition end as loop.json stores it: a stage id, or the word entry or exit. The entry and exit node ids stand
+   * for the words (`merge` to `done` is `merge` to `exit`), unless a stage has that id.
+   */
+  end(id: string): string {
+    if (id === ENTRY || id === EXIT) return id
+    if (stageIndex(this.loop).has(id)) return id
+    if (id === this.loop.entry) return ENTRY
+    if (id === this.loop.exit) return EXIT
+    const JOINS = 'a transition joins stages, the entry and the exit'
     if (this.loop.nodes[id]) {
       const home = this.loop.steps.flatMap(s => s.stages).find(st => st.nodes.includes(id))
       refuse(`"${id}" is a node, not a stage; ${JOINS}, so ${home ? `name its stage ${home.id}` : this.nameStage()}`)
     }
-    refuse(`there is no stage "${id}"; ${JOINS}, so ${this.nameStage()}`)
+    return refuse(`there is no stage "${id}"; ${JOINS}, so ${this.nameStage()}`)
   }
 }
 
@@ -496,6 +531,7 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
       if (op.after !== undefined) d.after(op.after)
       const step = op.alongside !== undefined ? d.alongside(op.alongside) : d.insert(op.after === undefined ? loop.steps.length : op.after + 1)
       d.join({ id: op.id, summary: op.summary, nodes: [] }, step)
+      if (op.alongside !== undefined) d.matchSiblings(step)
       return
     }
     case 'stage.remove': {
@@ -516,7 +552,10 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
       if (op.after !== undefined && op.alongside !== undefined) refuse('give after or alongside, not both')
       if (op.alongside !== undefined) {
         const step = d.alongside(op.alongside, op.id)
-        if (step !== from) d.moveAlongside(op.id, step)
+        if (step !== from) {
+          d.moveAlongside(op.id, step)
+          d.matchSiblings(step)
+        }
         return
       }
       if (op.after !== undefined) d.after(op.after)
@@ -623,22 +662,25 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
       return
     }
     case 'transition.set': {
-      for (const id of [op.from, ...op.to]) d.end(id)
-      if (op.to.length === 0) refuse('the transition goes nowhere; list in to the stages it leads to')
-      const t: Transition = { from: op.from, to: [...op.to], back: op.back || undefined, label: op.label, when: op.when, then: op.then }
-      const i = loop.transitions.findIndex(x => x.from === op.from && sameSet(x.to, op.to))
+      const from = d.end(op.from)
+      const to = op.to.map(id => d.end(id))
+      if (to.length === 0) refuse('the transition goes nowhere; list in to the stages it leads to')
+      const t: Transition = { from, to, back: op.back || undefined, label: op.label, when: op.when, then: op.then }
+      const i = loop.transitions.findIndex(x => x.from === from && sameSet(x.to, to))
       if (i >= 0) loop.transitions[i] = t
       else loop.transitions.push(t)
       return
     }
     case 'transition.remove': {
-      for (const id of [op.from, ...op.to]) d.end(id)
-      const i = loop.transitions.findIndex(x => x.from === op.from && sameSet(x.to, op.to))
+      const from = d.end(op.from)
+      const to = op.to.map(id => d.end(id))
+      const i = loop.transitions.findIndex(x => x.from === from && sameSet(x.to, to))
       if (i < 0) {
-        const out = loop.transitions.filter(x => x.from === op.from)
+        const out = loop.transitions.filter(x => x.from === from)
+        const name = endName(loop, from)
         refuse(
-          `there is no transition from ${op.from} to ${series(op.to)}; ${
-            out.length > 0 ? `name one of ${series(out.map(arrow), 'or')}` : `${op.from} leads on only by default, so set another with transition.set`
+          `there is no transition from ${name} to ${series(to.map(w => endName(loop, w)))}; ${
+            out.length > 0 ? `name one of ${series(out.map(t => transitionWords(loop, t)), 'or')}` : `${name} leads on only by default, so set another with transition.set`
           }`,
         )
       }
@@ -701,15 +743,16 @@ function explain(loop: Loop, p: Problem): string {
   const at = /^(transitions|handovers)\[(\d+)\]$/.exec(p.path)
   const t = at?.[1] === 'transitions' ? loop.transitions[Number(at[2])] : undefined
   if (t) {
-    const the = `the ${t.back ? 'back ' : ''}transition from ${t.from} to ${series(t.to)}`
+    const end = (w: string) => endName(loop, w)
+    const from = end(t.from)
+    const the = `the ${t.back ? 'back ' : ''}transition from ${from} to ${series(t.to.map(end))}`
     const index = stageIndex(loop)
     const stepOf = (s: string) => (s === ENTRY ? -1 : s === EXIT ? loop.steps.length : (index.get(s)?.step ?? -1))
     if (p.message.startsWith('to of a forward transition')) {
       const target = stepOf(t.to.find(s => s !== EXIT) ?? EXIT)
-      const all = loop.steps[target]?.stages.map(s => s.id) ?? [EXIT]
+      const all = (loop.steps[target]?.stages.map(s => s.id) ?? [EXIT]).map(end)
       const which = target === stepOf(t.from) + 1 ? 'the next step' : `step ${target + 1}`
-      const replace = `transition.remove from ${t.from} to [${t.to.join(', ')}] and transition.set from ${t.from} to [${all.join(', ')}]`
-      return `the transition from ${t.from} must lead to every stage of ${which}: ${series(all)}; replace it with ${replace}`
+      return `the transition from ${from} must lead to every stage of ${which}: ${series(all)}; remove the one from ${from} to ${series(t.to.map(end))} with transition.remove, and set one from ${from} to ${series(all)} with transition.set`
     }
     if (p.message.startsWith('a transition to an earlier step')) return `${the} leads to an earlier step or its own; set it again with back: true, or point it at a later step`
     if (p.message.startsWith('a back transition')) return `${the} does not lead to one earlier step; point it at a stage of an earlier step, or set it again without back`
@@ -729,7 +772,15 @@ function explain(loop: Loop, p: Problem): string {
     if (n && key === 'models' && /needs at least one model/.test(p.message)) {
       return `node ${id} ${n.contract === 'lands' ? 'lands work' : 'scores'} but has no model; give it at least one with node.set models`
     }
-    if (key === 'contract' && n?.contract === 'collects') return `node ${id} collects evidence but no scores node hands over to it; add a handover.set from its judge to ${id}`
+    if (key === 'contract' && n?.contract === 'collects') {
+      // the judge to name is one the loop still has: never the node a batch just removed
+      const judges = Object.values(loop.nodes).filter(x => x.contract === 'scores').map(x => x.id)
+      const fix =
+        judges.length > 0
+          ? `add a handover to ${id} from ${series(judges, 'or')} with handover.set, or remove ${id} with node.remove`
+          : `no scores node is left to hand it slices, so remove ${id} with node.remove, or give it another contract with node.set`
+      return `node ${id} collects evidence but no scores node hands over to it; ${fix}`
+    }
     if (key === undefined && /in no stage and not on call/.test(p.message)) return `node ${id} is in no stage and not on call; place it with node.move`
     const times = /is placed (\d+) times/.exec(p.message)
     if (key === undefined && times) return `node ${id} is placed ${times[1]} times; put it in one place with node.move`
@@ -747,7 +798,7 @@ function explain(loop: Loop, p: Problem): string {
   if (step) return `step ${Number(step[1]) + 1}: ${p.message}`
   const onCall = /^onCall\.(.+)$/.exec(p.path)
   if (onCall) return `on call: ${p.message}; take it out with node.remove or node.move`
-  if (p.path === 'exit' && /not reachable/.test(p.message)) return 'exit is not reachable from entry; lead a transition from the last step to exit with transition.set'
+  if (p.path === 'exit' && /not reachable/.test(p.message)) return `the exit ${loop.exit} is not reachable from the entry ${loop.entry}; lead a transition from the last step to ${loop.exit} with transition.set`
   if (p.path === 'description') return `${p.message}, with loop.describe`
   if (p.path === 'name') return `${p.message}; rename the loop with loop.rename`
   // entry and exit say what is wrong in a whole sentence; no raw path reaches the user
@@ -784,17 +835,21 @@ function staleNotes(loop: Loop, old: string[]): string[] {
 /** The problems of a loop as they would be after a batch: over its transitions without the stored defaults. */
 const problemsAfter = (loop: Loop) => problemsOf({ ...loop, transitions: stripDefaults(loop) })
 
+/** A refused batch: the op that failed and why. `op: 'batch'` is a loop that breaks rules after the last op, with `culprits` the ops that brought the problems in (none when no op can be told). */
+export type Refused = { ok: false; index: number; op: string; problems: string[]; culprits?: { index: number; op: string }[] }
+
 /**
  * Applies the ops in order to a copy of the loop. The first op that cannot apply stops everything: nothing is returned
  * but the problem. After the last op the whole loop must validate, else the batch is refused with the problems, named
- * by the op that brought them in when one op did, else as the batch. A batch that leaves the loop as it was is refused
- * too. A change line says what its op rewired; notes on prose an id change left stale follow the change lines.
+ * by the op that brought them in when one op did, else as the batch with every op that brought one in as `culprits`
+ * (none when a problem was there before the first op). A batch that leaves the loop as it was is refused too. A change
+ * line, one per op, says what its op rewired; `notes` on prose an id change left stale come apart from them.
  */
 export function applyOps(
   loop: Loop,
   ops: Op[],
   ctx: { d2?: string; opaque?: string[] },
-): { ok: true; loop: Loop; changes: string[]; opaque: string[] } | { ok: false; index: number; op: string; problems: string[] } {
+): { ok: true; loop: Loop; changes: string[]; notes: string[]; opaque: string[] } | Refused {
   if (ops.length === 0) return { ok: false, index: 0, op: 'batch', problems: ['the batch holds no ops; send at least one'] }
   const d = new Draft(copyLoop(loop))
   let opaque = [...(ctx.opaque ?? [])]
@@ -813,16 +868,19 @@ export function applyOps(
       const problems = e instanceof Refusal ? e.message.split('\n') : [`the op failed: ${errorText(e)}`]
       return { ok: false, index: i, op: String((op as { op?: unknown })?.op), problems }
     }
-    changes.push([d.head ?? describeOp(op), ...d.rewired].join('; '))
+    changes.push([d.head ?? describeOp(op, d.loop), ...d.rewired].join('; '))
     if (op.op === 'node.rename' || op.op === 'stage.rename' || op.op === 'stage.remove') old.push(op.id)
     seen.push(problemsAfter(d.loop))
   }
   const problems = seen[ops.length]!
   if (problems.length > 0) {
-    const by = new Set(problems.map(p => broughtIn(seen, p)))
-    const [i] = [...by]
-    if (by.size === 1 && i !== undefined && i >= 0) return { ok: false, index: i, op: ops[i]!.op, problems }
-    return { ok: false, index: ops.length, op: 'batch', problems }
+    const by = [...new Set(problems.map(p => broughtIn(seen, p)))].sort((a, b) => a - b)
+    const [i] = by
+    if (by.length === 1 && i !== undefined && i >= 0) return { ok: false, index: i, op: ops[i]!.op, problems }
+    const culprits = by.includes(-1) ? [] : by.map(index => ({ index, op: ops[index]!.op }))
+    // the problems in the order of the ops that brought them in, as the refusal names those ops
+    const ordered = problems.map((p, k) => ({ p, k, at: broughtIn(seen, p) })).sort((a, b) => a.at - b.at || a.k - b.k)
+    return { ok: false, index: ops.length, op: 'batch', problems: ordered.map(o => o.p), culprits }
   }
   d.loop.transitions = stripDefaults(d.loop)
   const before = copyLoop(loop)
@@ -833,7 +891,7 @@ export function applyOps(
     const last = ops.length - 1
     return { ok: false, index: last, op: ops[last]!.op, problems: ['nothing changed; the loop already has that'] }
   }
-  return { ok: true, loop: d.loop, changes: [...changes, ...staleNotes(d.loop, old)], opaque }
+  return { ok: true, loop: d.loop, changes, notes: staleNotes(d.loop, old), opaque }
 }
 
 /** The op that brought in a problem: the last after which it appeared and stayed; -1 when the loop had it before the first. */
@@ -850,8 +908,10 @@ const sameList = (a: string[], b: string[]) => a.length === b.length && a.every(
 // On disk
 
 const draftJson = (info: DraftInfo) => `${JSON.stringify({ base: info.base, since: info.since, changes: info.changes }, null, 2)}\n`
+/** How a person changes a plugin loop, in their words: `copy it first: say "new loop <name> at user level from core"`. */
+export const copyFirst = (name: string) => `copy it first: say "new loop <name> at user level from ${name}"`
 /** The refusal of a change to a plugin loop: copy it first. */
-const readOnly = (name: string) => `the plugin's loops are read-only; copy ${name} with loop.new and from, then change the copy`
+const readOnly = (name: string) => `the plugin's loops are read-only; ${copyFirst(name)}, then change the copy`
 /** The end of a refusal that names no loop. */
 const CHECK_LIBRARY = 'check the name and level in the library'
 
@@ -919,7 +979,7 @@ export async function loopNew(
     if (await hasDraft(fs, draftDir)) refuse(`a draft of ${a.name} at the ${a.level} level is already open; continue it or discard it`)
     let loop = blankLoop(a.name)
     let change = `new loop ${a.name}`
-    let d2: string | null = null
+    let opaque: string[] = []
     if (a.from) {
       const source = loopDir(roots, a.from.level, a.from.name)
       if (!(await hasLoop(fs, source))) refuse(`there is no loop ${a.from.name} at the ${a.from.level} level; ${CHECK_LIBRARY}`)
@@ -927,10 +987,11 @@ export async function loopNew(
       const description = `A copy of ${a.from.name} (${a.from.level}): ${read.description}`
       loop = { ...read, name: a.name, description }
       change = `new from ${a.from.name} (${a.from.level}), described as "${description}"`
-      if (await fs.exists(join(source, 'loop.d2'))) d2 = await fs.read(join(source, 'loop.d2'))
+      opaque = await opaqueOf(fs, source, read)
     }
     const info: DraftInfo = { dir: draftDir, base: null, since: Date.now(), changes: [change] }
-    await writeLoop(fs, draftDir, loop, d2 === null ? undefined : { 'loop.d2': d2 })
+    // a draft is a whole loop folder: its diagram too, with the blocks of the source's diagram the subset does not know
+    await writeLoop(fs, draftDir, loop, { 'loop.d2': toD2(loop, opaque) })
     await fs.write(join(draftDir, 'draft.json'), draftJson(info))
     const ref: LoopRef = { name: a.name, level: a.level, dir, description: loop.description, draft: info, counts: countsOf(loop, Object.keys(loop.nodes).length) }
     return { ok: true, ref, loop, info }
@@ -976,9 +1037,20 @@ export async function loopRename(fs: LoopFs, roots: Roots, draftsRoot: string, r
   })
 }
 
-/** Moves a loop between the user and project levels, with its draft. Refused for a plugin loop or when the target is taken. */
-export async function loopMove(fs: LoopFs, roots: Roots, draftsRoot: string, repoRoot: string | null, a: { name: string; from: LoopLevel; to: 'user' | 'project' }): Promise<string | null> {
-  return guarded(async () => {
+/**
+ * Moves a loop between the user and project levels, with its draft when it has one. Refused for a plugin loop or when
+ * the target is taken. Returns the problem, or whether a draft moved with it. With `check`, only the refusals run:
+ * nothing moves, so a caller can ask before it moves.
+ */
+export async function loopMove(
+  fs: LoopFs,
+  roots: Roots,
+  draftsRoot: string,
+  repoRoot: string | null,
+  a: { name: string; from: LoopLevel; to: 'user' | 'project'; check?: true },
+): Promise<string | { draftMoved: boolean }> {
+  let draftMoved = false
+  const problem = await guarded(async () => {
     if (a.from === 'plugin') refuse(readOnly(a.name))
     if (a.from === a.to) refuse(`the loop is already at the ${a.to} level; name the other level to move it`)
     const from = loopDir(roots, a.from, a.name)
@@ -988,19 +1060,22 @@ export async function loopMove(fs: LoopFs, roots: Roots, draftsRoot: string, rep
     const fromDraft = join(draftsRoot, draftKey({ level: a.from, name: a.name, repoRoot }))
     const toDraft = join(draftsRoot, draftKey({ level: a.to, name: a.name, repoRoot }))
     if (await fs.exists(toDraft)) refuse(`a draft of ${a.name} at the ${a.to} level is already open; save or discard it first`)
+    if (a.check) return
     await copyTree(fs, from, to)
     await fs.remove(from)
     if (await fs.exists(fromDraft)) {
       await copyTree(fs, fromDraft, toDraft)
       await fs.remove(fromDraft)
+      draftMoved = true
     }
   })
+  return problem ?? { draftMoved }
 }
 
 /** Deletes a loop's folder and its draft. Refused for a plugin loop. */
 export async function loopDelete(fs: LoopFs, roots: Roots, draftsRoot: string, repoRoot: string | null, a: { name: string; level: LoopLevel }): Promise<string | null> {
   return guarded(async () => {
-    if (a.level === 'plugin') refuse("the plugin's loops are read-only and cannot be deleted; to stop using one, make another loop the default with loop.default")
+    if (a.level === 'plugin') refuse(`the plugin's loops are read-only and cannot be deleted; to stop using ${a.name}, make another loop the default: say "make <name> the default"`)
     const dir = loopDir(roots, a.level, a.name)
     const draft = join(draftsRoot, draftKey({ level: a.level, name: a.name, repoRoot }))
     const [folder, drafted] = await Promise.all([fs.exists(dir), fs.exists(draft)])
@@ -1010,7 +1085,7 @@ export async function loopDelete(fs: LoopFs, roots: Roots, draftsRoot: string, r
   })
 }
 
-/** Writes `loop = <name>` into a conf file (`~/.claude/dacapo.conf` for a user or plugin loop, `<repo>/.dacapo.conf` for a project loop), replacing an existing `loop =` line, keeping every other line. */
+/** Writes `loop = <name>` into a conf file (the user conf for a user or plugin loop, `<repo>/.dacapo.conf` for a project loop), replacing an existing `loop =` line, keeping every other line. */
 export async function setDefaultLoop(fs: LoopFs, confPath: string, name: string): Promise<string | null> {
   return guarded(async () => {
     checkId(name, 'loop')
@@ -1032,7 +1107,7 @@ export async function setDefaultLoop(fs: LoopFs, confPath: string, name: string)
 /** Validates, writes loop.json, nodes/*.md, loop.d2 (toD2 with the opaque blocks) and LOOP.md, then clears the draft. Refuses a plugin loop; refuses when the folder's hash differs from `info.base` unless `force`. */
 export async function saveDraft(fs: LoopFs, a: { ref: LoopRef; loop: Loop; info: DraftInfo; opaque: string[]; force?: boolean }): Promise<string | null> {
   return guarded(async () => {
-    if (a.ref.level === 'plugin') refuse("the plugin's loops are read-only; copy it to user or project first")
+    if (a.ref.level === 'plugin') refuse(readOnly(a.ref.name))
     const problems = problemsOf(a.loop)
     if (problems.length > 0) refuse(`the draft does not validate: ${problems.join(' · ')}`)
     const saved = (await hasLoop(fs, a.ref.dir)) ? hashLoop((await readLoop(fs, a.ref.dir)).loop) : null

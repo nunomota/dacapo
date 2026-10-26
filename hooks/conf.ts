@@ -24,8 +24,17 @@ export const CONF_KEYS: readonly ConfKey[] = ['loop', 'workers', 'qa', 'review',
 const REMOVED_KEYS = ['level', 'judges']
 /** The loops the plugin ships, shallowest first: what a removed key is told to choose from when no loops are known. */
 export const SHIPPED_LOOPS: readonly string[] = ['core-fast', 'core', 'core-deep']
-/** The words that name the loops to choose from, in a removed key's problem. */
-const loopChoice = (names: readonly string[]) => `(loop = ${names.join(' | ')})`
+/**
+ * The loops to choose from, as every refusal that offers them ends: the removed conf key, the removed flag and an
+ * unknown `--loop` alike. The names come in the order the mod lists them: the shipped ones first, then the rest by name.
+ */
+export const loopChoices = (names: readonly string[]) => `the loops: ${names.join(', ')}; /dacapo:design shows each`
+/** The loop each value of the removed `level` key became; `judges` was a setting of core-deep. */
+export const LEVEL_LOOPS: Readonly<Record<string, string>> = { fast: 'core-fast', balanced: 'core', deep: 'core-deep' }
+/** Where the user's conf file is, in the one sentence every reply, the config and the docs use. */
+export const USER_CONF = '$DACAPO_HOME/dacapo.conf when DACAPO_HOME is set, else ~/.claude/dacapo.conf'
+/** The user conf as a reply names it: the path in force, then the sentence; the sentence alone when no path is known. */
+export const userConfText = (path?: string | null) => (path ? `${path} (the user conf: ${USER_CONF})` : `the user conf (${USER_CONF})`)
 
 /** The skills the plugin ships; while one is the configured skill, the mod checks the rules it states (commit titles, attribution lines) itself. */
 export const SHIPPED_COMMITS = 'dacapo:rules-commits'
@@ -72,7 +81,8 @@ export function parseConf(text: string): Parsed {
     }
     const key = m[1] as ConfKey
     if (REMOVED_KEYS.includes(key)) {
-      problems.push(`line ${i + 1}: "${key}" was removed in 0.22; depth is a loop now ${loopChoice(SHIPPED_LOOPS)}`)
+      const target = LEVEL_LOOPS[m[2]!.trim()] ?? (key === 'level' ? 'core' : 'core-deep')
+      problems.push(`line ${i + 1}: "${key}" was removed in 0.22; depth is a loop now. Choose one: loop = ${target} (${loopChoices(SHIPPED_LOOPS)})`)
       return
     }
     if (!CONF_KEYS.includes(key)) {
@@ -106,7 +116,7 @@ export type ConfRole = 'plugin' | 'user' | 'project'
 /** A file in the order it is applied, with its text and its layer; a file that does not exist is passed with `text: null`. */
 export type Layer = { path: string; text: string | null; role?: ConfRole }
 
-/** The user's conf file, for every repository: `$DACAPO_HOME/dacapo.conf` when DACAPO_HOME is set, else `~/.claude/dacapo.conf`. */
+/** The user's conf file, for every repository: `$DACAPO_HOME/dacapo.conf` when DACAPO_HOME is set, else `~/.claude/dacapo.conf` (see `USER_CONF`). */
 export function userConfPath(env: { home: string; dacapoHome: string | null }): string {
   return env.dacapoHome ? `${env.dacapoHome.replace(/\/+$/, '')}/dacapo.conf` : `${env.home.replace(/\/+$/, '')}/.claude/dacapo.conf`
 }
@@ -158,12 +168,16 @@ export function describeConf(loaded: Loaded, o: { loops?: readonly string[]; run
   const value = (k: ConfKey) => (Array.isArray(conf[k]) ? (conf[k] as string[]).join(', ') : String(conf[k]))
   const line = (k: ConfKey) =>
     k === 'loop' && o.runLoop && o.runLoop !== conf.loop ? `loop = ${conf.loop} (conf: ${origin.loop}); this run walks ${o.runLoop} (--loop)` : `${k} = ${value(k)}  (${origin[k]})`
-  const shipped = loopChoice(SHIPPED_LOOPS)
-  const problems = o.loops && o.loops.length > 0 ? loaded.problems.map(p => p.replace(shipped, loopChoice(o.loops!))) : loaded.problems
+  const shipped = loopChoices(SHIPPED_LOOPS)
+  const problems = o.loops && o.loops.length > 0 ? loaded.problems.map(p => p.replace(shipped, loopChoices(o.loops!))) : loaded.problems
+  const where = [
+    loaded.paths.user ? `${userConfText(loaded.paths.user)} for every repository` : '',
+    loaded.paths.project ? `${loaded.paths.project} for this one` : '',
+  ].filter(Boolean)
   return [
     ...CONF_KEYS.map(line),
     `Files read: ${loaded.read.length > 0 ? loaded.read.join(', ') : 'none; defaults'}.`,
-    ...(loaded.paths.user || loaded.paths.project ? [`To change a value, edit ${[loaded.paths.user ? `${loaded.paths.user} for every repository` : '', loaded.paths.project ? `${loaded.paths.project} for this one` : ''].filter(Boolean).join(', or ')}; a later file wins key by key.`] : []),
+    ...(where.length > 0 ? [`To change a value, edit ${where.join(', or ')}; a later file wins key by key.`] : []),
     ...(problems.length > 0 ? ['Ignored:', ...problems.map(p => `- ${p}`)] : []),
   ].join('\n')
 }

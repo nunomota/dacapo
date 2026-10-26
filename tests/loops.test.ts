@@ -305,9 +305,16 @@ describe('the spec', () => {
       if (n.tools.deny.length) expect(section, n.id).toContain(`\n- Denied tools: ${n.tools.deny.join(', ')}\n`)
       else expect(section, n.id).not.toContain('- Denied tools:')
     }
-    expect(spec).toContain('### qa\n\nJudges as the user. One agent. It works in the qa stage. Contract scores: it scores every rubric item in the categories core, ui-ux, and the host derives the verdict. It may run up to 3 collectors at once.\n\n- Models: opus, sonnet\n- Skills: none\n- Categories: core, ui-ux\n- Collectors: 3\n- Denied tools: Edit, NotebookEdit, EnterWorktree, ExitWorktree\n\nYou are the QA subagent')
+    expect(spec).toContain('### qa\n\nJudges as the user. One agent. It works in the qa stage. Contract: scores (judges a rubric). It scores every rubric item in the categories core, ui-ux, and the host derives the verdict. It may run up to 3 collectors at once.\n\n- Models: opus, sonnet\n- Skills: none\n- Categories: core, ui-ux\n- Collectors: 3\n- Denied tools: Edit, NotebookEdit, EnterWorktree, ExitWorktree\n\nYou are the QA subagent')
+    // the entry and the exit by their node ids, as everywhere a person reads them
+    const end = (w: string) => (w === 'entry' ? core.entry : w === 'exit' ? core.exit : w)
+    expect(spec).toContain('\n- orchestrator → clarify: handed over\n')
+    expect(spec).toContain('\n- merge → done: integrated\n')
+    expect(spec).not.toMatch(/→ exit|entry →/)
+    for (const n of Object.values(core.nodes)) expect(spec).toContain(`Contract: ${n.contract} (`)
+    expect(spec).toContain('The run ends. The exit. Contract: none (answers a prompt).\n')
     for (const t of core.transitions) {
-      expect(spec).toContain(`- ${t.from} → ${t.to.join(' ∥ ')}${t.back ? ' (back)' : ''}: ${t.label}`)
+      expect(spec).toContain(`- ${end(t.from)} → ${t.to.map(end).join(' ∥ ')}${t.back ? ' (back)' : ''}: ${t.label}`)
       if (t.when) expect(spec).toContain(`When ${t.when}.`)
       if (t.then) expect(spec).toContain(`Then ${t.then}.`)
     }
@@ -387,6 +394,28 @@ describe('roots and listing', () => {
     expect(withDrafts.filter(x => x.draft).map(x => `${x.level}:${x.name}`)).toEqual(['project:zeta', 'plugin:core-fast'])
     expect(withDrafts.find(x => x.name === 'core-fast')!.draft!.dir).toBe('/dh/drafts/plugin--core-fast')
     expect((await listLoops(fs, { ...r, project: null })).map(x => x.name)).toEqual(['core', 'core', 'core-deep', 'core-fast'])
+    // the loop that wins a name says what it hides
+    expect(refs.find(x => x.level === 'project' && x.name === 'core')!.hides).toEqual(['user', 'plugin'])
+    expect(refs.find(x => x.level === 'plugin' && x.name === 'core-fast')!.hides).toBeUndefined()
+  })
+
+  test('with drafts, a new loop not saved yet is listed at its level, unsaved, and counts for resolution; a run does not see it', async () => {
+    const { fs } = shippedFs()
+    const r = roots({ home: '/home/u', dacapoHome: '/dh', pluginRoot: '/plugin', repoRoot: '/repo' })
+    const dr = draftsRoot({ home: '/home/u', dacapoHome: '/dh' })
+    await openDraft(fs, dr, { level: 'user', name: 'core', repoRoot: '/repo' }, await shipped('core'))
+    await openDraft(fs, dr, { level: 'user', name: 'alpha', repoRoot: '/repo' }, null)
+    const listed = await listLoops(fs, r, { root: dr, repoRoot: '/repo' })
+    expect(listed.map(x => `${x.level}:${x.name}:${x.unsaved ? 'unsaved' : 'saved'}:${x.shadowedBy ?? '-'}:${(x.hides ?? []).join('+') || '-'}`)).toEqual([
+      'user:alpha:unsaved:-:-',
+      'user:core:unsaved:-:plugin',
+      'plugin:core:saved:user:-',
+      'plugin:core-deep:saved:-:-',
+      'plugin:core-fast:saved:-:-',
+    ])
+    expect(listed[1]).toMatchObject({ dir: '/dh/loops/core', draft: { dir: '/dh/drafts/user--core' } })
+    // a run resolves saved loops only
+    expect((await listLoops(fs, r)).map(x => `${x.level}:${x.name}:${x.shadowedBy ?? '-'}`)).toEqual(['plugin:core:-', 'plugin:core-deep:-', 'plugin:core-fast:-'])
   })
 })
 
@@ -435,7 +464,7 @@ describe('reading and writing a folder', () => {
       return (await readLoop(fs, dir, d2Differs)).d2Edited
     }
     expect(await edit(`${d2}\n# a comment and some space\n\n`)).toBe(false)
-    expect(await edit(d2.replace('summary: integrate the run', 'summary: merge it all'))).toBe(true)
+    expect(await edit(d2.replace('tooltip: integrate the run', 'tooltip: merge it all'))).toBe(true)
     expect(await edit(d2.replace('step6: {\n', 'step6: {\n  grid-columns: 2\n  extra: { class: stage; summary: one more }\n'))).toBe(true)
     expect(await edit('step1: { this is not D2')).toBe(true)
     await fs.remove(`${dir}/loop.d2`)
@@ -485,13 +514,16 @@ describe('drafts', () => {
     const { loop, info } = await openDraft(fs, DR, ref, await shipped('core'))
     const next = clone(loop)
     next.steps[0]!.stages[0]!.summary = 'until all is clear'
-    const after = await writeDraft(fs, info, next, 'renamed the summary of clarify')
+    const after = await writeDraft(fs, info, next, 'renamed the summary of clarify', toD2(next))
     expect(after.changes).toEqual(['renamed the summary of clarify'])
     const read = await readDraft(fs, DR, 'plugin--core')
     expect(read!.loop).toEqual(next)
     expect(read!.info).toEqual(after)
-    await writeDraft(fs, after, next, 'a second change')
-    expect((await readDraft(fs, DR, 'plugin--core'))!.info.changes).toHaveLength(2)
+    // a draft is a whole loop folder: its diagram beside the other files
+    expect(files.get('/dh/drafts/plugin--core/loop.d2')).toBe(toD2(next))
+    // one change line per op: a batch of two adds two
+    await writeDraft(fs, after, next, ['a second change', 'a third change'], toD2(next))
+    expect((await readDraft(fs, DR, 'plugin--core'))!.info.changes).toEqual(['renamed the summary of clarify', 'a second change', 'a third change'])
     await discardDraft(fs, after)
     expect([...files.keys()].some(k => k.startsWith('/dh/drafts/plugin--core'))).toBe(false)
     expect(await readDraft(fs, DR, 'plugin--core')).toBeNull()

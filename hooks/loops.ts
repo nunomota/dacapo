@@ -39,6 +39,27 @@ export const NODE_KEYS = ['type', 'summary', 'contract', 'models', 'skills', 'to
 const ENTRY = 'entry'
 const EXIT = 'exit'
 
+/**
+ * The node a transition's `entry` or `exit` word stands for, as a person reads it: `merge → done`, never
+ * `merge → exit`. The words stay in loop.json and as the addresses the tools accept.
+ */
+export const endName = (loop: Pick<LoopGraph, 'entry' | 'exit'>, word: string): string => (word === ENTRY ? loop.entry : word === EXIT ? loop.exit : word)
+
+/** A transition as a person reads it, the entry and the exit by their node ids: `merge → done`, `qa ⇢ implement`, `implement → qa ∥ review`. */
+export const transitionWords = (loop: Pick<LoopGraph, 'entry' | 'exit'>, t: { from: string; to: string[]; back?: boolean }): string =>
+  `${endName(loop, t.from)} ${t.back ? '⇢' : '→'} ${t.to.map(w => endName(loop, w)).join(' ∥ ')}`
+
+/** What each contract holds a node to, in a few words: the one gloss focus, config, LOOP.md and the library use. */
+export const CONTRACT_GLOSS: Record<Contract, string> = {
+  lands: 'builds and lands work',
+  scores: 'judges a rubric',
+  collects: 'gathers evidence',
+  none: 'answers a prompt',
+}
+
+/** A contract with its gloss: `none (answers a prompt)`. */
+export const contractText = (c: Contract): string => `${c} (${CONTRACT_GLOSS[c]})`
+
 const join = (...parts: string[]) => parts.map((p, i) => (i === 0 ? p.replace(/\/+$/, '') : p.replace(/^\/+|\/+$/g, ''))).join('/')
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -607,12 +628,13 @@ const TYPE_WORDS: Record<NodeType, string> = {
 }
 
 function contractWords(n: LoopNode): string {
-  if (n.contract === 'lands') return 'Contract lands: it lands its own work and reports how it went.'
-  if (n.contract === 'collects') return 'Contract collects: it gathers evidence for the judge that hands it a slice, and never scores.'
-  if (n.contract === 'none') return 'Contract none: the host holds it to no report.'
+  const head = `Contract: ${contractText(n.contract)}.`
+  if (n.contract === 'lands') return `${head} It lands its own work and reports how it went.`
+  if (n.contract === 'collects') return `${head} It gathers evidence for the judge that hands it a slice, and never scores.`
+  if (n.contract === 'none') return head
   const categories = n.categories?.length ? ` in the categories ${n.categories.join(', ')}` : ''
   const collectors = n.collectors ? ` It may run up to ${n.collectors} collector${n.collectors === 1 ? '' : 's'} at once.` : ''
-  return `Contract scores: it scores every rubric item${categories}, and the host derives the verdict.${collectors}`
+  return `${head} It scores every rubric item${categories}, and the host derives the verdict.${collectors}`
 }
 
 /** The node ids in the order the spec lists them: entry, on call with helpers, stages in step order, any left over, exit. */
@@ -659,7 +681,7 @@ export function toSpec(loop: Loop): string {
   if (loop.steps.length === 0) out.push('No steps: the entry hands straight to the exit.')
   out.push('', '## Transitions', '')
   for (const t of withDefaultTransitions(loop).transitions) {
-    out.push(`- ${t.from} → ${t.to.join(' ∥ ')}${t.back ? ' (back)' : ''}${t.label ? `: ${t.label}` : ' (default)'}`)
+    out.push(`- ${endName(loop, t.from)} → ${t.to.map(w => endName(loop, w)).join(' ∥ ')}${t.back ? ' (back)' : ''}${t.label ? `: ${t.label}` : ' (default)'}`)
     if (t.when) out.push(`  When ${t.when.trim().replace(/[.]$/, '')}.`)
     if (t.then) out.push(`  Then ${t.then.trim().replace(/[.]$/, '')}.`)
   }
@@ -683,16 +705,20 @@ export function countsOf(graph: LoopGraph, nodeCount: number): LoopRef['counts']
 
 /**
  * Lists the loops of every level, project first, then user, then plugin, names alphabetical within a level. A loop is
- * a folder holding loop.json. One hidden by a loop of the same name at a higher level says which level wins; with
- * `drafts`, one with an open draft carries its draft state.
+ * a folder holding loop.json. With `drafts`, a loop carries its draft state, and a loop that is a draft alone so far
+ * (a new loop not saved yet, at the user or project level) is listed too, `unsaved`, with the folder its save writes.
+ * A name resolves project over user over plugin: the loop that wins says which levels it `hides`, each one hidden says
+ * `shadowedBy`. Without `drafts`, only saved loops count, as for a run; with them, a draft alone counts at its level,
+ * as for opening a loop by name.
  */
 export async function listLoops(fs: LoopFs, roots: Roots, drafts?: { root: string; repoRoot: string | null }): Promise<LoopRef[]> {
   const out: LoopRef[] = []
+  const keys = drafts ? await fs.list(drafts.root) : []
   for (const level of LEVELS) {
     const root = roots[level]
     if (!root) continue
-    const names = (await fs.list(root)).filter(n => ID.test(n)).sort()
-    for (const name of names) {
+    const refs: LoopRef[] = []
+    for (const name of (await fs.list(root)).filter(n => ID.test(n)).sort()) {
       const dir = join(root, name)
       if (!(await fs.exists(join(dir, 'loop.json')))) continue
       let graph = emptyGraph(name)
@@ -703,14 +729,33 @@ export async function listLoops(fs: LoopFs, roots: Roots, drafts?: { root: strin
       }
       const nodeCount = (await fs.list(join(dir, 'nodes'))).filter(n => n.endsWith('.md')).length
       const ref: LoopRef = { name, level, dir, description: graph.description, counts: countsOf(graph, nodeCount) }
-      const winner = out.find(r => r.name === name && r.level !== level && !r.shadowedBy)
-      if (winner) ref.shadowedBy = winner.level
       if (drafts) {
         const draft = await readDraftInfo(fs, join(drafts.root, draftKey({ level, name, repoRoot: drafts.repoRoot })))
         if (draft) ref.draft = draft
       }
-      out.push(ref)
+      refs.push(ref)
     }
+    // a new loop not saved yet lives only as its draft; a plugin loop always has its folder
+    if (drafts && level !== 'plugin') {
+      const prefix = draftKey({ level, name: '', repoRoot: drafts.repoRoot })
+      for (const key of keys.filter(k => k.startsWith(prefix)).sort()) {
+        const name = key.slice(prefix.length)
+        if (!ID.test(name) || refs.some(r => r.name === name)) continue
+        const draft = await readDraft(fs, drafts.root, key).catch(() => null)
+        if (!draft) continue
+        const loop = draft.loop
+        refs.push({ name, level, dir: join(root, name), description: loop.description, draft: draft.info, unsaved: true, counts: countsOf(loop, Object.keys(loop.nodes).length) })
+      }
+      refs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    }
+    out.push(...refs)
+  }
+  // resolution: the first level that has a name wins it
+  for (const ref of out) {
+    const winner = out.find(r => r.name === ref.name)!
+    if (winner === ref) continue
+    ref.shadowedBy = winner.level
+    winner.hides = [...(winner.hides ?? []), ref.level]
   }
   return out
 }
@@ -780,10 +825,14 @@ export async function openDraft(
   return { loop: copy, info }
 }
 
-/** Writes the loop into its draft folder and appends `change` to draft.json; returns the draft state after it. */
-export async function writeDraft(fs: LoopFs, info: DraftInfo, loop: Loop, change: string): Promise<DraftInfo> {
-  await writeLoop(fs, info.dir, loop)
-  const next: DraftInfo = { ...info, changes: [...info.changes, change] }
+/**
+ * Writes the loop into its draft folder, `loop.d2` (the diagram as `toD2` in hooks/loopd2.ts writes it, opaque blocks
+ * included) beside the other files, so a draft is a whole loop folder; appends each change, one line per op, to
+ * draft.json. Returns the draft state after it.
+ */
+export async function writeDraft(fs: LoopFs, info: DraftInfo, loop: Loop, changes: string | string[], d2: string): Promise<DraftInfo> {
+  await writeLoop(fs, info.dir, loop, { 'loop.d2': d2 })
+  const next: DraftInfo = { ...info, changes: [...info.changes, ...(typeof changes === 'string' ? [changes] : changes)] }
   await fs.write(join(info.dir, 'draft.json'), draftJson(next))
   return next
 }

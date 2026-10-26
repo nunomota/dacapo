@@ -8,7 +8,7 @@ The core loop without judges. Clarify, research and plan, build in parallel, the
 
 ### orchestrator
 
-Talks to you. The entry: it runs the loop. Contract none: the host holds it to no report.
+Talks to you. The entry: it runs the loop. Contract: none (answers a prompt).
 
 - Models: none
 - Skills: dacapo:loop
@@ -21,7 +21,7 @@ The host's binding names the tools you work with; in this plugin that binding is
 
 ### worker
 
-Builds one task. A swarm: as many agents as the round has tasks or slices. It works in the implement stage. Contract lands: it lands its own work and reports how it went.
+Builds one task. A swarm: as many agents as the round has tasks or slices. It works in the implement stage. Contract: lands (builds and lands work). It lands its own work and reports how it went.
 
 - Models: opus, sonnet
 - Skills: dacapo:rules-commits, dacapo:rules-prs
@@ -40,7 +40,7 @@ Ground rules:
 
 ### done
 
-The run ends. The exit. Contract none: the host holds it to no report.
+The run ends. The exit. Contract: none (answers a prompt).
 
 - Models: none
 - Skills: none
@@ -57,7 +57,7 @@ The run ends here: the run branch is merged into the base branch, or the run was
 
 ## Transitions
 
-- entry → clarify: handed over
+- orchestrator → clarify: handed over
 - clarify → research: nothing open
   When nothing material is open.
 - research → plan: findings noted
@@ -68,7 +68,7 @@ The run ends here: the run branch is merged into the base branch, or the run was
 - merge → implement (back): reconcile
   When the base moved or the final checks fail.
   Then one worker merges the base into the run and resolves conflicts, or fixes the checks.
-- merge → exit: integrated
+- merge → done: integrated
 
 ## Handovers
 

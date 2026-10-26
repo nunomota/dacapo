@@ -80,10 +80,10 @@ describe('writing loop.d2', () => {
 
   test('a parallel step, a stage path, on-call helpers and a quoted summary are drawn', () => {
     const text = toD2(small())
-    expect(text).toContain('step2: {\n  grid-columns: 2\n  b: {\n    class: stage\n    summary: left\n    builder: { class: swarm; summary: does a thing }\n  }\n')
-    expect(text).toContain("  c: { class: stage; summary: the user's view }\n")
-    expect(text).toContain('  d: { class: stage; summary: "last: a check" }\n')
-    expect(text).toContain('  on-call: {\n    scout: {\n      class: agent\n      summary: does a thing\n      reader: { class: agent; summary: does a thing }\n    }\n    helper: { class: agent; summary: does a thing }\n  }\n')
+    expect(text).toContain('step2: {\n  label: step 2\n  grid-columns: 2\n  b: {\n    class: stage\n    tooltip: left\n    builder: { class: swarm; tooltip: does a thing }\n  }\n')
+    expect(text).toContain("  c: { class: stage; tooltip: the user's view }\n")
+    expect(text).toContain('  d: { class: stage; tooltip: "last: a check" }\n')
+    expect(text).toContain('  on-call: {\n    scout: {\n      class: agent\n      tooltip: does a thing\n      reader: { class: agent; tooltip: does a thing }\n    }\n    helper: { class: agent; tooltip: does a thing }\n  }\n')
     expect(text).toContain('boss -> step1 { class: transition }\n')
     expect(text).toContain('step1 -> step2 { class: transition }\n')
     expect(text).toContain('step2.b -> step3: built { class: transition }\n')
@@ -100,8 +100,32 @@ describe('writing loop.d2', () => {
       expect(text).not.toMatch(/^\s*[a-z0-9-]+: [A-Z]/m)
     }
     const deep = SHIPPED_LOOP_FILES['core-deep/loop.d2']!
-    expect(deep).toContain('  qa: {\n    class: stage\n')
-    expect(deep).toContain('    qa-collector: { class: swarm; summary: gathers evidence }\n')
+    expect(deep).toContain('step5: {\n  label: step 5\n  qa: {\n    class: stage\n')
+    expect(deep).toContain('    qa-collector: { class: swarm; tooltip: gathers evidence }\n')
+  })
+})
+
+describe('summaries and step labels', () => {
+  test('a summary is a tooltip, never a child shape; a step container is labelled step N', () => {
+    for (const name of NAMES) {
+      const text = SHIPPED_LOOP_FILES[`${name}/loop.d2`]!
+      expect(text).not.toMatch(/^\s*summary:/m)
+      expect(text).not.toMatch(/; summary:/)
+      const steps = shipped(name).steps.length
+      for (let n = 1; n <= steps; n++) expect(text).toContain(`step${n}: {\n  label: step ${n}\n`)
+    }
+    expect(toD2(shipped('core'))).toContain('  worker: { class: swarm; tooltip: builds one task }\n')
+  })
+
+  test('an older diagram with summary attributes reads the same; a shape given both is a problem', () => {
+    const core = shipped('core')
+    const old = toD2(core).replace(/tooltip:/g, 'summary:').replace(/\n  label: step \d+/g, '')
+    const out = fromD2(old, core)
+    expect(out.problems).toEqual([])
+    expect(out.loop).toEqual(core)
+    expect(d2Differs(old, core)).toBe(false)
+    const both = toD2(core).replace('worker: { class: swarm; tooltip: builds one task }', 'worker: { class: swarm; tooltip: builds one task; summary: builds one task }')
+    expectProblem(fromD2(both, core).problems, 'given twice, as tooltip and as summary')
   })
 })
 
@@ -222,7 +246,7 @@ describe('problems in loop.d2', () => {
 
   test('unbalanced braces: a block never closed and a brace that closes none', () => {
     const text = toD2(core())
-    const open = text.replace('step1: {\n  clarify: { class: stage; summary: until nothing is open }\n}\n', 'step1: {\n  clarify: { class: stage; summary: until nothing is open }\n')
+    const open = text.replace('step1: {\n  label: step 1\n  clarify: { class: stage; tooltip: until nothing is open }\n}\n', 'step1: {\n  label: step 1\n  clarify: { class: stage; tooltip: until nothing is open }\n')
     expectProblem(fromD2(open, core()).problems, `line ${lineOf(open, 'step1: {')}:`, 'never closed')
     const stray = `${text}}\n`
     expectProblem(fromD2(stray, core()).problems, `line ${stray.split('\n').length - 1}:`, 'closes no block')
@@ -234,17 +258,17 @@ describe('problems in loop.d2', () => {
   })
 
   test('a node under two parents', () => {
-    const text = toD2(core()).replace('  merge: { class: stage; summary: integrate the run }\n', '  merge: Merge {\n    class: stage\n    summary: integrate the run\n    worker: Worker { class: swarm; summary: builds one task }\n  }\n')
-    expectProblem(fromD2(text, core()).problems, `line ${lineOf(text, '    worker: Worker { class: swarm; summary: builds one task }\n  }\n}\n\ndone')}:`, '"worker" is already drawn on line', 'one parent')
+    const text = toD2(core()).replace('  merge: { class: stage; tooltip: integrate the run }\n', '  merge: Merge {\n    class: stage\n    tooltip: integrate the run\n    worker: Worker { class: swarm; tooltip: builds one task }\n  }\n')
+    expectProblem(fromD2(text, core()).problems, `line ${lineOf(text, '    worker: Worker { class: swarm; tooltip: builds one task }\n  }\n}\n\ndone')}:`, '"worker" is already drawn on line', 'one parent')
   })
 
   test('a stage in two steps', () => {
-    const text = toD2(core()).replace('  merge: { class: stage; summary: integrate the run }\n', '  merge: Merge { class: stage; summary: integrate the run }\n  plan: Plan { class: stage; summary: again }\n')
-    expectProblem(fromD2(text, core()).problems, `line ${lineOf(text, '  plan: Plan { class: stage; summary: again }')}:`, 'the stage "plan" is already drawn', 'one step')
+    const text = toD2(core()).replace('  merge: { class: stage; tooltip: integrate the run }\n', '  merge: Merge { class: stage; tooltip: integrate the run }\n  plan: Plan { class: stage; tooltip: again }\n')
+    expectProblem(fromD2(text, core()).problems, `line ${lineOf(text, '  plan: Plan { class: stage; tooltip: again }')}:`, 'the stage "plan" is already drawn', 'one step')
   })
 
   test('an unknown attribute in a known block is a problem, not an opaque block', () => {
-    const text = toD2(core()).replace('    summary: build in parallel\n', '    summary: build in parallel\n    colour: red\n')
+    const text = toD2(core()).replace('    tooltip: build in parallel\n', '    tooltip: build in parallel\n    colour: red\n')
     const out = fromD2(text, core())
     expectProblem(out.problems, `line ${lineOf(text, 'colour: red')}:`, 'unknown attribute "colour"')
     expect(out.opaque).toEqual([])
@@ -275,8 +299,8 @@ describe('telling a hand edit from a save', () => {
   test('a changed summary, an added stage, a moved edge or an unparsable text is an edit', () => {
     const core = shipped('core')
     const text = toD2(core)
-    expect(d2Differs(text.replace('summary: builds one task', 'summary: builds a task'), core)).toBe(true)
-    expect(d2Differs(text.replace('step6: {\n', 'step6: {\n  grid-columns: 2\n  extra: { class: stage; summary: one more }\n'), core)).toBe(true)
+    expect(d2Differs(text.replace('tooltip: builds one task', 'tooltip: builds a task'), core)).toBe(true)
+    expect(d2Differs(text.replace('step6: {\n', 'step6: {\n  grid-columns: 2\n  extra: { class: stage; tooltip: one more }\n'), core)).toBe(true)
     expect(d2Differs(text.replace('step5 -> step4: fix { class: back }', 'step5 -> step3: fix { class: back }'), core)).toBe(true)
     expect(d2Differs(text.replace(/\n}\n\nstep6/, '\n\nstep6'), core)).toBe(true)
     expect(d2Differs('this is { not a diagram', core)).toBe(true)
