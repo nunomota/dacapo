@@ -1,5 +1,5 @@
 import type { Handover, Loop, LoopNode, NodeType, Problem, Stage, Step, Transition } from '../types/loops'
-import { graphOf, ID, stageIndex, withDefaultTransitions } from './loops'
+import { canonicalJson, graphOf, ID, stageIndex, withDefaultTransitions } from './loops'
 
 // loop.d2 is the loop drawn in a D2 subset: the entry with its on-call nodes, one container per step holding its
 // stages and their nodes, the exit, then the transitions and the handovers. It carries structure, labels and summaries
@@ -15,7 +15,7 @@ const STUB_ROLE = 'Role to be written.'
 const CLASSES = [
   'entry: {}',
   'agent: {}',
-  'swarm: { multiple: true }',
+  'swarm: { style.multiple: true }',
   'exit: {}',
   'stage: {}',
   'transition: { style.stroke-dash: 4 }',
@@ -24,9 +24,6 @@ const CLASSES = [
 ]
 
 // Writing
-
-/** The label drawn for an id: the id with its first letter upper-cased. */
-const labelOf = (id: string) => (id ? id[0]!.toUpperCase() + id.slice(1) : id)
 
 /**
  * A value as the subset writes it: bare when it holds only `[A-Za-z0-9 ,.'-]`, starts and ends with neither a space
@@ -37,7 +34,8 @@ function quoted(text: string): string {
   return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
 }
 
-const leaf = (indent: string, id: string, cls: string, summary: string) => `${indent}${id}: ${labelOf(id)} { class: ${cls}; summary: ${quoted(summary)} }`
+/** A shape with no children on one line. It carries no label: D2 draws the key, so the diagram reads the ids as written. */
+const leaf = (indent: string, id: string, cls: string, summary: string) => `${indent}${id}: { class: ${cls}; summary: ${quoted(summary)} }`
 const edge = (from: string, to: string, label: string, cls: string) => `${from} -> ${to}${label ? `: ${quoted(label)}` : ''} { class: ${cls} }`
 const sameSet = (a: string[], b: string[]) => a.length === b.length && new Set(a).size === new Set([...a, ...b]).size
 
@@ -55,11 +53,11 @@ export function toD2(loop: Loop, opaque: string[] = []): string {
   const onCall = Object.entries(loop.onCall)
   if (onCall.length === 0) out.push(leaf('', loop.entry, 'entry', summary(loop.entry)))
   else {
-    out.push(`${loop.entry}: ${labelOf(loop.entry)} {`, '  class: entry', `  summary: ${quoted(summary(loop.entry))}`, '  on-call: {')
+    out.push(`${loop.entry}: {`, '  class: entry', `  summary: ${quoted(summary(loop.entry))}`, '  on-call: {')
     for (const [id, helpers] of onCall) {
       if (helpers.length === 0) out.push(leaf('    ', id, nodeClass(id), summary(id)))
       else {
-        out.push(`    ${id}: ${labelOf(id)} {`, `      class: ${nodeClass(id)}`, `      summary: ${quoted(summary(id))}`)
+        out.push(`    ${id}: {`, `      class: ${nodeClass(id)}`, `      summary: ${quoted(summary(id))}`)
         for (const h of helpers) out.push(leaf('      ', h, nodeClass(h), summary(h)))
         out.push('    }')
       }
@@ -76,7 +74,7 @@ export function toD2(loop: Loop, opaque: string[] = []): string {
     for (const st of step.stages) {
       if (st.nodes.length === 0) out.push(leaf('  ', st.id, 'stage', st.summary))
       else {
-        out.push(`  ${st.id}: ${labelOf(st.id)} {`, '    class: stage', `    summary: ${quoted(st.summary)}`)
+        out.push(`  ${st.id}: {`, '    class: stage', `    summary: ${quoted(st.summary)}`)
         for (const n of st.nodes) out.push(leaf('    ', n, nodeClass(n), summary(n)))
         out.push('  }')
       }
@@ -516,4 +514,28 @@ export function fromD2(text: string, base: Loop): { loop: Loop; problems: Proble
   }
 
   return { loop: { ...graphOf(graph), nodes }, problems, opaque }
+}
+
+// Hand edits
+
+/**
+ * What the diagram carries of a loop, in a form that compares by value: the graph with the default transitions applied,
+ * transitions and handovers in a fixed order, and each node's type and summary.
+ */
+function drawnPart(loop: Loop): string {
+  const graph = graphOf(withDefaultTransitions(loop))
+  const sorted = <T>(list: T[]) => list.map(canonicalJson).sort()
+  const nodes = Object.fromEntries(Object.values(loop.nodes).map(n => [n.id, { type: n.type, summary: n.summary }]))
+  return canonicalJson({ ...graph, transitions: sorted(graph.transitions), handovers: sorted(graph.handovers), nodes })
+}
+
+/**
+ * True when loop.d2 says something the stored loop does not: the text has a problem `fromD2` reports, or what it
+ * draws (steps, stages, nodes and their types and summaries, on-call nodes, transitions, handovers) differs from the
+ * loop. Roles, models, skills, tools, categories, collectors and specs are not drawn, so they never count; neither do
+ * the opaque blocks, layout or whitespace. Pass it to `readLoop` to tell a hand edit from a save.
+ */
+export function d2Differs(text: string, loop: Loop): boolean {
+  const out = fromD2(text, loop)
+  return out.problems.length > 0 || drawnPart(out.loop) !== drawnPart(loop)
 }

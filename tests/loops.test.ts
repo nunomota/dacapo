@@ -23,7 +23,7 @@ import {
   writeLoop,
   type LoopFs,
 } from '../hooks/loops'
-import { toD2 } from '../hooks/loopd2'
+import { d2Differs, toD2 } from '../hooks/loopd2'
 import { SHIPPED_LOOP_FILES } from '../loops/shipped'
 
 /** An in-memory file system: files by absolute path, folders implied by them, an optional clock for stat. */
@@ -295,7 +295,17 @@ describe('the spec', () => {
     }
     const roles = spec.split('\n').filter(l => l.startsWith('### '))
     expect(roles).toEqual(['### orchestrator', '### worker', '### qa', '### qa-collector', '### done'])
-    for (const s of core.steps.flatMap(s => s.stages)) expect(spec).toContain(`${s.id} (${s.summary})`)
+    for (const s of core.steps.flatMap(s => s.stages)) expect(spec).toContain(`${s.id} (${s.summary})${s.nodes.length ? '\n' : ' (the orchestrator alone)\n'}`)
+    const list = (items: string[] | undefined) => (items?.length ? items.join(', ') : 'none')
+    for (const n of Object.values(core.nodes)) {
+      const section = spec.slice(spec.indexOf(`### ${n.id}\n`), spec.indexOf(n.role.trim()))
+      expect(section, n.id).toContain(`\n- Models: ${list(n.models)}\n- Skills: ${list(n.skills)}\n`)
+      if (n.contract === 'scores') expect(section, n.id).toContain(`\n- Categories: ${list(n.categories)}\n- Collectors: ${n.collectors ?? 0}\n`)
+      else expect(section, n.id).not.toContain('- Categories:')
+      if (n.tools.deny.length) expect(section, n.id).toContain(`\n- Denied tools: ${n.tools.deny.join(', ')}\n`)
+      else expect(section, n.id).not.toContain('- Denied tools:')
+    }
+    expect(spec).toContain('### qa\n\nJudges as the user. One agent. It works in the qa stage. Contract scores: it scores every rubric item in the categories core, ui-ux, and the host derives the verdict. It may run up to 3 collectors at once.\n\n- Models: opus, sonnet\n- Skills: none\n- Categories: core, ui-ux\n- Collectors: 3\n- Denied tools: Edit, NotebookEdit, EnterWorktree, ExitWorktree\n\nYou are the QA subagent')
     for (const t of core.transitions) {
       expect(spec).toContain(`- ${t.from} → ${t.to.join(' ∥ ')}${t.back ? ' (back)' : ''}: ${t.label}`)
       if (t.when) expect(spec).toContain(`When ${t.when}.`)
@@ -308,7 +318,7 @@ describe('the spec', () => {
 
   test('parallel stages share an order line; default transitions are marked', () => {
     const spec = toSpec(small())
-    expect(spec).toContain('2. b (left) ∥ c (right)')
+    expect(spec).toContain('1. a (first) (the boss alone)\n2. b (left) ∥ c (right) (the boss alone)\n3. d (last) (the boss alone)\n')
     expect(spec).toContain('- a → b ∥ c (default)')
   })
 })
@@ -388,7 +398,7 @@ describe('reading and writing a folder', () => {
     const read = await readLoop(fs, '/plugin/loops/core')
     expectProblem(read.problems, 'nodes.worker', 'there is no nodes/worker.md')
     expectProblem(read.problems, 'nodes.stray', 'is not referred to by loop.json')
-    expect(read.d2Newer).toBe(false)
+    expect(read.d2Edited).toBe(false)
     await fs.write('/plugin/loops/core/loop.json', '{ not json')
     expectProblem((await readLoop(fs, '/plugin/loops/core')).problems, 'loop.json', 'loop.json is not JSON')
     expectProblem((await readLoop(fs, '/nowhere')).problems, 'loop.json', 'loop.json cannot be read')
@@ -400,12 +410,46 @@ describe('reading and writing a folder', () => {
     expectProblem(shapes, 'transitions[0]', 'a transition is')
   })
 
-  test('d2Newer compares loop.d2 with loop.json when the file system can stat', async () => {
+  test('without a content check, d2Edited compares loop.d2 with loop.json when the file system can stat', async () => {
     const files = Object.fromEntries(Object.entries(SHIPPED_LOOP_FILES).map(([k, v]) => [`/l/${k}`, v]))
     files['/l/core/loop.d2'] = 'direction: down\n'
-    expect((await readLoop(memFs(files, { '/l/core/loop.json': 1, '/l/core/loop.d2': 2 }).fs, '/l/core')).d2Newer).toBe(true)
-    expect((await readLoop(memFs(files, { '/l/core/loop.json': 3, '/l/core/loop.d2': 2 }).fs, '/l/core')).d2Newer).toBe(false)
-    expect((await readLoop(memFs(files).fs, '/l/core')).d2Newer).toBe(false)
+    const newer = await readLoop(memFs(files, { '/l/core/loop.json': 1, '/l/core/loop.d2': 2 }).fs, '/l/core')
+    expect(newer.d2Edited).toBe(true)
+    expect(newer.d2Newer).toBe(true)
+    expect((await readLoop(memFs(files, { '/l/core/loop.json': 3, '/l/core/loop.d2': 2 }).fs, '/l/core')).d2Edited).toBe(false)
+    expect((await readLoop(memFs(files).fs, '/l/core')).d2Edited).toBe(false)
+  })
+
+  test('with d2Differs, d2Edited is a content rule: false right after a save, true after a real hand edit', async () => {
+    const { fs } = memFs({}, {})
+    const dir = '/home/u/loops/mine'
+    const core = await shipped('core')
+    await writeLoop(fs, dir, core, { 'loop.d2': toD2(core, ['notes: { a: kept }']) })
+    const saved = await readLoop(fs, dir, d2Differs)
+    expect(saved.problems).toEqual([])
+    expect(saved.d2Edited).toBe(false)
+    expect(saved.d2Newer).toBe(false)
+    const d2 = await fs.read(`${dir}/loop.d2`)
+    const edit = async (text: string) => {
+      await fs.write(`${dir}/loop.d2`, text)
+      return (await readLoop(fs, dir, d2Differs)).d2Edited
+    }
+    expect(await edit(`${d2}\n# a comment and some space\n\n`)).toBe(false)
+    expect(await edit(d2.replace('summary: integrate the run', 'summary: merge it all'))).toBe(true)
+    expect(await edit(d2.replace('step6: {\n', 'step6: {\n  grid-columns: 2\n  extra: { class: stage; summary: one more }\n'))).toBe(true)
+    expect(await edit('step1: { this is not D2')).toBe(true)
+    await fs.remove(`${dir}/loop.d2`)
+    expect((await readLoop(fs, dir, d2Differs)).d2Edited).toBe(false)
+  })
+
+  test('writing puts loop.json last, so no file of a save is newer than it', async () => {
+    const order: string[] = []
+    const { fs } = memFs()
+    const write = fs.write
+    fs.write = async (path, text) => (order.push(path.slice('/l/core/'.length)), write(path, text))
+    await writeLoop(fs, '/l/core', await shipped('core-fast'), { 'loop.d2': 'direction: down\n' })
+    expect(order.at(-1)).toBe('loop.json')
+    expect(order.slice(0, -1).sort()).toEqual(['LOOP.md', 'loop.d2', 'nodes/done.md', 'nodes/orchestrator.md', 'nodes/worker.md'])
   })
 
   test('writing removes node files no longer in the loop and writes extra files', async () => {
@@ -499,6 +543,8 @@ describe('the shipped loops', () => {
     expect(deep!.nodes.reviewer).toMatchObject({ contract: 'scores', categories: ['quality', 'consistency', 'cleanup'] })
     expect(core!.nodes.orchestrator!.skills).toEqual(['dacapo:loop'])
     expect(core!.nodes.worker).toMatchObject({ contract: 'lands', skills: ['dacapo:rules-commits', 'dacapo:rules-prs'], tools: { deny: ['Agent', 'EnterWorktree', 'ExitWorktree'] } })
+    expect(fast!.nodes.orchestrator!.role).toContain('workers build and land it, and you decide what comes next.')
+    for (const n of Object.values(fast!.nodes)) expect(n.role, n.id).not.toMatch(/judge|score|\bQA\b|review/i)
     for (const l of [core!, fast!, deep!]) {
       const worker = l.nodes.worker!.role
       expect(worker).not.toContain('gh pr merge')

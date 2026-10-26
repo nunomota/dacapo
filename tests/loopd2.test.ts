@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Loop, LoopNode, Problem } from '../types/loops'
 import { graphFromJson, graphOf, nodeFromFile, validateLoop, withDefaultTransitions } from '../hooks/loops'
-import { fromD2, toD2 } from '../hooks/loopd2'
+import { d2Differs, fromD2, toD2 } from '../hooks/loopd2'
 import { SHIPPED_LOOP_FILES } from '../loops/shipped'
 
 const NAMES = ['core', 'core-fast', 'core-deep']
@@ -80,16 +80,28 @@ describe('writing loop.d2', () => {
 
   test('a parallel step, a stage path, on-call helpers and a quoted summary are drawn', () => {
     const text = toD2(small())
-    expect(text).toContain('step2: {\n  grid-columns: 2\n  b: B {\n    class: stage\n    summary: left\n    builder: Builder { class: swarm; summary: does a thing }\n  }\n')
-    expect(text).toContain("  c: C { class: stage; summary: the user's view }\n")
-    expect(text).toContain('  d: D { class: stage; summary: "last: a check" }\n')
-    expect(text).toContain('  on-call: {\n    scout: Scout {\n      class: agent\n      summary: does a thing\n      reader: Reader { class: agent; summary: does a thing }\n    }\n    helper: Helper { class: agent; summary: does a thing }\n  }\n')
+    expect(text).toContain('step2: {\n  grid-columns: 2\n  b: {\n    class: stage\n    summary: left\n    builder: { class: swarm; summary: does a thing }\n  }\n')
+    expect(text).toContain("  c: { class: stage; summary: the user's view }\n")
+    expect(text).toContain('  d: { class: stage; summary: "last: a check" }\n')
+    expect(text).toContain('  on-call: {\n    scout: {\n      class: agent\n      summary: does a thing\n      reader: { class: agent; summary: does a thing }\n    }\n    helper: { class: agent; summary: does a thing }\n  }\n')
     expect(text).toContain('boss -> step1 { class: transition }\n')
     expect(text).toContain('step1 -> step2 { class: transition }\n')
     expect(text).toContain('step2.b -> step3: built { class: transition }\n')
     expect(text).toContain('step3 -> step2.c: again { class: back }\n')
     expect(text).toContain('boss.on-call.scout -> boss.on-call.scout.reader: what to read { class: handover }\n')
     expect(text).toContain('boss -> step2.b.builder: brief { class: handover }\n')
+  })
+
+  test('the classes are valid D2: a swarm draws as a stack through style.multiple, and no shape carries a label', () => {
+    for (const name of NAMES) {
+      const text = SHIPPED_LOOP_FILES[`${name}/loop.d2`]!
+      expect(text).toContain('  swarm: { style.multiple: true }\n')
+      expect(text).not.toMatch(/^\s*multiple:/m)
+      expect(text).not.toMatch(/^\s*[a-z0-9-]+: [A-Z]/m)
+    }
+    const deep = SHIPPED_LOOP_FILES['core-deep/loop.d2']!
+    expect(deep).toContain('  qa: {\n    class: stage\n')
+    expect(deep).toContain('    qa-collector: { class: swarm; summary: gathers evidence }\n')
   })
 })
 
@@ -149,6 +161,19 @@ describe('reading loop.d2', () => {
     expect(out.loop).toEqual(small())
   })
 
+  test('the classes block reads in either form: style.multiple or the older multiple', () => {
+    const core = shipped('core')
+    const text = toD2(core)
+    const old = text.replace('swarm: { style.multiple: true }', 'swarm: { multiple: true }')
+    expect(old).not.toBe(text)
+    for (const t of [text, old]) {
+      const out = fromD2(t, core)
+      expect(out.problems).toEqual([])
+      expect(out.opaque).toEqual([])
+      expect(drawn(out.loop)).toEqual(drawn(core))
+    }
+  })
+
   test('an unknown top-level block comes back verbatim and is written back after the generated part', () => {
     const core = shipped('core')
     const legend = 'legend: Legend {\n  near: top-right   # a D2 position\n  label: "a { brace"\n}'
@@ -197,7 +222,7 @@ describe('problems in loop.d2', () => {
 
   test('unbalanced braces: a block never closed and a brace that closes none', () => {
     const text = toD2(core())
-    const open = text.replace('step1: {\n  clarify: Clarify { class: stage; summary: until nothing is open }\n}\n', 'step1: {\n  clarify: Clarify { class: stage; summary: until nothing is open }\n')
+    const open = text.replace('step1: {\n  clarify: { class: stage; summary: until nothing is open }\n}\n', 'step1: {\n  clarify: { class: stage; summary: until nothing is open }\n')
     expectProblem(fromD2(open, core()).problems, `line ${lineOf(open, 'step1: {')}:`, 'never closed')
     const stray = `${text}}\n`
     expectProblem(fromD2(stray, core()).problems, `line ${stray.split('\n').length - 1}:`, 'closes no block')
@@ -209,12 +234,12 @@ describe('problems in loop.d2', () => {
   })
 
   test('a node under two parents', () => {
-    const text = toD2(core()).replace('  merge: Merge { class: stage; summary: integrate the run }\n', '  merge: Merge {\n    class: stage\n    summary: integrate the run\n    worker: Worker { class: swarm; summary: builds one task }\n  }\n')
+    const text = toD2(core()).replace('  merge: { class: stage; summary: integrate the run }\n', '  merge: Merge {\n    class: stage\n    summary: integrate the run\n    worker: Worker { class: swarm; summary: builds one task }\n  }\n')
     expectProblem(fromD2(text, core()).problems, `line ${lineOf(text, '    worker: Worker { class: swarm; summary: builds one task }\n  }\n}\n\ndone')}:`, '"worker" is already drawn on line', 'one parent')
   })
 
   test('a stage in two steps', () => {
-    const text = toD2(core()).replace('  merge: Merge { class: stage; summary: integrate the run }\n', '  merge: Merge { class: stage; summary: integrate the run }\n  plan: Plan { class: stage; summary: again }\n')
+    const text = toD2(core()).replace('  merge: { class: stage; summary: integrate the run }\n', '  merge: Merge { class: stage; summary: integrate the run }\n  plan: Plan { class: stage; summary: again }\n')
     expectProblem(fromD2(text, core()).problems, `line ${lineOf(text, '  plan: Plan { class: stage; summary: again }')}:`, 'the stage "plan" is already drawn', 'one step')
   })
 
@@ -223,5 +248,37 @@ describe('problems in loop.d2', () => {
     const out = fromD2(text, core())
     expectProblem(out.problems, `line ${lineOf(text, 'colour: red')}:`, 'unknown attribute "colour"')
     expect(out.opaque).toEqual([])
+  })
+})
+
+describe('telling a hand edit from a save', () => {
+  test('the diagram toD2 writes differs from no shipped loop, with or without opaque blocks', () => {
+    for (const name of NAMES) {
+      const loop = shipped(name)
+      expect(d2Differs(SHIPPED_LOOP_FILES[`${name}/loop.d2`]!, loop), name).toBe(false)
+      expect(d2Differs(toD2(loop, ['notes: { a: Hello }']), loop), name).toBe(false)
+    }
+    expect(d2Differs(toD2(small()), small())).toBe(false)
+  })
+
+  test('what the diagram does not carry never counts: roles, models, skills, tools, specs', () => {
+    const core = shipped('core')
+    const text = toD2(core)
+    const changed: Loop = {
+      ...core,
+      handovers: core.handovers.map(h => ({ ...h, spec: 'changed' })),
+      nodes: { ...core.nodes, worker: { ...core.nodes.worker!, role: 'Another role.', models: ['haiku'], skills: [], tools: { deny: [] } } },
+    }
+    expect(d2Differs(text, changed)).toBe(false)
+  })
+
+  test('a changed summary, an added stage, a moved edge or an unparsable text is an edit', () => {
+    const core = shipped('core')
+    const text = toD2(core)
+    expect(d2Differs(text.replace('summary: builds one task', 'summary: builds a task'), core)).toBe(true)
+    expect(d2Differs(text.replace('step6: {\n', 'step6: {\n  grid-columns: 2\n  extra: { class: stage; summary: one more }\n'), core)).toBe(true)
+    expect(d2Differs(text.replace('step5 -> step4: fix { class: back }', 'step5 -> step3: fix { class: back }'), core)).toBe(true)
+    expect(d2Differs(text.replace(/\n}\n\nstep6/, '\n\nstep6'), core)).toBe(true)
+    expect(d2Differs('this is { not a diagram', core)).toBe(true)
   })
 })
