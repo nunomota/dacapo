@@ -564,7 +564,7 @@ const latestPr = (run: Run, branch: string): Pr | undefined => prsOf(run, branch
 
 function statusText(snap: Snapshot): string {
   const { run, rows, ui } = snap
-  if (!run) return 'No dacapo run.'
+  if (!run) return `No dacapo run.${activeProblem ? ` The configured loop cannot run: ${activeProblem}` : ''}`
   const lines = [
     `Run ${run.id}${run.task ? ` (${run.task.replace(/\s+/g, ' ')})` : ' (task not yet named; call start when it is clear)'}: ${run.status}, round ${run.iteration}, branch=${run.branch || '(not started)'}, base=${run.baseBranch}`,
   ]
