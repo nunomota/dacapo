@@ -66,7 +66,7 @@ The flag names the loop the run walks: its stages, its agents and how far the wo
 - **core** adds QA as the end user, until it passes. The default.
 - **core-deep** adds an engineering review of the run's whole change after QA passes, so the codebase stays maintainable past this run.
 
-Without a flag the run takes the loop your configuration names, `core` unless you changed it. A loop of your own runs the same way, by its name. The old run-depth flags (`--fast`, `--balanced`, `--deep`) are gone: one after `/dacapo:core` is refused with a message naming the loops to choose from.
+Without a flag the run takes the loop your configuration names, `core` unless you changed it. A loop of your own runs the same way, by its name. The old run-depth flags (`--fast`, `--balanced`, `--deep`) are gone: one after `/dacapo:core` is refused with a message that names the replacement command, `/dacapo:core --loop core-deep <task>` for `--deep`. `/dacapo:design` lists every loop.
 
 The `core` loop walks these stages in order. A verdict below pass from QA sends the run back to implement, and it merges only on pass. A final merge refused because the base branch moved or its checks fail goes back too, to reconcile, and QA runs again. `core-deep` adds a review stage between qa and merge, judged the same way; `core-fast` has no qa stage.
 
@@ -98,13 +98,13 @@ Loops live at three levels. A level is where a loop lives: plugin, user or proje
 | User | `$DACAPO_HOME/loops/<name>/`, default `~/.claude/dacapo/loops/<name>/` | You, in every repository. |
 | Plugin | `loops/<name>/` inside the installed plugin | Everyone. The three shipped loops, read-only and replaced on every update. |
 
-**Design a loop.** `/dacapo:design` makes the session the loop's architect and opens the loop viewer beside it. The viewer shows the library of loops at the three levels, then one loop: its canvas of stages, nodes, transitions and handovers, and a focus panel for whatever you press, with phrases to try. It only shows. You change a loop by saying what you want: "new loop docs-only at project level from core", "add a stage security alongside qa", "let workers use fable", "move qa after review", "delete the qa stage", "make docs-only the default". The architect reads each request into fixed operations on a draft, shows the change in the viewer and asks before anything destructive. An operation that would break the loop is refused with the rule it breaks. Moving a stage alongside another rewires the transitions between them, and a refusal names the fix. The architect's tools take an optional `name` and `level` to say which loop; left out, they act on the loop the viewer has open, which it remembers per home and repository. A shipped loop is read-only: copy it into a new loop and change the copy.
+**Design a loop.** `/dacapo:design` makes the session the loop's architect and opens the loop viewer beside it. The viewer shows the library of loops at the three levels, then one loop: its canvas of stages, nodes, transitions and handovers, and a focus panel for whatever you press, with phrases to try. It only shows. You change a loop by saying what you want: "new loop docs-only at project level from core", "add a stage security alongside qa", "let workers use fable", "move qa after review", "delete the qa stage", "make docs-only the default". The architect reads each request into fixed operations on a draft, shows the change in the viewer and asks before anything destructive. An operation that would break the loop is refused with the rule it breaks. Moving a stage alongside another rewires the transitions between them, and a refusal names the fix. The architect's tools take an optional `name` and `level` to say which loop; left out, they act on the loop the viewer has open, which it remembers per home and repository. A shipped loop is read-only: copy it into a new loop and change the copy. A copy's description starts with `A copy of <name>`.
 
 Nothing reaches a loop's files until you press Save in the viewer or say "save"; Discard drops the draft. A draft lives under `$DACAPO_HOME/drafts/`, default `~/.claude/dacapo/drafts/`, and survives sessions: open the loop again tomorrow and the draft is still there. `/dacapo-loops` reopens the viewer.
 
 **Making a loop the default.** "Make docs-only the default" writes `loop = docs-only` to your user conf for a plugin or user loop, and to the repository's `.dacapo.conf` for a project loop. Deleting the loop the conf names rewrites that line to `loop = core`.
 
-**Editing the diagram by hand.** dacapo tells a hand edit by comparing `loop.d2` with the loop's other files, not by file time. Opening a loop whose diagram differs says `loop.d2 was edited by hand since the last save; say “import the diagram” to fold it in`.
+**Editing the diagram by hand.** dacapo tells a hand edit by comparing `loop.d2` with the loop's other files, not by file time. Opening a loop whose diagram differs says `loop.d2 was edited by hand since the last save; say “import the diagram” to fold it in (the import-d2 op)`.
 
 **Run a loop of your own** with `/dacapo:core --loop <name> <task>`, or set `loop = <name>` in your configuration to make it the default. The agents of every loop at the three levels register when a session starts, so `--loop <name>` works for any loop that existed then. A loop saved or changed mid-session runs in the next session, and `start` says so when its agents are missing. If two loops define the same node id with a different role, the loop that wins resolution for that name registers its version. `--loop` on the other refuses and asks for a new session with `loop = <name>` in the conf.
 
@@ -118,7 +118,7 @@ The plugin ships [`dacapo.conf`](dacapo.conf) with its defaults. It is replaced 
 | --- | --- |
 | `dacapo.conf` inside the installed plugin | The defaults. |
 | `$DACAPO_HOME/dacapo.conf`, default `~/.claude/dacapo.conf` | You, in every repository. |
-| `.dacapo.conf` at a repository's root | That repository. dacapo keeps it out of git. |
+| `.dacapo.conf` at a repository's root | That repository. dacapo adds it to `.git/info/exclude` when a session starts in the repository, and again at a run's start. |
 
 The keys:
 
@@ -133,7 +133,7 @@ The keys:
 | `prs-skill` | `dacapo:rules-prs` | The skill workers and the final pull request follow for the title and body. |
 | `base-branch` | `main` | The branch a run is cut from and merged into, when you do not name another at hand-over. |
 
-Point `commits-skill` or `prs-skill` at a skill of your own, `my-rules` or `other-plugin:rules`, to have workers follow your conventions; the leading slash is optional. With the shipped skills dacapo also checks commit titles and refuses attribution lines in the final pull request; with any other skill it trusts the skill. Fable is listed in the shipped file, commented out; uncomment the lines in your copy to allow it. Lines starting with `#` are comments and lists are comma-separated. Agents never read these files: the orchestrator asks a tool for the values in force, so comments and commented-out lines never reach a model. `/dacapo-config` shows you the same values, the file each came from and the loop a run walks.
+Point `commits-skill` or `prs-skill` at a skill of your own, `my-rules` or `other-plugin:rules`, to have workers follow your conventions; the leading slash is optional. With the shipped skills dacapo also checks commit titles and refuses attribution lines in the final pull request; with any other skill it trusts the skill. Fable is listed in the shipped file, commented out; uncomment the lines in your copy to allow it. Lines starting with `#` are comments and lists are comma-separated. Agents never read these files: the orchestrator asks a tool for the values in force, so comments and commented-out lines never reach a model. `/dacapo-config` shows you the same values, the file each came from and the loop a run walks. When a run was picked with `--loop`, it names both the conf's loop and the run's loop.
 
 Model prices for the pane's cost estimate are a plugin option, not a conf key: `claude plugin configure dacapo`.
 
