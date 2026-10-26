@@ -1,5 +1,5 @@
 import type { Handover, Loop, LoopLevel, LoopNode, LoopRef, Transition, ViewerFocus, ViewerState } from '../types/loops'
-import { nodeOrder, stageIndex, withDefaultTransitions } from './loops'
+import { contractText, endName, nodeOrder, stageIndex, withDefaultTransitions } from './loops'
 import { layout, renderSvg, renderTerminal, transitionId, type Span, type View } from './looplayout'
 import { GREEN, ORANGE, TEAL, YELLOW, stageColor, type Els } from './pane'
 
@@ -30,11 +30,16 @@ const DRAFT_BG = '#1c1a10'
 /** The width of a field's label in the focus panel: `Contract` and a space. */
 const LABEL_COLS = 10
 
-const SECTIONS: ReadonlyArray<{ level: LoopLevel; title: string; where: string }> = [
-  { level: 'project', title: 'Project', where: '.claude/dacapo/loops/ · this repository · kept out of git' },
-  { level: 'user', title: 'User', where: '~/.claude/dacapo/loops/ · every repository' },
-  { level: 'plugin', title: 'Plugin', where: 'shipped with dacapo · read-only · copy to edit' },
+/** The library's sections, one per level, with where its loops live: the session's folders once listed, else the defaults. */
+const SECTIONS: ReadonlyArray<{ level: LoopLevel; title: string; where: (roots: ViewerState['roots']) => string }> = [
+  { level: 'project', title: 'Project', where: r => `${r ? (r.project ?? 'no repository here') : '.claude/dacapo/loops/'} · this repository · kept out of git` },
+  { level: 'user', title: 'User', where: r => `${r?.user ?? '~/.claude/dacapo/loops/'} · every repository` },
+  { level: 'plugin', title: 'Plugin', where: () => 'shipped with dacapo · read-only · copy to edit' },
 ]
+/** What a new loop not saved yet shows in place of its folder. */
+const UNSAVED = 'draft, not saved yet'
+/** A library row's last line: the folder, or that the loop is a draft alone so far. */
+const whereOf = (ref: LoopRef) => (ref.unsaved ? UNSAVED : ref.dir)
 
 const LIBRARY_FOOTER =
   '/dacapo:design opens here; Open and View only navigate. Everything else is said to the architect: “new loop docs-only at project level from core”, “move core-fast to the project”, “make docs-only the default”, “delete quick”.'
@@ -137,19 +142,23 @@ const dayOf = (ms: number) => {
 }
 const countsText = (c: LoopRef['counts']) => `${plural(c.stages, 'stage')} in ${plural(c.steps, 'step')} · ${plural(c.nodes, 'node')} · ${plural(c.edges, 'edge')}`
 const refKey = (ref: Pick<LoopRef, 'level' | 'name'>) => `${ref.level}/${ref.name}`
-/** The library entry runs use by default: the loop the conf names, at the level that wins. */
+/** The library entry runs use by default: the loop the conf names, at the level that wins, the only one marked. */
 const isDefault = (state: ViewerState, ref: LoopRef) => ref.name === state.defaultLoop && !ref.shadowedBy
 const draftLine = (d: { changes: string[]; since: number }) => `${plural(d.changes.length, 'change')} · since ${dayOf(d.since)} · kept across sessions`
 
 type Chip = { text: string; color: string }
 
-/** A library card's chips: default, draft, read-only, hidden by the loop that wins. */
-function refChips(state: ViewerState, ref: LoopRef): Chip[] {
+/**
+ * A library card's chips: default, draft, read-only, the levels it hides, the level that hides it. The text listing
+ * says the same, with the draft's change count.
+ */
+function refChips(state: ViewerState, ref: LoopRef, counted = false): Chip[] {
   const out: Chip[] = []
   if (isDefault(state, ref)) out.push({ text: 'default', color: GREEN })
-  if (ref.draft) out.push({ text: 'draft', color: YELLOW })
+  if (ref.draft) out.push({ text: counted ? `draft: ${plural(ref.draft.changes.length, 'change')}` : 'draft', color: YELLOW })
   if (ref.level === 'plugin') out.push({ text: 'read-only', color: DIM })
-  if (ref.shadowedBy) out.push({ text: `hidden by ${ref.shadowedBy}/${ref.name}`, color: ORANGE })
+  for (const level of ref.hides ?? []) out.push({ text: `hides ${level}`, color: TEAL })
+  if (ref.shadowedBy) out.push({ text: `hidden by ${ref.shadowedBy}`, color: ORANGE })
   return out
 }
 
@@ -179,25 +188,24 @@ function nodeColor(loop: Loop, id: string, colors: Map<string, string>): string 
   return place.onCall || place.helperOf ? TEAL : DIM
 }
 
-/** The node a transition's `entry` or `exit` word stands for. */
-const endName = (loop: Loop, word: string) => (word === 'entry' ? loop.entry : word === 'exit' ? loop.exit : word)
 const transitionTitle = (loop: Loop, t: Transition) => `${endName(loop, t.from)} ${t.back ? '⇢' : '→'} ${t.to.map(w => endName(loop, w)).join(' ∥ ')}`
 /** A handover with the entry node at one end reads as a stub: `○→ worker` or `worker →○`. */
 const handoverTitle = (loop: Loop, h: Handover) => (h.from === loop.entry ? `○→ ${h.to}` : h.to === loop.entry ? `${h.from} →○` : `${h.from} → ${h.to}`)
 const handoverId = (h: Handover) => `${h.from}>${h.to}`
 
+/** The contract as the focus panel says it: the contract with its gloss, then what it reports. */
 function contractWords(n: LoopNode): string {
   switch (n.contract) {
     case 'lands':
-      return 'lands work · reports done / done with limitations / failed'
+      return `${contractText('lands')} · reports done / done with limitations / failed`
     case 'scores': {
       const extra = [...(n.categories?.length ? [n.categories.join(', ')] : []), ...(n.collectors ? [`up to ${plural(n.collectors, 'collector')}`] : [])]
-      return ['scores a rubric · strong / acceptable / unacceptable', ...extra].join(' · ')
+      return [`${contractText('scores')} · strong / acceptable / unacceptable`, ...extra].join(' · ')
     }
     case 'collects':
-      return 'collects evidence'
+      return contractText('collects')
     case 'none':
-      return 'answers a prompt'
+      return contractText('none')
   }
 }
 
@@ -246,7 +254,7 @@ function stageRows(loop: Loop, id: string): Row[] | null {
   ]
 }
 
-function nodeRows(loop: Loop, id: string): Row[] | null {
+function nodeRows(loop: Loop, id: string, wholeRole = false): Row[] | null {
   const n = loop.nodes[id]
   if (!n) return null
   const colors = stageColors(loop)
@@ -269,7 +277,11 @@ function nodeRows(loop: Loop, id: string): Row[] | null {
     { kind: 'field', label: 'Contract', text: contractWords(n) },
     { kind: 'field', label: 'Tools', text: n.tools.deny.length > 0 ? `never: ${n.tools.deny.join(', ')}` : 'every tool' },
     { kind: 'heading', text: 'Role' },
-    role.length > 0 ? { kind: 'body', lines: role.slice(0, ROLE_LINES), more: Math.max(0, role.length - ROLE_LINES) } : { kind: 'note', text: 'none' },
+    wholeRole && n.role.trim()
+      ? { kind: 'body', lines: n.role.trim().split('\n').map(l => l.trimEnd()), more: 0 }
+      : role.length > 0
+        ? { kind: 'body', lines: role.slice(0, ROLE_LINES), more: Math.max(0, role.length - ROLE_LINES) }
+        : { kind: 'note', text: 'none' },
     { kind: 'heading', text: 'Handovers' },
     ...(handovers.length > 0
       ? handovers.map((h): Row => ({ kind: 'link', text: handoverTitle(loop, h), detail: `${h.label}: ${h.spec}`, color: nodeColor(loop, h.from, colors), target: { kind: 'handover', id: handoverId(h) } }))
@@ -301,22 +313,31 @@ function handoverRows(loop: Loop, id: string): Row[] | null {
   ]
 }
 
-/** The focus panel's rows: a hint without focus, the focused element's rows, or a line saying it is gone. */
-function focusRows(state: ViewerState): Row[] {
+/** The focus panel's rows: a hint without focus, the focused element's rows, or a line saying it is gone. `wholeRole` gives a node's whole role, not its first lines. */
+function focusRows(state: ViewerState, wholeRole = false): Row[] {
   const open = state.open
   if (!open) return []
   const f = state.view.focus
   if (!f) return [{ kind: 'note', text: NO_FOCUS }]
   const rows =
-    f.kind === 'stage' ? stageRows(open.loop, f.id) : f.kind === 'node' ? nodeRows(open.loop, f.id) : f.kind === 'transition' ? transitionRows(open.loop, f.id) : handoverRows(open.loop, f.id)
+    f.kind === 'stage'
+      ? stageRows(open.loop, f.id)
+      : f.kind === 'node'
+        ? nodeRows(open.loop, f.id, wholeRole)
+        : f.kind === 'transition'
+          ? transitionRows(open.loop, f.id)
+          : handoverRows(open.loop, f.id)
   return rows ?? [{ kind: 'note', text: `No ${f.kind} ${f.id} in this loop.` }]
 }
 
 const tryText = (phrases: readonly string[]) => `Try saying: ${phrases.map(p => `“${p}”`).join(' · ')}`
 
-/** The focus panel's content as plain text lines (shared by drawViewer and viewerText). */
-export function focusText(state: ViewerState): string[] {
-  return focusRows(state).flatMap(row => {
+/**
+ * The focus panel's content as plain text lines (shared by drawViewer and viewerText). With `wholeRole`, a node's role
+ * is given whole, once, where the panel shows its first lines: the focus tool's reply.
+ */
+export function focusText(state: ViewerState, o: { wholeRole?: boolean } = {}): string[] {
+  return focusRows(state, o.wholeRole).flatMap(row => {
     switch (row.kind) {
       case 'title':
         return [[row.text, ...row.chips.map(c => c.text)].join(' · ')]
@@ -330,7 +351,7 @@ export function focusText(state: ViewerState): string[] {
       case 'link':
         return [`  ${row.text}${row.detail ? `  ${row.detail}` : ''}`]
       case 'body':
-        return [...row.lines.map(l => `  ${l}`), ...(row.more > 0 ? [`  … ${plural(row.more, 'line')}`] : [])]
+        return [...row.lines.map(l => (l ? `  ${l}` : '')), ...(row.more > 0 ? [`  … ${plural(row.more, 'line')}`] : [])]
       case 'try':
         return [tryText(row.phrases)]
     }
@@ -341,17 +362,23 @@ export function focusText(state: ViewerState): string[] {
 
 const spansText = (line: Span[]) => line.map(s => s.text).join('')
 
-function libraryText(state: ViewerState): string {
+/**
+ * The library as text, as the pane draws it: a section per level (Project, User, Plugin) with where its loops live, a
+ * row per loop with its markers and counts, its description and its folder, then the drafts folder once listed. The
+ * `loops list` reply and `viewerText` of the library alike.
+ */
+export function libraryText(state: ViewerState): string {
   const out = [headerText(state)]
   for (const s of SECTIONS) {
-    out.push('', `${s.title}  ${s.where}`)
+    out.push('', `${s.title}  ${s.where(state.roots)}`)
     const refs = state.library.filter(r => r.level === s.level)
     if (refs.length === 0) out.push('  No loops here.')
     for (const ref of refs) {
-      const chips = refChips(state, ref).map(c => ` [${c.text}]`).join('')
-      out.push(`  ${ref.name}${chips} · ${countsText(ref.counts)}`, `    ${ref.description}`, `    ${ref.dir}`)
+      const chips = refChips(state, ref, true).map(c => ` [${c.text}]`).join('')
+      out.push(`  ${ref.name}${chips} · ${countsText(ref.counts)}`, `    ${ref.description}`, `    ${whereOf(ref)}`)
     }
   }
+  if (state.roots) out.push('', `Drafts: ${state.roots.drafts}`)
   return out.join('\n')
 }
 
@@ -490,7 +517,7 @@ function libraryCard(els: Els, state: ViewerState, ref: LoopRef, act: ViewerActi
         </Text>
       </Box>
       <Text color={FAINT} wrap="truncate-end">
-        {ref.dir}
+        {whereOf(ref)}
       </Text>
     </Box>
   )
@@ -515,7 +542,7 @@ function drawLibrary(els: Els, state: ViewerState, act: ViewerActions): JSX.Elem
               <Text bold color={TEXT}>
                 {s.title}
               </Text>
-              <Text color={FAINT}>{`  ${s.where}`}</Text>
+              <Text color={FAINT}>{`  ${s.where(state.roots)}`}</Text>
             </Text>
             {refs.length === 0 ? <Text color={FAINT}>No loops here.</Text> : refs.map(ref => libraryCard(els, state, ref, act))}
           </Box>

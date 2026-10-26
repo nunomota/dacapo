@@ -106,13 +106,13 @@ describe('the loop viewer: library', () => {
   })
 
   test('a project loop reads Open and hides the plugin loop of its name; pressing it calls open', async ($, on) => {
-    const mine: LoopRef = { ...LIBRARY[0]!, level: 'project', dir: '/repo/.claude/dacapo/loops/core', draft: { dir: '/drafts/x', base: null, since: 0, changes: ['a'] } }
+    const mine: LoopRef = { ...LIBRARY[0]!, level: 'project', dir: '/repo/.claude/dacapo/loops/core', hides: ['plugin'], draft: { dir: '/drafts/x', base: null, since: 0, changes: ['a'] } }
     const held = viewer(on, { ...library(), library: [mine, { ...LIBRARY[0]!, shadowedBy: 'project' }, ...LIBRARY.slice(1)] })
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...PANE, surface })
       expect(await ui.find({ text: /^Loops · 4 loops · default for runs: core \(project\)$/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /^core\s+default\s+draft\s*$/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /^core\s+read-only\s+hidden by project\/core\s*$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^core\s+default\s+draft\s+hides plugin\s*$/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^core\s+read-only\s+hidden by project\s*$/ })).toBeDefined()
       expect(await ui.findAll({ text: /^No loops here\.$/ })).toHaveLength(1)
       held.calls = []
       await ui.press({ plugin: 'test', key: 'open-project/core' })
@@ -208,7 +208,7 @@ describe('the loop viewer: loop screen', () => {
       expect(await ui.find({ text: /^Skills$/ })).toBeDefined()
       expect(await ui.find({ text: /^dacapo:rules-commits, dacapo:rules-prs$/ })).toBeDefined()
       expect(await ui.find({ text: /^Contract$/ })).toBeDefined()
-      expect(await ui.find({ text: /^lands work · reports done \/ done with limitations \/ failed$/ })).toBeDefined()
+      expect(await ui.find({ text: /^lands \(builds and lands work\) · reports done \/ done with limitations \/ failed$/ })).toBeDefined()
       expect(await ui.find({ text: /^never: Agent, EnterWorktree, ExitWorktree$/ })).toBeDefined()
       expect(await ui.find({ text: /^You are a worker subagent/ })).toBeDefined()
       expect(await ui.find({ text: /^… \d+ lines?$/ })).toBeDefined()
@@ -311,7 +311,21 @@ describe('the loop viewer as text', () => {
     for (const id of Object.keys(loop.nodes)) expect(text).toContain(id)
     expect(text.startsWith('core · plugin\nsaved · /plugin/loops/core\n')).toBe(true)
     expect(text.endsWith(focusText(state).join('\n'))).toBe(true)
-    expect(focusText(state)).toContain('Contract: lands work · reports done / done with limitations / failed')
+    expect(focusText(state)).toContain('Contract: lands (builds and lands work) · reports done / done with limitations / failed')
+    expect(focusText(core({ focus: { kind: 'node', id: 'orchestrator' } }))).toContain('Contract: none (answers a prompt)')
+    expect(focusText(core({ focus: { kind: 'node', id: 'qa' } }))).toContain('Contract: scores (judges a rubric) · strong / acceptable / unacceptable · core, ui-ux · up to 3 collectors')
+    expect(focusText(core({ focus: { kind: 'node', id: 'qa-collector' } }))).toContain('Contract: collects (gathers evidence)')
+    // a transition into the exit names it by its node id
+    expect(focusText(core({ focus: { kind: 'transition', id: 'merge>exit' } }))[0]).toBe('merge → done · transition · forward')
+  })
+
+  test('the whole role, once: the focus reply gives every line where the panel gives the first ones', () => {
+    const state = core({ focus: { kind: 'node', id: 'worker' } })
+    const whole = focusText(state, { wholeRole: true })
+    const role = LOOPS.core.nodes.worker!.role.trim()
+    expect(whole.join('\n')).toContain(role.split('\n').map(l => (l ? `  ${l}` : '')).join('\n'))
+    expect(whole.filter(l => l.includes('You are a worker subagent'))).toHaveLength(1)
+    expect(whole.some(l => /^ {2}… \d+ lines?$/.test(l))).toBe(false)
     expect(focusText(state)).toContain('Tools: never: Agent, EnterWorktree, ExitWorktree')
   })
 
@@ -413,5 +427,23 @@ describe('the loop viewer as text', () => {
     for (const level of ['Project', 'User', 'Plugin']) expect(text).toContain(`\n${level}  `)
     for (const n of NAMES) expect(text).toContain(`  ${n}`)
     expect(text).toContain('core [default] [read-only] · 6 stages in 6 steps · 5 nodes · 15 edges')
+  })
+
+  test('the text library marks what hides what, a draft with its changes, and a draft alone in place of a folder', () => {
+    const fresh: LoopRef = { ...LIBRARY[0]!, level: 'user', dir: '/u/loops/core', hides: ['plugin'], unsaved: true, draft: { dir: '/d/user--core', base: null, since: 0, changes: ['a', 'b'] } }
+    const state: ViewerState = {
+      ...library(),
+      library: [fresh, { ...LIBRARY[0]!, shadowedBy: 'user' }, ...LIBRARY.slice(1)],
+      roots: { plugin: '/plugin/loops', user: '/u/loops', project: null, drafts: '/d' },
+    }
+    const text = viewerText(state, 80)
+    expect(text.split('\n')[0]).toBe('Loops · 4 loops · default for runs: core (user)')
+    expect(text).toContain('\nProject  no repository here · this repository · kept out of git\n  No loops here.\n')
+    expect(text).toContain('\nUser  /u/loops · every repository\n  core [default] [draft: 2 changes] [hides plugin] · ')
+    expect(text).toContain('\n    draft, not saved yet\n')
+    expect(text).toContain('\nPlugin  shipped with dacapo · read-only · copy to edit\n  core [read-only] [hidden by user] · ')
+    // [default] marks one loop only
+    expect(text.match(/\[default\]/g)).toHaveLength(1)
+    expect(text.endsWith('\n\nDrafts: /d')).toBe(true)
   })
 })

@@ -72,11 +72,13 @@ describe('each op on core', () => {
   test('stage.add alongside qa joins the qa step and the transition into it', async () => {
     const c = await core()
     const out = ok(c, [{ op: 'stage.add', id: 'security', summary: 'checks for holes', alongside: 'qa' }])
-    expect(out.changes).toEqual(['added stage security alongside qa'])
+    // the new stage leads on by default to where qa leads, and takes the label of qa's transition there
+    expect(out.changes).toEqual(['added stage security alongside qa; security → merge: all pass, the label of qa → merge'])
     expect(stageIds(out.loop)[4]).toEqual(['qa', 'security'])
     expect(out.loop.steps[4]!.stages[1]).toEqual({ id: 'security', summary: 'checks for holes', nodes: [] })
     expect(transition(out.loop, 'implement', ['qa', 'security'])?.label).toBe('all landed')
-    expect(out.loop.transitions.length).toBe(c.transitions.length)
+    expect(out.loop.transitions.length).toBe(c.transitions.length + 1)
+    expect(transition(out.loop, 'security', ['merge'])?.label).toBe('all pass')
   })
 
   test('stage.add after a step makes a step of its own; the architect rewires', async () => {
@@ -123,7 +125,9 @@ describe('each op on core', () => {
 
   test('stage.move alongside another stage rewires the transitions and says how', async () => {
     const out = ok(await core(), [{ op: 'stage.move', id: 'research', alongside: 'clarify' }])
-    expect(out.changes).toEqual(['moved stage research alongside clarify; dropped the transition clarify → research; entry now leads to clarify ∥ research'])
+    expect(out.changes).toEqual([
+      'moved stage research alongside clarify; dropped the transition clarify → research; orchestrator now leads to clarify ∥ research; clarify → plan: findings noted, the label of research → plan',
+    ])
     expect(stageIds(out.loop).slice(0, 2)).toEqual([['clarify', 'research'], ['plan']])
     expect(transition(out.loop, 'entry', ['clarify', 'research'])?.label).toBe('handed over')
     expect(forward(out.loop).slice(0, 3)).toEqual(['entry > clarify+research', 'research > plan', 'plan > implement'])
@@ -132,12 +136,15 @@ describe('each op on core', () => {
 
   test('stage.move review alongside qa on core-deep validates as it is', async () => {
     const out = ok(await coreDeep(), [{ op: 'stage.move', id: 'review', alongside: 'qa' }])
-    expect(out.changes).toEqual(['moved stage review alongside qa; dropped the transition qa → review; implement now leads to qa ∥ review'])
+    expect(out.changes).toEqual(['moved stage review alongside qa; dropped the transition qa → review; implement now leads to qa ∥ review; qa → merge: all pass, the label of review → merge'])
     expect(stageIds(out.loop).slice(3)).toEqual([['implement'], ['qa', 'review'], ['merge']])
     expect(validateLoop({ ...withDefaultTransitions(out.loop), nodes: out.loop.nodes })).toEqual([])
     expect(transition(out.loop, 'implement', ['qa', 'review'])?.label).toBe('all landed')
     expect(forward(out.loop)).toContain('qa > merge')
     expect(forward(out.loop)).toContain('review > merge')
+    // the step reads alike: both judges lead to merge on all pass
+    expect(transition(out.loop, 'qa', ['merge'])?.label).toBe('all pass')
+    expect(transition(out.loop, 'qa', ['merge'])?.when).toBeUndefined()
     expect(out.loop.transitions.filter(t => t.back).map(t => `${t.from} > ${t.to.join('+')}`)).toEqual(['qa > implement', 'review > implement', 'merge > implement'])
   })
 
@@ -151,7 +158,7 @@ describe('each op on core', () => {
 
   test('stage.move alongside the stage of the next step leads into the shared step', async () => {
     const out = ok(await core(), [{ op: 'stage.move', id: 'research', alongside: 'plan' }])
-    expect(out.changes).toEqual(['moved stage research alongside plan; dropped the transition research → plan; clarify now leads to plan ∥ research'])
+    expect(out.changes).toEqual(['moved stage research alongside plan; dropped the transition research → plan; clarify now leads to plan ∥ research; research → implement: plan shown, the label of plan → implement'])
     expect(transition(out.loop, 'clarify', ['plan', 'research'])?.label).toBe('nothing open')
     expect(forward(out.loop)).toContain('research > implement')
   })
@@ -188,7 +195,8 @@ describe('each op on core', () => {
       { op: 'stage.move', id: 'review', alongside: 'qa' },
       { op: 'stage.split', id: 'review' },
     ])
-    expect(out.changes[1]).toBe('split stage review into its own step; implement now leads to qa')
+    expect(out.changes[1]).toBe('split stage review into its own step; implement now leads to qa; qa now leads to review')
+    expect(transition(out.loop, 'qa', ['review'])?.label).toBe('all pass')
     expect(stageIds(out.loop).slice(3)).toEqual([['implement'], ['qa'], ['review'], ['merge']])
     expect(forward(out.loop)).toEqual(expect.arrayContaining(['implement > qa', 'qa > review', 'review > merge']))
   })
@@ -287,9 +295,8 @@ describe('each op on core', () => {
       { op: 'node.rename', id: 'worker', to: 'builder' },
       { op: 'node.rename', id: 'orchestrator', to: 'conductor' },
     ])
-    expect(out.changes).toEqual([
-      'renamed node worker to builder',
-      'renamed node orchestrator to conductor',
+    expect(out.changes).toEqual(['renamed node worker to builder', 'renamed node orchestrator to conductor'])
+    expect(out.notes).toEqual([
       'the role of builder still says "worker"; rewrite it with node.role',
       'the roles of conductor and builder still say "orchestrator"; rewrite them with node.role',
     ])
@@ -368,6 +375,17 @@ describe('each op on core', () => {
   })
 })
 
+describe('the entry and the exit', () => {
+  test('a transition end may name the entry or exit node by its id; the change line names it so, the loop stores the word', async () => {
+    const out = ok(await core(), [{ op: 'transition.set', from: 'merge', to: ['done'], label: 'landed' }])
+    expect(out.changes).toEqual(['set transition merge to done: landed'])
+    expect(transition(out.loop, 'merge', ['exit'])?.label).toBe('landed')
+    const removed = ok(await core(), [{ op: 'transition.remove', from: 'orchestrator', to: ['clarify'] }])
+    expect(removed.changes).toEqual(['removed transition orchestrator to clarify'])
+    expect(removed.loop.transitions.some(t => t.from === 'entry')).toBe(false)
+  })
+})
+
 describe('batches', () => {
   const judge: Op = { op: 'node.add', id: 'judge', type: 'agent', contract: 'scores', summary: 'judges the merge', stage: 'merge', models: ['opus'] }
 
@@ -384,14 +402,19 @@ describe('batches', () => {
     expect(out.problems).toEqual(['node judge scores but has no categories; give it the rubric categories it accepts with node.set categories'])
   })
 
-  test('problems brought in by two ops, or there before the first, are named as the batch', async () => {
-    const two = refused(await core(), [{ op: 'stage.add', id: 'docs', summary: 'write the docs', after: 3 }, judge])
+  test('problems brought in by two ops name both as culprits; one there before the first names none', async () => {
+    const two = applyOps(await core(), [{ op: 'stage.add', id: 'docs', summary: 'write the docs', after: 3 }, judge], {})
+    if (two.ok) throw new Error('not refused')
     expect([two.index, two.op]).toEqual([2, 'batch'])
+    expect(two.culprits).toEqual([
+      { index: 0, op: 'stage.add' },
+      { index: 1, op: 'node.add' },
+    ])
     expect(two.problems).toHaveLength(2)
     const c = await core()
     delete c.nodes.qa!.categories
-    const before = refused(c, [{ op: 'loop.describe', description: 'Mine.' }])
-    expect(before).toEqual({ ok: false, index: 1, op: 'batch', problems: ['node qa scores but has no categories; give it the rubric categories it accepts with node.set categories'] })
+    const before = applyOps(c, [{ op: 'loop.describe', description: 'Mine.' }], {})
+    expect(before).toEqual({ ok: false, index: 1, op: 'batch', culprits: [], problems: ['node qa scores but has no categories; give it the rubric categories it accepts with node.set categories'] })
   })
 
   test('a batch that changes nothing is refused', async () => {
@@ -434,7 +457,7 @@ describe('prose left stale', () => {
       { op: 'loop.describe', description: 'Workers build; the worker lands and the qa-collector-worker helps.' },
       { op: 'node.rename', id: 'worker', to: 'builder' },
     ])
-    expect(out.changes.slice(2)).toEqual(['the role of builder and the description still say "worker"; rewrite them with node.role or loop.describe'])
+    expect(out.notes).toEqual(['the role of builder and the description still say "worker"; rewrite them with node.role or loop.describe'])
   })
 
   test('a stage removed or renamed notes the prose that names it; an id still in use is not stale', async () => {
@@ -442,13 +465,12 @@ describe('prose left stale', () => {
     for (const n of Object.values(c.nodes)) n.role = 'You do one thing; merges are not yours.'
     c.nodes.qa!.role = 'You never touch the Merge stage.'
     c.nodes.orchestrator!.role = 'After merge, say what landed.'
-    expect(ok(c, [{ op: 'stage.remove', id: 'merge' }]).changes).toEqual([
-      'removed stage merge',
-      'the roles of orchestrator and qa and the description still say "merge"; rewrite them with node.role or loop.describe',
-    ])
+    const removed = ok(c, [{ op: 'stage.remove', id: 'merge' }])
+    expect(removed.changes).toEqual(['removed stage merge'])
+    expect(removed.notes).toEqual(['the roles of orchestrator and qa and the description still say "merge"; rewrite them with node.role or loop.describe'])
     c.description = 'The default loop.'
-    expect(ok(c, [{ op: 'stage.rename', id: 'merge', to: 'land' }]).changes.slice(1)).toEqual(['the roles of orchestrator and qa still say "merge"; rewrite them with node.role'])
-    expect(ok(c, [{ op: 'stage.rename', id: 'qa', to: 'judge' }]).changes).toEqual(['renamed stage qa to judge'])
+    expect(ok(c, [{ op: 'stage.rename', id: 'merge', to: 'land' }]).notes).toEqual(['the roles of orchestrator and qa still say "merge"; rewrite them with node.role'])
+    expect(ok(c, [{ op: 'stage.rename', id: 'qa', to: 'judge' }]).notes).toEqual([])
   })
 
   test('a role rewritten in the same batch is not noted', async () => {
@@ -471,9 +493,8 @@ describe('refusals', () => {
     ['a duplicate node', [{ op: 'node.add', id: 'worker', type: 'agent', contract: 'none', summary: 'again', onCall: true }], 'there is already a node "worker"; pick another id or rename the existing one'],
     ['a stage where a node is needed', [{ op: 'node.remove', id: 'implement' }], `"implement" is a stage, not a node; ${NODES}`],
     ['a node where a stage is needed', [{ op: 'stage.split', id: 'worker' }], `"worker" is a node, not a stage; ${STAGES}`],
-    ['a node as a transition end', [{ op: 'transition.set', from: 'worker', to: ['qa'], label: 'x' }], '"worker" is a node, not a stage; a transition joins stages, entry and exit, so name its stage implement'],
-    ['the entry node as a transition end', [{ op: 'transition.set', from: 'orchestrator', to: ['clarify'], label: 'x' }], '"orchestrator" is the entry node; a transition joins stages, entry and exit, so say entry'],
-    ['an unknown transition end', [{ op: 'transition.set', from: 'qa', to: ['nope'], label: 'x' }], `there is no stage "nope"; a transition joins stages, entry and exit, so ${STAGES}`],
+    ['a node as a transition end', [{ op: 'transition.set', from: 'worker', to: ['qa'], label: 'x' }], '"worker" is a node, not a stage; a transition joins stages, the entry and the exit, so name its stage implement'],
+    ['an unknown transition end', [{ op: 'transition.set', from: 'qa', to: ['nope'], label: 'x' }], `there is no stage "nope"; a transition joins stages, the entry and the exit, so ${STAGES}`],
     ['after out of range', [{ op: 'stage.add', id: 'docs', summary: 'write the docs', after: 6 }], 'after is 6, but the steps run from 0 to 5; give a step in that range, or -1 to put the stage first'],
     ['after and alongside together', [{ op: 'stage.add', id: 'docs', summary: 'write the docs', after: 1, alongside: 'qa' }], 'give after or alongside, not both'],
     ['alongside unknown', [{ op: 'stage.add', id: 'docs', summary: 'write the docs', alongside: 'nope' }], `alongside names "nope", which is not a stage; ${STAGES}`],
@@ -533,7 +554,9 @@ describe('refusals', () => {
         { op: 'stage.add', id: 'security', summary: 'checks for holes', alongside: 'qa' },
         { op: 'transition.set', from: 'implement', to: ['qa'], label: 'qa only' },
       ]),
-    ).toEqual(['the transition from implement must lead to every stage of the next step: qa and security; replace it with transition.remove from implement to [qa] and transition.set from implement to [qa, security]'])
+    ).toEqual([
+      'the transition from implement must lead to every stage of the next step: qa and security; remove the one from implement to qa with transition.remove, and set one from implement to qa and security with transition.set',
+    ])
     expect(await problems([{ op: 'transition.set', from: 'qa', to: ['plan'], label: 'replan' }])).toEqual([
       'the transition from qa to plan leads to an earlier step or its own; set it again with back: true, or point it at a later step',
     ])
@@ -548,14 +571,22 @@ describe('refusals', () => {
     ])
     expect(await problems([{ op: 'node.set', id: 'worker', models: ['GPT'] }])).toEqual(['node worker: "GPT" is not a model name like opus or claude-sonnet-5; set its models with node.set'])
     expect(await problems([{ op: 'handover.remove', from: 'qa', to: 'qa-collector' }])).toEqual([
-      'node qa-collector collects evidence but no scores node hands over to it; add a handover.set from its judge to qa-collector',
+      'node qa-collector collects evidence but no scores node hands over to it; add a handover to qa-collector from qa with handover.set, or remove qa-collector with node.remove',
     ])
+  })
+
+  test('removing the only judge names a fix that does not point at it', async () => {
+    const out = refused(await core(), [{ op: 'node.remove', id: 'qa' }])
+    expect(out.problems).toEqual([
+      'node qa-collector collects evidence but no scores node hands over to it; no scores node is left to hand it slices, so remove qa-collector with node.remove, or give it another contract with node.set',
+    ])
+    expect(out.problems[0]).not.toMatch(/from qa\b/)
   })
 
   test('import-d2 with a broken diagram is refused with its problems', async () => {
     const c = await core()
     const out = refused(c, [{ op: 'import-d2' }], { d2: toD2(c).replace('step1 -> step2', 'step1 -> nowhere') })
-    expect(out.problems).toEqual(['loop.d2 line 52: the edge names "nowhere", which is not drawn; an edge joins a step, stage or node by its dotted path'])
+    expect(out.problems).toEqual(['loop.d2 line 58: the edge names "nowhere", which is not drawn; an edge joins a step, stage or node by its dotted path'])
   })
 })
 
@@ -568,18 +599,25 @@ describe('parsing', () => {
 
   test('each malformed op says what is wrong', () => {
     const problem = (v: unknown) => ('problem' in parseOp(v) ? (parseOp(v) as { problem: string }).problem : null)
-    expect(problem('stage.add')).toBe('an op is an object like { "op": "stage.add", ... }')
-    expect(problem({ id: 'x' })).toBe('the op has no "op" naming it, like "stage.add"')
-    expect(problem({ op: 'stage.grow' })).toStartWith('"stage.grow" is not an op (one of stage.add, stage.remove,')
-    expect(problem({ op: 'stage.add', id: 'x', summary: 'y', alongSide: 'qa' })).toBe('stage.add does not take "alongSide" (it takes id, summary, after, alongside)')
-    expect(problem({ op: 'stage.add', id: 'x' })).toBe('stage.add needs "summary", a string')
-    expect(problem({ op: 'stage.add', id: 'x', summary: 'y', after: 1.5 })).toBe('stage.add: "after" must be a whole number')
-    expect(problem({ op: 'node.add', id: 'x', type: 'robot', contract: 'none', summary: 'y' })).toBe('node.add: "type" must be agent or swarm')
-    expect(problem({ op: 'node.set', id: 'x', contract: 'judges' })).toBe('node.set: "contract" must be one of lands, scores, collects, none')
-    expect(problem({ op: 'node.move', id: 'x', onCall: false })).toBe('node.move: "onCall" must be true')
-    expect(problem({ op: 'node.set', id: 'x', tools: ['Edit'] })).toBe('node.set: "tools" must be like { deny: [Edit] }')
-    expect(problem({ op: 'transition.set', from: 'a', to: 'b', label: 'x' })).toBe('transition.set: "to" must be a list of strings')
-    expect(problem({ op: 'loop.new', name: 'x', level: 'user' })).toBe('loop.new changes loop folders, not the draft; it is not an edit the draft takes')
+    expect(problem('stage.add')).toBe('an op is one object that names itself in op, like stage.add, beside its fields; send each op so')
+    expect(problem({ id: 'x' })).toBe('the op does not name itself; give op, like stage.add')
+    expect(problem({ op: 'stage.grow' })).toStartWith('"stage.grow" is not an op; name one of stage.add, stage.remove,')
+    expect(problem({ op: 'stage.add', id: 'x', summary: 'y', alongSide: 'qa' })).toBe('stage.add takes id, summary, after and alongside; "alongSide" is not one of them')
+    expect(problem({ op: 'node.set', node: 'worker', models: ['opus'] })).toBe(
+      'node.set takes id and the fields to change (contract, summary, models, skills, tools, categories or collectors); "node" is not one of them',
+    )
+    expect(problem({ op: 'stage.add', id: 'x' })).toBe('stage.add needs summary; give it as a string')
+    expect(problem({ op: 'stage.add', id: 'x', summary: 'y', after: 1.5 })).toBe('stage.add: after is not a whole number; give after as a whole number')
+    expect(problem({ op: 'node.add', id: 'x', type: 'robot', contract: 'none', summary: 'y' })).toBe('node.add: type is not agent or swarm; give type as agent or swarm')
+    expect(problem({ op: 'node.set', id: 'x', contract: 'judges' })).toBe('node.set: contract is not one of lands, scores, collects, none; give contract as one of lands, scores, collects, none')
+    expect(problem({ op: 'node.move', id: 'x', onCall: false })).toBe('node.move: onCall is not true; give onCall as true')
+    expect(problem({ op: 'node.set', id: 'x', tools: ['Edit'] })).toBe(
+      'node.set: tools is not the tools to deny: deny with a list of tool names, like Edit; give tools as the tools to deny: deny with a list of tool names, like Edit',
+    )
+    expect(problem({ op: 'transition.set', from: 'a', to: 'b', label: 'x' })).toBe('transition.set: to is not a list of strings; give to as a list of strings')
+    expect(problem({ op: 'loop.new', name: 'x', level: 'user' })).toBe('loop.new changes loop folders, not the draft; send it in a batch of its own')
+    // no raw shapes: a person reads these through the architect
+    for (const v of ['stage.add', { id: 'x' }, { op: 'node.set', id: 'x', tools: ['Edit'] }]) expect(problem(v)).not.toMatch(/[{}[\]]/)
   })
 
   test('every op parses back to itself and describes in one lower-case line', () => {
@@ -677,7 +715,7 @@ describe('loops on disk', () => {
   test('save refuses a plugin loop, an invalid draft and a changed base unless forced', async () => {
     const { fs, files, loop, draft } = await savedWithDraft()
     const ref = { name: 'mine', level: 'user' as const, dir: userDir('mine'), description: '', counts: { stages: 0, steps: 0, nodes: 0, edges: 0 } }
-    expect(await saveDraft(fs, { ref: { ...ref, level: 'plugin' }, loop, info: draft.info, opaque: [] })).toBe("the plugin's loops are read-only; copy it to user or project first")
+    expect(await saveDraft(fs, { ref: { ...ref, level: 'plugin' }, loop, info: draft.info, opaque: [] })).toBe(`the plugin's loops are read-only; copy it first: say "new loop <name> at user level from mine", then change the copy`)
     expect(await saveDraft(fs, { ref, loop: { ...loop, description: '' }, info: draft.info, opaque: [] })).toBe('the draft does not validate: the description is empty; say in a sentence what the loop is for, with loop.describe')
 
     await writeLoop(fs, userDir('mine'), { ...loop, description: 'Changed elsewhere.' })
@@ -691,10 +729,13 @@ describe('loops on disk', () => {
 
   test('loopMove moves the folder and the draft; plugin, taken and repository-less moves are refused', async () => {
     const { fs, files, draft } = await savedWithDraft()
-    expect(await loopMove(fs, ROOTS, DRAFTS, REPO, { name: 'core', from: 'plugin', to: 'user' })).toBe("the plugin's loops are read-only; copy core with loop.new and from, then change the copy")
+    expect(await loopMove(fs, ROOTS, DRAFTS, REPO, { name: 'core', from: 'plugin', to: 'user' })).toBe(`the plugin's loops are read-only; copy it first: say "new loop <name> at user level from core", then change the copy`)
     expect(await loopMove(fs, { ...ROOTS, project: null }, DRAFTS, null, { name: 'mine', from: 'user', to: 'project' })).toBe('there is no repository here, so there is no project level; use the user level')
     expect(await loopMove(fs, ROOTS, DRAFTS, REPO, { name: 'mine', from: 'user', to: 'user' })).toBe('the loop is already at the user level; name the other level to move it')
-    expect(await loopMove(fs, ROOTS, DRAFTS, REPO, { name: 'mine', from: 'user', to: 'project' })).toBeNull()
+    // check runs the refusals alone: nothing moves
+    expect(await loopMove(fs, ROOTS, DRAFTS, REPO, { name: 'mine', from: 'user', to: 'project', check: true })).toEqual({ draftMoved: false })
+    expect(await fs.exists(userDir('mine'))).toBe(true)
+    expect(await loopMove(fs, ROOTS, DRAFTS, REPO, { name: 'mine', from: 'user', to: 'project' })).toEqual({ draftMoved: true })
     const moved = `${ROOTS.project}/mine`
     expect(await fs.exists(userDir('mine'))).toBe(false)
     expect((await readLoop(fs, moved)).problems).toEqual([])
@@ -708,7 +749,7 @@ describe('loops on disk', () => {
 
   test('loopRename renames the folder, the name, the title and the draft, which still saves', async () => {
     const { fs, files, loop } = await savedWithDraft()
-    expect(await loopRename(fs, ROOTS, DRAFTS, REPO, { name: 'core', level: 'plugin', to: 'x' })).toBe("the plugin's loops are read-only; copy core with loop.new and from, then change the copy")
+    expect(await loopRename(fs, ROOTS, DRAFTS, REPO, { name: 'core', level: 'plugin', to: 'x' })).toBe(`the plugin's loops are read-only; copy it first: say "new loop <name> at user level from core", then change the copy`)
     expect(await loopRename(fs, ROOTS, DRAFTS, REPO, { name: 'mine', level: 'user', to: 'mine' })).toBe('the loop is already called mine; give a new name in to')
     expect(await loopRename(fs, ROOTS, DRAFTS, REPO, { name: 'mine', level: 'user', to: 'ours' })).toBeNull()
     expect(await fs.exists(userDir('mine'))).toBe(false)
@@ -732,7 +773,7 @@ describe('loops on disk', () => {
 
   test('loopDelete removes the folder and the draft; a plugin loop is refused', async () => {
     const { fs, draft } = await savedWithDraft()
-    expect(await loopDelete(fs, ROOTS, DRAFTS, REPO, { name: 'core', level: 'plugin' })).toBe("the plugin's loops are read-only and cannot be deleted; to stop using one, make another loop the default with loop.default")
+    expect(await loopDelete(fs, ROOTS, DRAFTS, REPO, { name: 'core', level: 'plugin' })).toBe(`the plugin's loops are read-only and cannot be deleted; to stop using core, make another loop the default: say "make <name> the default"`)
     expect(await loopDelete(fs, ROOTS, DRAFTS, REPO, { name: 'mine', level: 'user' })).toBeNull()
     expect(await fs.exists(userDir('mine'))).toBe(false)
     expect(await fs.exists(draft.info.dir)).toBe(false)

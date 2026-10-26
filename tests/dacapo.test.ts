@@ -174,22 +174,23 @@ describe('the configuration', () => {
       { path: '/repo/.dacapo.conf', text: null, role: 'project' },
     ])
     expect(loaded.paths).toEqual({ plugin: '/plugin/dacapo.conf', user: '/tmp/dh/dacapo.conf', project: '/repo/.dacapo.conf' })
-    expect(describeConf(loaded)).toMatch(/\nTo change a value, edit \/tmp\/dh\/dacapo\.conf for every repository, or \/repo\/\.dacapo\.conf for this one; a later file wins key by key\.$/)
+    expect(describeConf(loaded)).toMatch(/\nTo change a value, edit \/tmp\/dh\/dacapo\.conf \(the user conf: \$DACAPO_HOME\/dacapo\.conf when DACAPO_HOME is set, else ~\/\.claude\/dacapo\.conf\) for every repository, or \/repo\/\.dacapo\.conf for this one; a later file wins key by key\.$/)
   })
 
   test('level and judges are gone: a file that still sets one is told depth is a loop now, and nothing is applied', () => {
-    const parsed = parseConf('level = deep\njudges = parallel\nloop = core\n')
+    const parsed = parseConf('level = fast\njudges = parallel\nloop = core\n')
     expect(parsed.values).toEqual({ loop: ['core'] })
+    // the shape the removed flag and an unknown --loop share: what is wrong, Choose one: the fix, then the loops
     expect(parsed.problems).toEqual([
-      'line 1: "level" was removed in 0.22; depth is a loop now (loop = core-fast | core | core-deep)',
-      'line 2: "judges" was removed in 0.22; depth is a loop now (loop = core-fast | core | core-deep)',
+      'line 1: "level" was removed in 0.22; depth is a loop now. Choose one: loop = core-fast (the loops: core-fast, core, core-deep; /dacapo:design shows each)',
+      'line 2: "judges" was removed in 0.22; depth is a loop now. Choose one: loop = core-deep (the loops: core-fast, core, core-deep; /dacapo:design shows each)',
     ])
     expect(DEFAULT_CONF.loop).toBe('core')
     expect(describeConf(loadConf([]))).toMatch(/^loop = core  \(default\)\n/)
     // the config names the loops the session found; called without them, the shipped ones
     const stale = loadConf([{ path: '/repo/.dacapo.conf', text: 'level = deep\n', role: 'project' }])
-    expect(describeConf(stale)).toMatch(/- \/repo\/\.dacapo\.conf: line 1: "level" was removed in 0\.22; depth is a loop now \(loop = core-fast \| core \| core-deep\)$/m)
-    expect(describeConf(stale, { loops: ['core-fast', 'core', 'core-deep', 'mine'] })).toMatch(/depth is a loop now \(loop = core-fast \| core \| core-deep \| mine\)$/m)
+    expect(describeConf(stale)).toMatch(/- \/repo\/\.dacapo\.conf: line 1: "level" was removed in 0\.22; depth is a loop now\. Choose one: loop = core-deep \(the loops: core-fast, core, core-deep; \/dacapo:design shows each\)$/m)
+    expect(describeConf(stale, { loops: ['core-fast', 'core', 'core-deep', 'mine'] })).toMatch(/Choose one: loop = core-deep \(the loops: core-fast, core, core-deep, mine; \/dacapo:design shows each\)$/m)
     // a run on another loop than the configured one says so on the loop line
     expect(describeConf(stale, { runLoop: 'core-deep' })).toMatch(/^loop = core \(conf: default\); this run walks core-deep \(--loop\)\n/)
     expect(describeConf(stale, { runLoop: 'core' })).toMatch(/^loop = core  \(default\)\n/)
@@ -579,7 +580,7 @@ describe('the loop', () => {
     ghMissing = false
     const badLoop = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page', loop: 'turbo' } as never)
     expect('isError' in badLoop && badLoop.isError).toBe(true)
-    expect('result' in badLoop && badLoop.result).toMatch(/there is no loop "turbo"; the loops available: core-wide, core, core-deep, core-fast/)
+    expect('result' in badLoop && badLoop.result).toMatch(/there is no loop "turbo" \(the loops: core-fast, core, core-deep, core-wide; \/dacapo:design shows each\)/)
     const started = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Build a login page' } as never)
     expect('result' in started && started.result).toMatch(/Run .* ready on x\/y/)
     expect('result' in started && started.result).toMatch(/loop core-wide \(user\): clarify → research → plan → implement → qa ∥ review → merge/)
@@ -592,11 +593,15 @@ describe('the loop', () => {
     // the configuration in force, with where each value came from, and the loop with the orchestrator's role; agents never read the files
     const config = await $.tool.call({ tool: 'mcp__dacapo__config' } as never)
     expect('result' in config && config.result).toMatch(/^loop = core \(conf: default\); this run walks core-wide \(--loop\)$/m)
-    expect('result' in config && config.result).toMatch(/Ignored:[\s\S]*"judges" was removed in 0\.22; depth is a loop now \(loop = core-fast \| core \| core-deep \| core-wide\)/)
+    expect('result' in config && config.result).toMatch(/Ignored:[\s\S]*"judges" was removed in 0\.22; depth is a loop now\. Choose one: loop = core-deep \(the loops: core-fast, core, core-deep, core-wide; \/dacapo:design shows each\)/)
     expect('result' in config && config.result).toMatch(/qa = sonnet, opus/)
     expect('result' in config && config.result).toMatch(/Loop: core-wide \(user level, \/home\/u\/.claude\/dacapo\/loops\/core-wide\)/)
     expect('result' in config && config.result).toMatch(/5\. qa: as the end user \(qa, qa-collector\) ∥ review: as an engineer \(reviewer\)/)
-    expect('result' in config && config.result).toMatch(/- worker: builds one task \(agent type dacapo:worker, works in implement\)\. swarm, contract lands; models opus, sonnet; skills dacapo:rules-commits, dacapo:rules-prs/)
+    expect('result' in config && config.result).toMatch(/- worker: builds one task \(agent type dacapo:worker, works in implement\)\. swarm, contract lands \(builds and lands work\); models opus, sonnet; skills dacapo:rules-commits, dacapo:rules-prs/)
+    // the entry and the exit by their node ids, the contracts with their gloss
+    expect('result' in config && config.result).toMatch(/\n- orchestrator → clarify: handed over\n/)
+    expect('result' in config && config.result).toMatch(/\n- merge → done: integrated\n/)
+    expect('result' in config && config.result).toMatch(/- orchestrator: talks to you \(you\)\. entry, contract none \(answers a prompt\)/)
     expect('result' in config && config.result).toMatch(/## Your role\n\nYou are the orchestrator of this loop/)
     expect('result' in config && config.result).toMatch(/qa-collectors = 1  \(\/home\/u\/.claude\/dacapo.conf\)/)
     expect('result' in config && config.result).toMatch(/commits-skill = dacapo:rules-commits  \(default\)/)
@@ -1055,7 +1060,11 @@ function repoHarness(on: On, files: Map<string, string>, env: Record<string, str
     files.set(e.path, e.text)
     return { value: undefined }
   })
-  on('fs.read', (_, e) => ({ value: fileAt(files, e.path) ?? '' }))
+  on('fs.read', (_, e) => {
+    // a folder cannot be read as a file, as on disk: copying a loop folder walks into it
+    if (fileAt(files, e.path) === undefined && [...files.keys()].some(k => k.startsWith(`${e.path.replace(/\/+$/, '')}/`))) throw new Error(`EISDIR: ${e.path}`)
+    return { value: fileAt(files, e.path) ?? '' }
+  })
   on('fs.exists', (_, e) => ({ value: existsAt(files, e.path) || e.path.startsWith('/repo/.workspaces/') }))
   listFs(on, files)
   on('process.run', (_, e) => {
@@ -1138,7 +1147,7 @@ describe('the active loop', () => {
     await $.prompt.submit({ text: '/dacapo:core add a page', wait: false, origin: { kind: 'composer' } })
     const refused = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.', loop: 'nope' } as never)
     expect(isRefused(refused)).toBe(true)
-    expect(resultOf(refused)).toMatch(/there is no loop "nope"; the loops available: core, core-deep, core-fast/)
+    expect(resultOf(refused)).toMatch(/there is no loop "nope" \(the loops: core-fast, core, core-deep; \/dacapo:design shows each\)/)
   })
 
   test('stage, dispatch and judge hold the orchestrator to the loop: its stages, its node\'s models and categories; status names the loop', async ($, on) => {
@@ -1216,10 +1225,10 @@ describe('the active loop', () => {
     await $.prompt.submit({ text: '/dacapo:core add a page', wait: false, origin: { kind: 'composer' } })
     const clash = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.', loop: 'odd' } as never)
     expect(isRefused(clash)).toBe(true)
-    expect(resultOf(clash)).toMatch(/dacapo:worker is registered in this session by the loop "core" with a different role[\s\S]*begin a new session with loop = odd in your conf \(\/home\/u\/\.claude\/dacapo\.conf or the repository's \.dacapo\.conf\)/)
+    expect(resultOf(clash)).toMatch(/dacapo:worker is registered in this session by the loop "core" with a different role[\s\S]*begin a new session with loop = odd in a conf file, \/home\/u\/\.claude\/dacapo\.conf \(the user conf: \$DACAPO_HOME\/dacapo\.conf when DACAPO_HOME is set, else ~\/\.claude\/dacapo\.conf\), or the repository's \.dacapo\.conf:/)
     // the prompt that names it is refused before the turn, and config names the loops session start left out
     const dropped = await $.prompt.submit({ text: '/dacapo:core --loop odd add a page', wait: false, origin: { kind: 'composer' } })
-    expect((dropped as { drop?: string }).drop).toMatch(/^dacapo: the loop "odd" cannot run in this session: .*begin a new session with loop = odd in your conf/)
+    expect((dropped as { drop?: string }).drop).toMatch(/^"--loop odd": the loop "odd" cannot run in this session: .*begin a new session with loop = odd in a conf file/)
     const config = resultOf(await $.tool.call({ tool: 'mcp__dacapo__config' } as never))
     expect(config).toMatch(/Loops whose agents this session did not register, so no run of theirs starts here:\n(- .*\n)*- odd: dacapo:worker differs from the agent type of the loop "core"/)
     expect(config).toMatch(/\n- broken: the loop "broken" \(user, [^)]*\) cannot run:/)
@@ -1237,7 +1246,7 @@ describe('the active loop', () => {
     expect(tools).toContain('start')
     const config = resultOf(await $.tool.call({ tool: 'mcp__dacapo__config' } as never))
     expect(config).toMatch(/loop = missing  \(\/home\/u\/.claude\/dacapo.conf\)/)
-    expect(config).toMatch(/Loop: "missing" cannot be used: there is no loop "missing"; the loops available: core, core-deep, core-fast/)
+    expect(config).toMatch(/Loop: "missing" cannot be used: there is no loop "missing" \(the loops: core-fast, core, core-deep; \/dacapo:design shows each\)/)
     await $.prompt.submit({ text: '/dacapo:core add a page', wait: false, origin: { kind: 'composer' } })
     const refused = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
     expect(resultOf(refused)).toMatch(/there is no loop "missing"/)
@@ -1353,12 +1362,32 @@ describe('every loop\'s agents, and the prompt\'s flags', () => {
     expect(await drop('/dacapo:core --level=fast add a page')).toBe(`"--level" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop core-fast add a page ${loops}`)
     expect(await drop('/dacapo:core --judges parallel add a page')).toBe(`"--judges" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop core-deep add a page ${loops}`)
     expect(await drop('/dacapo:core --loop core --deep add a page')).toMatch(/^"--deep" was removed in 0.22/)
-    expect(await drop('/dacapo:core --loop nope add a page')).toBe('dacapo: there is no loop "nope"; the loops available: core-wide, core, core-deep, core-fast')
+    // an unknown loop is refused in the same shape and loop order
+    expect(await drop('/dacapo:core --loop nope add a page')).toBe(`"--loop nope": there is no loop "nope". Choose one: /dacapo:core --loop <name> add a page ${loops}`)
     // nothing opened a run; a task that merely mentions a flag is a task
     expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))).toMatch(/^No dacapo run\./)
     expect(opened).not.toContain('dacapo')
     expect(await drop('/dacapo:core add a --deep option to the CLI')).toBeUndefined()
     expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))).toMatch(/loop core \(plugin\), stage clarify/)
+  })
+})
+
+describe('marking stages by hand', () => {
+  test('stage takes the stages of one step side by side, as a list or comma-separated, and refuses stages of two steps', async ($, on) => {
+    const files = new Map<string, string>()
+    wideLoop(files)
+    repoHarness(on, files)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await $.prompt.submit({ text: '/dacapo:core --loop core-wide add a page', wait: false, origin: { kind: 'composer' } })
+    const status = async () => resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))
+    expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__stage', stage: 'qa, review' } as never))).toBe('Stages: qa ∥ review.')
+    expect(await status()).toMatch(/loop core-wide \(user\), stages qa ∥ review/)
+    expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__stage', stage: ['research'] } as never))).toBe('Stage: research.')
+    expect(await status()).toMatch(/loop core-wide \(user\), stage research/)
+    expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__stage', stage: ['review', 'qa'] } as never))).toBe('Stages: review ∥ qa.')
+    const two = await $.tool.call({ tool: 'mcp__dacapo__stage', stage: 'qa, merge' } as never)
+    expect(isRefused(two)).toBe(true)
+    expect(resultOf(two)).toBe('stage: qa, merge are not in one step; several stages are marked together only when they run side by side')
   })
 })
 
@@ -1412,24 +1441,31 @@ describe('the loop viewer and the architect', () => {
     expect(opened).toContain('dacapo-loops')
 
     const list = resultOf(await call($, 'loops', { action: 'list' }))
-    expect(list).toMatch(/^3 loops\. Runs use core by default\./)
-    expect(list).toMatch(/^core \(plugin\) · .+ · 6 stages in 6 steps · 5 nodes · \d+ edges · \S+\/loops\/core \[default\]$/m)
-    expect(list).toMatch(/^core-deep \(plugin\) · /m)
-    expect(list).toMatch(/^core-fast \(plugin\) · /m)
-    expect(list).toMatch(/Roots: plugin \S+\/loops \(read-only\) · user \/home\/u\/dh\/loops · project \/repo\/\.claude\/dacapo\/loops · drafts \/home\/u\/dh\/drafts$/)
+    // the pane's sections as text: Project, User, Plugin, a row per loop with its markers, the drafts folder
+    expect(list).toMatch(/^Loops · 3 loops · default for runs: core \(plugin\)\n\nProject  \/repo\/\.claude\/dacapo\/loops · this repository · kept out of git\n  No loops here\.\n\nUser  \/home\/u\/dh\/loops · every repository\n  No loops here\.\n\nPlugin  shipped with dacapo · read-only · copy to edit\n/)
+    expect(list).toMatch(/^ {2}core \[default\] \[read-only\] · 6 stages in 6 steps · 5 nodes · \d+ edges\n {4}The default loop\..*\n {4}\S+\/loops\/core$/m)
+    expect(list).toMatch(/^ {2}core-deep \[read-only\] · /m)
+    expect(list).toMatch(/^ {2}core-fast \[read-only\] · /m)
+    expect(list).toMatch(/\n\nDrafts: \/home\/u\/dh\/drafts$/)
 
     const core = resultOf(await call($, 'loops', { action: 'open', name: 'core' }))
     expect(core).toMatch(/^Loop core \(plugin\) at \S+\/loops\/core\n/)
-    expect(core).toMatch(/^Loop core \(plugin\) at \S+\nThe default loop\. .*\nNo draft: this is the saved loop\.\nA plugin loop is read-only: save is refused\. Copy it with loop\.new to edit it\.\n\n/)
+    expect(core).toMatch(/^Loop core \(plugin\) at \S+\nThe default loop\. .*\nNo draft: this is the saved loop\.\nA plugin loop is read-only: save is refused\. To edit it, copy it first: say "new loop <name> at user level from core"\.\n\n/)
     expect(core).toMatch(/┌ implement ─/)
-    expect(core).toMatch(/\nNodes:\n- orchestrator: talks to you\. entry; contract none; the entry; skills dacapo:loop\.\n/)
-    expect(core).toMatch(/^- worker: builds one task\. swarm; contract lands; in stage implement; models opus, sonnet; skills dacapo:rules-commits, dacapo:rules-prs; denied Agent, EnterWorktree, ExitWorktree\.$/m)
-    expect(core).toMatch(/^- qa: judges as the user\. agent; contract scores; in stage qa; .*categories core, ui-ux/m)
+    expect(core).toMatch(/\nNodes:\n- orchestrator: talks to you\. entry; contract none \(answers a prompt\); the entry; skills dacapo:loop\.\n/)
+    expect(core).toMatch(/^- worker: builds one task\. swarm; contract lands \(builds and lands work\); in stage implement; models opus, sonnet; skills dacapo:rules-commits, dacapo:rules-prs; denied Agent, EnterWorktree, ExitWorktree\.$/m)
+    expect(core).toMatch(/^- qa: judges as the user\. agent; contract scores \(judges a rubric\); in stage qa; .*categories core, ui-ux/m)
     // the shorter reply: no roles, transitions or handovers; they are the focus's to tell
-    expect(core).toMatch(/\n- done: the run ends\. exit; contract none; the exit\.$/)
+    expect(core).toMatch(/\n- done: the run ends\. exit; contract none \(answers a prompt\); the exit\.$/)
     for (const gone of ['Entry orchestrator', 'Role: ', 'Transitions:', 'Handovers:']) expect(core).not.toContain(gone)
-    expect(resultOf(await call($, 'loops', { action: 'focus', target: 'orchestrator' }))).toMatch(/The whole role of orchestrator:\nYou are/)
+    // a node's focus gives its whole role, once
+    const entryFocus = resultOf(await call($, 'loops', { action: 'focus', target: 'orchestrator' }))
+    expect(entryFocus).toMatch(/\nRole\n {2}You are the orchestrator of this loop\./)
+    expect(entryFocus.match(/You are the orchestrator of this loop/g)).toHaveLength(1)
     expect(resultOf(await call($, 'loops', { action: 'focus', target: 'implement>qa' }))).toMatch(/^implement → qa/)
+    // the exit is named by its id, and addressed by it too
+    expect(resultOf(await call($, 'loops', { action: 'focus', target: 'merge>done' }))).toMatch(/^merge → done · transition · forward\n/)
+    expect(resultOf(await call($, 'loops', { action: 'focus', target: 'merge>exit' }))).toMatch(/^merge → done · /)
     await call($, 'loops', { action: 'focus', target: '' })
 
     // a batch of draft ops opens the draft under DACAPO_HOME and writes the four kinds of file
@@ -1438,39 +1474,65 @@ describe('the loop viewer and the architect', () => {
     expect(resultOf(edited)).toBe(
       [
         'Changed in the draft of core (plugin):',
-        '- added stage security alongside qa',
+        '- added stage security alongside qa; security → merge: all pass, the label of qa → merge',
         '- added agent security (scores) in stage security',
         '- rewrote the role of security',
-        'The draft holds 1 change. The draft is not saved: press Save in the pane or say "save".',
-        'This is a plugin loop, so save is refused: copy it with loop.new to keep edits in a loop of your own.',
+        'The draft holds 3 changes. The draft is not saved: press Save in the pane or say "save".',
+        'This is a plugin loop, so save is refused: to keep changes like these, copy it first: say "new loop <name> at user level from core", then make them in the copy.',
         'The viewer shows stage security.',
       ].join('\n'),
     )
     const draft = `${HOME}/drafts/plugin--core`
-    for (const f of ['loop.json', 'nodes/security.md', 'nodes/worker.md', 'LOOP.md', 'draft.json']) expect(files.has(`${draft}/${f}`)).toBe(true)
-    expect(JSON.parse(files.get(`${draft}/draft.json`)!).changes).toEqual(['added stage security alongside qa; added agent security (scores) in stage security; rewrote the role of security'])
+    // a draft is a whole loop folder, its diagram included; one change line per op
+    for (const f of ['loop.json', 'nodes/security.md', 'nodes/worker.md', 'LOOP.md', 'loop.d2', 'draft.json']) expect(files.has(`${draft}/${f}`)).toBe(true)
+    expect(files.get(`${draft}/loop.d2`)).toContain('  security: {\n    class: stage\n    tooltip: checks for holes\n    security: { class: agent; tooltip: reviews for risk }\n  }\n')
+    expect(JSON.parse(files.get(`${draft}/draft.json`)!).changes).toEqual([
+      'added stage security alongside qa; security → merge: all pass, the label of qa → merge',
+      'added agent security (scores) in stage security',
+      'rewrote the role of security',
+    ])
     expect(files.get(`${draft}/nodes/security.md`)).toMatch(/^---\ntype: agent\nsummary: reviews for risk\ncontract: scores\nmodels: \[opus\][\s\S]*categories: \[quality, risk\][\s\S]*You review the change for security holes\./)
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ ...LOOPS, surface })
       expect(await ui.find({ text: /^ DRAFT $/ })).toBeDefined()
-      expect(await ui.find({ text: / 1 change · since / })).toBeDefined()
+      expect(await ui.find({ text: / 3 changes · since / })).toBeDefined()
       expect(await ui.find({ key: 'focus-stage-security' })).toBeDefined()
       expect(await ui.find({ key: 'focus-node-security' })).toBeDefined()
       await ui.unmount()
     }
     // a draft that comes back on open says DRAFT with its changes
-    expect(resultOf(await call($, 'loops', { action: 'open', name: 'core' }))).toMatch(/\nDRAFT: 1 change, kept in \/home\/u\/dh\/drafts\/plugin--core\n- added stage security alongside qa; /)
+    expect(resultOf(await call($, 'loops', { action: 'open', name: 'core' }))).toMatch(/\nDRAFT: 3 changes, kept in \/home\/u\/dh\/drafts\/plugin--core\n- added stage security alongside qa; .*\n- added agent security/)
     const focused = resultOf(await call($, 'loops', { action: 'focus', target: 'node:security' }))
     expect(focused).toMatch(/^security · agent · security\n/)
-    expect(focused).toMatch(/The whole role of security:\nYou review the change for security holes\.\n\nGround rules:/)
+    expect(focused).toMatch(/\nRole\n {2}You review the change for security holes\.\n\n {2}Ground rules:/)
     expect(isRefused(await call($, 'loops', { action: 'focus', target: 'nope' }))).toBe(true)
-    expect(resultOf(await call($, 'loops', { action: 'fold' }))).toBe('The on-call section is folded.')
+    expect(resultOf(await call($, 'loops', { action: 'fold' }))).toBe('This loop has no on-call nodes; nothing to fold.')
 
     // a bad op is named by its index, and nothing is written
     const before = new Map(files)
     const bad = await call($, 'loop_edit', { ops: [{ op: 'stage.add', id: 'lint', summary: 'runs the linter' }, { op: 'stage.add', id: 'x' }] })
     expect(isRefused(bad)).toBe(true)
-    expect(resultOf(bad)).toBe('Refused op 1 (stage.add): stage.add needs "summary", a string. Nothing was written.')
+    expect(resultOf(bad)).toBe('Refused op 1 (stage.add):\n- stage.add needs summary; give it as a string\nNothing was written.')
+    const wrongKey = await call($, 'loop_edit', { ops: [{ op: 'node.set', node: 'worker', models: ['opus'] }] })
+    expect(resultOf(wrongKey)).toBe(
+      'Refused op 0 (node.set):\n- node.set takes id and the fields to change (contract, summary, models, skills, tools, categories or collectors); "node" is not one of them\nNothing was written.',
+    )
+    // two ops each bring a problem in: both are named, one bullet per problem
+    const two = await call($, 'loop_edit', {
+      ops: [
+        { op: 'stage.add', id: 'docs', summary: 'write the docs', after: 3 },
+        { op: 'loop.describe', description: 'x' },
+        { op: 'node.add', id: 'judge', type: 'agent', contract: 'scores', summary: 'judges', stage: 'qa', models: ['opus'] },
+      ],
+    })
+    expect(resultOf(two)).toBe(
+      [
+        'Refused op 0 (stage.add) and op 2 (node.add):',
+        '- stage docs is not reachable from entry; lead a transition into it with transition.set',
+        '- node judge scores but has no categories; give it the rubric categories it accepts with node.set categories',
+        'Nothing was written.',
+      ].join('\n'),
+    )
     const broken = await call($, 'loop_edit', { ops: [{ op: 'node.add', id: 'judge', type: 'agent', contract: 'scores', summary: 'judges', stage: 'qa', models: ['opus'] }] })
     expect(resultOf(broken)).toBe('Refused op 0 (node.add):\n- node judge scores but has no categories; give it the rubric categories it accepts with node.set categories\nNothing was written.')
     const mixed = await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'x', level: 'user' }, { op: 'loop.describe', description: 'x' }] })
@@ -1480,9 +1542,11 @@ describe('the loop viewer and the architect', () => {
     // the plugin loop is never saved
     const refused = await call($, 'loop_save')
     expect(isRefused(refused)).toBe(true)
-    expect(resultOf(refused)).toMatch(/^Not saved: the plugin's loops are read-only; copy it to user or project first\. Copy it with loop\.new/)
+    expect(resultOf(refused)).toBe('Not saved: the plugin\'s loops are read-only; copy it first: say "new loop <name> at user level from core", then change the copy. The draft is kept.')
 
     // a copy at the user level, saved
+    const badFrom = await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'mine', level: 'user', from: 'core' }] })
+    expect(resultOf(badFrom)).toBe('Refused op 0 (loop.new):\n- from names the loop to copy: its name and level\nNothing was written.')
     const made = await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'mine', level: 'user', from: { name: 'core', level: 'plugin' } }] })
     expect(resultOf(made)).toMatch(/^Started loop mine \(user\) as a draft: a copy of core \(plugin\); the original stays as it was\./)
     expect(files.has(`${HOME}/drafts/user--mine/draft.json`)).toBe(true)
@@ -1490,7 +1554,7 @@ describe('the loop viewer and the architect', () => {
     const saved = await call($, 'loop_save')
     expect(isRefused(saved)).toBe(false)
     expect(resultOf(saved)).toMatch(/^Saved mine \(user\) to \/home\/u\/dh\/loops\/mine\. The draft is cleared\.\nFiles:\n/)
-    expect(resultOf(saved)).toMatch(/Run it with \/dacapo:core --loop mine <task>\.$/)
+    expect(resultOf(saved)).toMatch(/Run it with \/dacapo:core --loop mine <task>, or say "make mine the default" to write loop = mine to \/home\/u\/dh\/dacapo\.conf \(the user conf: \$DACAPO_HOME\/dacapo\.conf when DACAPO_HOME is set, else ~\/\.claude\/dacapo\.conf\)\.$/)
     for (const f of ['loop.json', 'nodes/worker.md', 'nodes/qa.md', 'loop.d2', 'LOOP.md']) expect(files.has(`${HOME}/loops/mine/${f}`)).toBe(true)
     expect(JSON.parse(files.get(`${HOME}/loops/mine/loop.json`)!).name).toBe('mine')
     expect([...files.keys()].some(k => k.startsWith(`${HOME}/drafts/user--mine/`))).toBe(false)
@@ -1505,15 +1569,19 @@ describe('the loop viewer and the architect', () => {
 
     // the default for runs goes into the user's conf
     // the default for runs goes into the user's conf, beside the loops under DACAPO_HOME, and the session reads it again
-    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.default', name: 'mine' }] }))).toMatch(/^Wrote loop = mine to \/home\/u\/dh\/dacapo\.conf\./)
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.default', name: 'mine' }] }))).toMatch(/^Wrote loop = mine to \/home\/u\/dh\/dacapo\.conf \(the user conf: \$DACAPO_HOME\/dacapo\.conf when DACAPO_HOME is set, else ~\/\.claude\/dacapo\.conf\)\. Runs use mine unless --loop names another\.$/)
     expect(files.get('/home/u/dh/dacapo.conf')).toBe('loop = mine\n')
     expect(files.has('/home/u/.claude/dacapo.conf')).toBe(false)
-    expect(resultOf(await call($, 'loops', { action: 'list' }))).toMatch(/^mine \(user\) · .* \[default\]$/m)
+    expect(resultOf(await call($, 'loops', { action: 'list' }))).toMatch(/^ {2}mine \[default\] · /m)
     const config = resultOf(await call($, 'config'))
     expect(config).toMatch(/^loop = mine  \(\/home\/u\/dh\/dacapo\.conf\)$/m)
-    expect(config).toMatch(/^To change a value, edit \/home\/u\/dh\/dacapo\.conf for every repository, or \/repo\/\.dacapo\.conf for this one; a later file wins key by key\.$/m)
+    expect(config).toMatch(/^To change a value, edit \/home\/u\/dh\/dacapo\.conf \(the user conf: \$DACAPO_HOME\/dacapo\.conf when DACAPO_HOME is set, else ~\/\.claude\/dacapo\.conf\) for every repository, or \/repo\/\.dacapo\.conf for this one; a later file wins key by key\.$/m)
     expect(config).toMatch(/^Loop: mine \(user level, \/home\/u\/dh\/loops\/mine\)$/m)
-    expect((await $.command.run({ command: 'dacapo-config' } as never) as { text: string }).text).toMatch(/\n\nEdit \/home\/u\/dh\/dacapo\.conf for every repository, or \/repo\/\.dacapo\.conf for this one;/)
+    // the commands print under the host's own dacapo label, without one of their own
+    const shown = (await $.command.run({ command: 'dacapo-config' } as never) as { text: string }).text
+    expect(shown).toMatch(/^Configuration in force:\nloop = mine {2}/)
+    expect(shown).toMatch(/\nTo change a value, edit \/home\/u\/dh\/dacapo\.conf \(the user conf: /)
+    expect(((await $.command.run({ command: 'dacapo-pane' } as never)) as { text: string }).text).toBe('Timeline opened.')
 
     // the pane's Save button saves through the same path
     await call($, 'loops', { action: 'open', name: 'mine' })
@@ -1536,8 +1604,16 @@ describe('the loop viewer and the architect', () => {
 
     // delete takes the folder and goes back to the library
     // the conf named mine as the default: its line goes back to core
-    const deleted = resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete', name: 'mine', level: 'user' }] }))
-    expect(deleted).toMatch(/^Deleted mine \(user\): its folder and its draft are gone\. It was the default loop for runs: \/home\/u\/dh\/dacapo\.conf now says loop = core\.\n\n3 loops\. Runs use core by default\./)
+    // without confirm, delete says what it would do and does nothing
+    const asked = await call($, 'loop_edit', { ops: [{ op: 'loop.delete' }] })
+    expect(isRefused(asked)).toBe(false)
+    expect(resultOf(asked)).toBe(
+      'Not deleted yet: that deletes the loop mine at the user level, its folder /home/u/dh/loops/mine, and cannot be undone. Ask the user first; resend with confirm: true once the user agrees.',
+    )
+    expect(files.has(`${HOME}/loops/mine/loop.json`)).toBe(true)
+    // with it, and with name and level left out, it deletes the open loop
+    const deleted = resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete', confirm: true }] }))
+    expect(deleted).toMatch(/^Deleted mine \(user\): its folder is gone\. It was the default loop for runs: \/home\/u\/dh\/dacapo\.conf now says loop = core\.\n\nLoops · 3 loops · default for runs: core \(plugin\)\n/)
     expect([...files.keys()].some(k => k.startsWith(`${HOME}/loops/mine/`))).toBe(false)
     expect(files.get('/home/u/dh/dacapo.conf')).toBe('loop = core\n')
     expect(store.has(LAST)).toBe(false)
@@ -1550,7 +1626,7 @@ describe('the loop viewer and the architect', () => {
     store.set(LAST, { name: 'gone', level: 'user', view: { folded: false, tab: 'canvas' } })
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     expect(opened).not.toContain('dacapo-loops')
-    expect(await $.command.run({ command: 'dacapo-loops' } as never)).toEqual({ text: 'dacapo loops opened.' })
+    expect(await $.command.run({ command: 'dacapo-loops' } as never)).toMatchObject({ text: 'Loops opened.' })
     expect(opened).toContain('dacapo-loops')
     const ui = await $.ui.mount({ ...LOOPS, surface: 'terminal' })
     expect(await ui.find({ text: /^Loops · 3 loops · default for runs: core \(plugin\)$/ })).toBeDefined()
@@ -1604,12 +1680,12 @@ describe('the loop viewer and the architect', () => {
     expect(resultOf(edited)).toMatch(/^Changed in the draft of core \(plugin\):\n- /)
     expect(files.has(`${HOME}/drafts/plugin--core/draft.json`)).toBe(true)
     expect(resultOf(await call($, 'loops', { action: 'focus', name: 'core-fast', target: 'worker' }))).toMatch(/^worker · /)
-    expect(resultOf(await call($, 'loops', { action: 'fold', name: 'core', level: 'plugin' }))).toBe('The on-call section is folded.')
+    expect(resultOf(await call($, 'loops', { action: 'fold', name: 'core', level: 'plugin' }))).toBe('This loop has no on-call nodes; nothing to fold.')
     expect(isRefused(await call($, 'loops', { action: 'focus', name: 'nope', target: 'worker' }))).toBe(true)
     // no draft of a plugin loop: save says so, and how a plugin loop changes
     const nothing = await call($, 'loop_save', { name: 'core-fast' })
     expect(resultOf(nothing)).toBe(
-      'There is no draft of core-fast (plugin) to save. A plugin loop is read-only, so it changes only as a copy: Copy it with loop.new { name, level: user or project, from: { name: core-fast, level: plugin } }, then edit the copy.',
+      'There is no draft of core-fast (plugin) to save. A plugin loop is read-only; to change it, copy it first: say "new loop <name> at user level from core-fast".',
     )
     // discard by name reaches core's draft while core-fast is open
     expect(resultOf(await call($, 'loop_discard', { name: 'core' }))).toBe('Discarded the draft of core (plugin). The viewer shows the saved loop again.')
@@ -1640,6 +1716,82 @@ describe('the loop viewer and the architect', () => {
     expect(imported).not.toContain(notice)
     files.set(d2, files.get(d2)!.replace('builds one small task', 'builds one tiny task'))
     expect(resultOf(await call($, 'loops', { action: 'open', name: 'mine' }))).toContain(notice)
+  })
+
+  test('a name resolves project over user over plugin, a draft alone counting; the library marks one default and what hides what', async ($, on) => {
+    const files = new Map<string, string>()
+    repoHarness(on, files, { DACAPO_HOME: HOME })
+    storeOf(on)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    const made = resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'core', level: 'user', from: { name: 'core', level: 'plugin' } }] }))
+    expect(made).toContain(' It will hide core (plugin): a name resolves project over user over plugin, so once it is saved, runs that name core use this one. ')
+    const list = resultOf(await call($, 'loops', { action: 'list' }))
+    expect(list.match(/\[default\]/g)).toHaveLength(1)
+    expect(list).toMatch(/\nUser {2}\/home\/u\/dh\/loops · every repository\n {2}core \[default\] \[draft: 1 change\] \[hides plugin\] · .*\n {4}A copy of core \(plugin\): .*\n {4}draft, not saved yet\n/)
+    expect(list).toMatch(/\n {2}core \[read-only\] \[hidden by user\] · /)
+    // open without a level finds the user draft, and says where else the name lives
+    await call($, 'loops', { action: 'open', name: 'core-fast' })
+    const open = resultOf(await call($, 'loops', { action: 'open', name: 'core' }))
+    expect(open).toMatch(/^Loop core \(user\), draft, not saved yet: a save writes \/home\/u\/dh\/loops\/core; also at plugin\n/)
+    expect(open).toMatch(/\nDRAFT: 1 change, kept in \/home\/u\/dh\/drafts\/user--core\n/)
+    // the tools resolve a name alone the same way
+    await call($, 'loops', { action: 'open', name: 'core-fast' })
+    expect(resultOf(await call($, 'loop_edit', { name: 'core', ops: [{ op: 'loop.describe', description: 'Mine.' }] }))).toMatch(/^Changed in the draft of core \(user\):[\s\S]*\nThe draft holds 2 changes\./)
+    // a project loop of the name hides both, and a name alone reaches it first
+    const project = resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'core', level: 'project' }] }))
+    expect(project).toContain(' It will hide core (user) and core (plugin): ')
+    expect(resultOf(await call($, 'loops', { action: 'open', name: 'core' }))).toMatch(/^Loop core \(project\), draft, not saved yet: .*; also at user and plugin\n/)
+    expect(resultOf(await call($, 'loop_discard', { name: 'core' }))).toBe('Discarded the draft of core (project). It was never saved, so nothing is left of it.')
+    expect(resultOf(await call($, 'loop_save', { name: 'core' }))).toMatch(/^Saved core \(user\) to \/home\/u\/dh\/loops\/core\./)
+    // a new loop at a level below one of its name is told that one hides it
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'core-fast', level: 'project' }] }))).toContain(' It will hide core-fast (plugin)')
+    await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'solo', level: 'project' }] })
+    await call($, 'loop_save')
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'solo', level: 'user' }] }))).toContain(' solo (project) will hide it: a name resolves project over user over plugin, so runs that name solo use that one. ')
+  })
+
+  test('move and delete ask first and act only with confirm; default and delete act on the open loop; replies say what moved', async ($, on) => {
+    const files = new Map<string, string>()
+    repoHarness(on, files, { DACAPO_HOME: HOME })
+    storeOf(on)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'mine', level: 'user' }] })
+    await call($, 'loop_save')
+    const asked = await call($, 'loop_edit', { ops: [{ op: 'loop.move', level: 'project' }] })
+    expect(isRefused(asked)).toBe(false)
+    expect(resultOf(asked)).toBe(
+      'Not moved yet: that moves mine from the user level (/home/u/dh/loops/mine) to the project level (/repo/.claude/dacapo/loops/mine), and only this repository sees it there. Ask the user first; resend with confirm: true once the user agrees.',
+    )
+    expect(files.has(`${HOME}/loops/mine/loop.json`)).toBe(true)
+    // a move that cannot happen is refused, not asked about
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.move', level: 'user' }] }))).toBe('Refused op 0 (loop.move):\n- the loop is already at the user level; name the other level to move it\nNothing was written.')
+    // no draft moves, so the reply names none
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.move', level: 'project', confirm: true }] }))).toBe('Moved mine from the user level to the project level: /repo/.claude/dacapo/loops/mine.')
+    // default with no name makes the open loop the default, in the repository's conf for a project loop
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.default' }] }))).toBe('Wrote loop = mine to /repo/.dacapo.conf. Runs use mine unless --loop names another.')
+    // a user loop made the default while the repository's conf names another: the reply names the fix
+    await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'other', level: 'user' }] })
+    await call($, 'loop_save')
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.default' }] }))).toBe(
+      'Wrote loop = other to /home/u/dh/dacapo.conf (the user conf: $DACAPO_HOME/dacapo.conf when DACAPO_HOME is set, else ~/.claude/dacapo.conf). Runs use other unless --loop names another. /repo/.dacapo.conf names mine and is read after it, so runs here still use mine: edit /repo/.dacapo.conf to say loop = other, or take its loop line out.',
+    )
+    // a draft moves with its loop, and then the reply says so
+    await call($, 'loops', { action: 'open', name: 'mine' })
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.describe', description: 'Moved with a draft.' }] }))).toMatch(/^Changed in the draft of mine \(project\)/)
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.move', level: 'user' }] }))).toContain(', with its draft, and every repository sees it there.')
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.move', level: 'user', confirm: true }] }))).toBe('Moved mine from the project level to the user level, with its draft: /home/u/dh/loops/mine.')
+    // delete by name alone, after asking
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete', name: 'other' }] }))).toBe(
+      'Not deleted yet: that deletes the loop other at the user level, its folder /home/u/dh/loops/other, and cannot be undone. Ask the user first; resend with confirm: true once the user agrees.',
+    )
+    expect(files.has(`${HOME}/loops/other/loop.json`)).toBe(true)
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete', name: 'core' }] }))).toMatch(/^Refused op 0 \(loop\.delete\):\n- the plugin's loops are read-only and cannot be deleted; /)
+    // a new loop not saved yet: only its draft goes
+    await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'fresh', level: 'user' }] })
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete' }] }))).toBe(
+      'Not deleted yet: that deletes the loop fresh at the user level, its draft (1 change), and cannot be undone. Ask the user first; resend with confirm: true once the user agrees.',
+    )
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete', confirm: true }] }))).toMatch(/^Deleted fresh \(user\): its draft is gone\.\n/)
   })
 
   test('a project loop made the default goes into the repository\'s conf; the config reads the user conf under DACAPO_HOME', async ($, on) => {

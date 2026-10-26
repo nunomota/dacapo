@@ -57,11 +57,11 @@ The worker's report ends with `dacapo: done`, `dacapo: done with limitations` or
 
 ### config
 
-Call `mcp__dacapo__config` with no arguments, once at the start of a run and again only when a reply sends you there. It lists every configuration key with the file it came from (`loop`, the model lists `workers`, `qa` and `review` that a loop's nodes draw from, `commits-skill`, `prs-skill`, `base-branch`, `qa-collectors`), then the loop: its level and folder, its steps with stage ids and summaries, every node with type, contract, models, skills and categories, its transitions with when and then, its handovers, and `Your role`. A loop that cannot be loaded is named with its problems; tell the user, since no run starts on it. The person edits `~/.claude/dacapo.conf` or the repository's `.dacapo.conf` and sees the result with `/dacapo-config`.
+Call `mcp__dacapo__config` with no arguments, once at the start of a run and again only when a reply sends you there. It lists every configuration key with the file it came from (`loop`, the model lists `workers`, `qa` and `review` that a loop's nodes draw from, `commits-skill`, `prs-skill`, `base-branch`, `qa-collectors`), then the loop: its level and folder, its steps with stage ids and summaries, every node with type, contract, models, skills and categories, its transitions with when and then, its handovers, and `Your role`. A loop that cannot be loaded is named with its problems; tell the user, since no run starts on it. The person edits the user conf ($DACAPO_HOME/dacapo.conf when DACAPO_HOME is set, else ~/.claude/dacapo.conf; `config` names the path in force) or the repository's `.dacapo.conf` and sees the result with `/dacapo-config`.
 
 ### stage
 
-Call `mcp__dacapo__stage` with `stage` (a stage id of the loop) as you enter a stage you work through alone: `clarify` and `research` in the shipped loops. The other stages are marked by the tools: `start` marks the planning stage, `dispatch` the stage of its `lands` node, `judge` the stage of its judge, and `finish` the stage that leads to the exit. A stage the loop does not have is refused.
+Call `mcp__dacapo__stage` with `stage` (a stage id of the loop) as you enter a stage you work through alone: `clarify` and `research` in the shipped loops. The other stages are marked by the tools: `start` marks the planning stage, `dispatch` the stage of its `lands` node, `judge` the stage of its judge, and `finish` the stage that leads to the exit. To mark the stages of one step side by side by hand, give them together, `stage: 'qa, review'` or a list. A stage the loop does not have is refused, and so are stages of two steps.
 
 ### start
 

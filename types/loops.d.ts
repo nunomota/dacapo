@@ -74,8 +74,9 @@ export type Loop = LoopGraph & { nodes: Record<string, LoopNode> }
 export type DraftInfo = { dir: string; base: string | null; since: number; changes: string[] }
 
 /**
- * A loop as the library lists it. `shadowedBy` names the higher level whose loop of the same name wins; `draft` is set
- * when a draft of this loop is open.
+ * A loop as the library lists it. `shadowedBy` names the higher level whose loop of the same name wins, `hides` the
+ * lower levels whose loop of the same name this one hides; `draft` is set when a draft of this loop is open, and
+ * `unsaved` when the loop is that draft alone so far (a new loop not saved yet: `dir` is where the save puts it).
  */
 export type LoopRef = {
   name: string
@@ -83,7 +84,9 @@ export type LoopRef = {
   dir: string
   description: string
   shadowedBy?: LoopLevel
+  hides?: LoopLevel[]
   draft?: DraftInfo
+  unsaved?: true
   counts: { stages: number; steps: number; nodes: number; edges: number }
 }
 
@@ -100,6 +103,8 @@ export type ViewerState = {
   library: LoopRef[]
   /** The name the `loop` conf key gives. */
   defaultLoop: string
+  /** The loops folder of each level and the drafts folder, for the library's section headings; absent before the first listing. */
+  roots?: { plugin: string | null; user: string | null; project: string | null; drafts: string }
   /** The loop on screen: its draft when one exists. `problems` are the saved folder's, `d2Newer` says loop.d2 is newer than loop.json, `opaque` holds the diagram's blocks the loop model does not know, kept for the save. */
   open?: { ref: LoopRef; loop: Loop; draft?: DraftInfo; d2Newer: boolean; problems: Problem[]; files: string[]; opaque?: string[] }
   view: { folded: boolean; focus?: ViewerFocus; tab: 'canvas' | 'files' }

@@ -1,14 +1,17 @@
 import type { Handover, Loop, LoopNode, NodeType, Problem, Stage, Step, Transition } from '../types/loops'
 import { canonicalJson, graphOf, ID, stageIndex, withDefaultTransitions } from './loops'
 
-// loop.d2 is the loop drawn in a D2 subset: the entry with its on-call nodes, one container per step holding its
-// stages and their nodes, the exit, then the transitions and the handovers. It carries structure, labels and summaries
-// only; everything else stays in loop.json and the node files.
+// loop.d2 is the loop drawn in a D2 subset: the entry with its on-call nodes, one container per step (labelled
+// `step N`) holding its stages and their nodes, the exit, then the transitions and the handovers. It carries structure,
+// labels and summaries only, a summary as the shape's `tooltip`; everything else stays in loop.json and the node files.
+// An older file that gives a summary as a `summary:` child still reads.
 
 /** The words a transition uses for the entry and the exit node, as hooks/loops.ts has them. */
 const ENTRY = 'entry'
 const EXIT = 'exit'
 const STEP = /^step([1-9][0-9]*)$/
+/** The attributes a node or stage shape takes: its class and its summary, as `tooltip` or, in an older file, `summary`. */
+const SHAPE_KEYS = ['class', 'tooltip', 'summary']
 /** The role a node drawn in the diagram but missing from the loop starts with. */
 const STUB_ROLE = 'Role to be written.'
 
@@ -34,8 +37,11 @@ function quoted(text: string): string {
   return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
 }
 
-/** A shape with no children on one line. It carries no label: D2 draws the key, so the diagram reads the ids as written. */
-const leaf = (indent: string, id: string, cls: string, summary: string) => `${indent}${id}: { class: ${cls}; summary: ${quoted(summary)} }`
+/**
+ * A shape with no children on one line. It carries no label: D2 draws the key, so the diagram reads the ids as written.
+ * The summary is its tooltip: an attribute D2 shows on hover, never a shape of its own.
+ */
+const leaf = (indent: string, id: string, cls: string, summary: string) => `${indent}${id}: { class: ${cls}; tooltip: ${quoted(summary)} }`
 const edge = (from: string, to: string, label: string, cls: string) => `${from} -> ${to}${label ? `: ${quoted(label)}` : ''} { class: ${cls} }`
 const sameSet = (a: string[], b: string[]) => a.length === b.length && new Set(a).size === new Set([...a, ...b]).size
 
@@ -53,11 +59,11 @@ export function toD2(loop: Loop, opaque: string[] = []): string {
   const onCall = Object.entries(loop.onCall)
   if (onCall.length === 0) out.push(leaf('', loop.entry, 'entry', summary(loop.entry)))
   else {
-    out.push(`${loop.entry}: {`, '  class: entry', `  summary: ${quoted(summary(loop.entry))}`, '  on-call: {')
+    out.push(`${loop.entry}: {`, '  class: entry', `  tooltip: ${quoted(summary(loop.entry))}`, '  on-call: {')
     for (const [id, helpers] of onCall) {
       if (helpers.length === 0) out.push(leaf('    ', id, nodeClass(id), summary(id)))
       else {
-        out.push(`    ${id}: {`, `      class: ${nodeClass(id)}`, `      summary: ${quoted(summary(id))}`)
+        out.push(`    ${id}: {`, `      class: ${nodeClass(id)}`, `      tooltip: ${quoted(summary(id))}`)
         for (const h of helpers) out.push(leaf('      ', h, nodeClass(h), summary(h)))
         out.push('    }')
       }
@@ -68,13 +74,13 @@ export function toD2(loop: Loop, opaque: string[] = []): string {
 
   // The steps.
   loop.steps.forEach((step, i) => {
-    if (step.stages.length === 0) return out.push(`step${i + 1}: {}`, '')
-    out.push(`step${i + 1}: {`)
+    if (step.stages.length === 0) return out.push(`step${i + 1}: { label: step ${i + 1} }`, '')
+    out.push(`step${i + 1}: {`, `  label: step ${i + 1}`)
     if (step.stages.length > 1) out.push(`  grid-columns: ${step.stages.length}`)
     for (const st of step.stages) {
       if (st.nodes.length === 0) out.push(leaf('  ', st.id, 'stage', st.summary))
       else {
-        out.push(`  ${st.id}: {`, '    class: stage', `    summary: ${quoted(st.summary)}`)
+        out.push(`  ${st.id}: {`, '    class: stage', `    tooltip: ${quoted(st.summary)}`)
         for (const n of st.nodes) out.push(leaf('    ', n, nodeClass(n), summary(n)))
         out.push('  }')
       }
@@ -347,7 +353,12 @@ export function fromD2(text: string, base: Loop): { loop: Loop; problems: Proble
     }
     return { attrs, shapes }
   }
-  const summaryOf = (a: Record<string, Stmt>) => (a.summary ? (a.summary.value ?? '').trim() : undefined)
+  /** A shape's summary: its tooltip, or the `summary` attribute an older file gave. */
+  const summaryOf = (a: Record<string, Stmt>) => {
+    const at = a.tooltip ?? a.summary
+    if (a.tooltip && a.summary) add(a.summary.line, 'a summary is given twice, as tooltip and as summary; keep the tooltip')
+    return at ? (at.value ?? '').trim() : undefined
+  }
   const expectClass = (a: Record<string, Stmt>, allowed: string[], fallback: string): string => {
     const v = a.class?.value?.trim()
     if (v === undefined) return fallback
@@ -358,7 +369,7 @@ export function fromD2(text: string, base: Loop): { loop: Loop; problems: Proble
   /** A node shape in a stage or on call; on-call nodes may hold helpers. */
   const readNode = (s: Stmt, path: string, helpers: boolean): string[] => {
     const id = s.ends[0]!
-    const { attrs, shapes } = split(s, ['class', 'summary'], helpers ? 'helper' : null)
+    const { attrs, shapes } = split(s, SHAPE_KEYS, helpers ? 'helper' : null)
     const known = base.nodes[id]?.type
     const fallback = known === 'agent' || known === 'swarm' ? known : 'agent'
     place(id, path, { type: expectClass(attrs, ['agent', 'swarm'], fallback) as NodeType, summary: summaryOf(attrs), line: s.line })
@@ -372,7 +383,7 @@ export function fromD2(text: string, base: Loop): { loop: Loop; problems: Proble
   entries.forEach((s, i) => {
     if (i > 0) return add(s.line, `a second entry; the entry is drawn on line ${entries[0]!.line}`)
     entry = s.ends[0]!
-    const { attrs, shapes } = split(s, ['class', 'summary'], 'on-call block')
+    const { attrs, shapes } = split(s, SHAPE_KEYS, 'on-call block')
     place(entry, entry, { type: 'entry', summary: summaryOf(attrs), line: s.line })
     for (const block of shapes) {
       if (block.ends[0] !== 'on-call') {
@@ -393,7 +404,7 @@ export function fromD2(text: string, base: Loop): { loop: Loop; problems: Proble
   exits.forEach((s, i) => {
     if (i > 0) return add(s.line, `a second exit; the exit is drawn on line ${exits[0]!.line}`)
     exit = s.ends[0]!
-    const { attrs } = split(s, ['class', 'summary'], null)
+    const { attrs } = split(s, SHAPE_KEYS, null)
     place(exit, exit, { type: 'exit', summary: summaryOf(attrs), line: s.line })
   })
 
@@ -411,7 +422,7 @@ export function fromD2(text: string, base: Loop): { loop: Loop; problems: Proble
     numbers.set(n, stmt.line)
     const index = stepList.length
     const stages: Stage[] = []
-    const { attrs, shapes } = split(stmt, ['grid-columns'], 'stage')
+    const { attrs, shapes } = split(stmt, ['label', 'grid-columns'], 'stage')
     const columns = attrs['grid-columns']?.value?.trim()
     if (columns !== undefined && !/^[1-9][0-9]*$/.test(columns)) add(attrs['grid-columns']!.line, `grid-columns must be a whole number, not ${columns}`)
     for (const st of shapes) {
@@ -423,7 +434,7 @@ export function fromD2(text: string, base: Loop): { loop: Loop; problems: Proble
         continue
       }
       stageLines.set(id, st.line)
-      const part = split(st, ['class', 'summary'], 'node')
+      const part = split(st, SHAPE_KEYS, 'node')
       expectClass(part.attrs, ['stage'], 'stage')
       const nodes = part.shapes.map(s => (readNode(s, `step${n}.${id}.${s.ends[0]}`, false), s.ends[0]!))
       stages.push({ id, summary: summaryOf(part.attrs) ?? baseStages.get(id)?.stage.summary ?? '', nodes })

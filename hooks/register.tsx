@@ -3,19 +3,19 @@ import type { Register } from 'claude-code'
 
 import type { Activity, AgentStats, Collector, Gh, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
 import type { Loop, LoopLevel, LoopNode, LoopRef, Stage, Transition, ViewerFocus, ViewerState } from '../types/loops'
-import { applyOps, loopDelete, loopMove, loopNew, loopRename, parseOp, saveDraft, setDefaultLoop, type Op } from './architect'
-import { BRANCH_NAME, describeConf, loadConf, parseConf, SHIPPED_COMMITS, SHIPPED_LOOPS, SHIPPED_PRS, userConfPath, type Layer, type Loaded } from './conf'
+import { applyOps, copyFirst, loopDelete, loopMove, loopNew, loopRename, parseOp, saveDraft, setDefaultLoop, type Op } from './architect'
+import { BRANCH_NAME, describeConf, loadConf, loopChoices, parseConf, SHIPPED_COMMITS, SHIPPED_LOOPS, SHIPPED_PRS, LEVEL_LOOPS, userConfPath, userConfText, type Layer, type Loaded } from './conf'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as gh from './gh'
 import * as git from './git'
 import type { Io } from './io'
-import { ID, countsOf, discardDraft, draftKey, draftsRoot, fnv1a, graphFromJson, listLoops, nodeOrder, openDraft, readDraft, readLoop, roots, validateLoop, withDefaultTransitions, writeDraft, type LoopFs, type Roots } from './loops'
-import { d2Differs, fromD2 } from './loopd2'
+import { ID, contractText, discardDraft, draftKey, draftsRoot, endName, fnv1a, graphFromJson, listLoops, nodeOrder, openDraft, readDraft, readLoop, roots, transitionWords, validateLoop, withDefaultTransitions, writeDraft, type LoopFs, type Roots } from './loops'
+import { d2Differs, fromD2, toD2 } from './loopd2'
 import { layout, renderTerminal, transitionId } from './looplayout'
 import { PHASES, currentStages, drawBand, drawPane, elapsed, hhmm, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
 import { COLLECTS_SUFFIX, LANDS_SUFFIX, SCORES_SUFFIX, qaBrief, reviewBrief, workerBrief } from './prompts'
 import { validateReport, validateRubric, type RubricItem } from './report'
-import { LOOPS_PANE, drawViewer, focusText, type ViewerActions } from './viewer'
+import { LOOPS_PANE, drawViewer, focusText, libraryText, type ViewerActions } from './viewer'
 
 const PANE = 'dacapo'
 /** The agent types of rows saved before loops, which name no node. */
@@ -117,7 +117,8 @@ let registerDispatch: (loop: Loop | null) => Promise<unknown> = async () => unde
 /** The loop the dispatch tool's schema was last registered for. */
 let dispatchFor: string | null = null
 
-type Resolved = { ok: true; ref: LoopRef; loop: Loop } | { ok: false; problem: string }
+/** A loop found and checked, or why not; `missing` when no loop has the name, so a refusal can offer the loops there are. */
+type Resolved = { ok: true; ref: LoopRef; loop: Loop } | { ok: false; problem: string; missing?: true }
 
 /**
  * Finds a loop by name (project over user over plugin), reads it, and checks it: the loop's own rules, and every
@@ -133,14 +134,15 @@ async function resolveLoop(name: string): Promise<Resolved> {
     return { ok: false, problem: `the loops could not be listed: ${String(error)}` }
   }
   const ref = refs.find(r => r.name === name && !r.shadowedBy)
-  if (!ref) {
-    const names = [...new Set(refs.map(r => r.name))]
-    return { ok: false, problem: `there is no loop "${name}"; the loops available: ${names.length > 0 ? names.join(', ') : 'none'}` }
-  }
+  if (!ref) return { ok: false, problem: `there is no loop "${name}" (${loopChoices(await loopNames())})`, missing: true }
   return checkLoop(ref)
 }
 
-/** The names of the loops a run may walk (none hidden by another), the shipped ones first, shallowest first, then the rest by name; the shipped names when listing fails. */
+/**
+ * The names of the loops a run may walk (none hidden by another): the shipped ones first, shallowest first (core-fast,
+ * core, core-deep), then the user's and the project's by name; the shipped names when listing fails. Every refusal that
+ * offers the loops to choose from lists them in this order.
+ */
 async function loopNames(): Promise<string[]> {
   let names: string[]
   try {
@@ -248,12 +250,12 @@ const agentNodes = (loop: Loop): LoopNode[] => Object.values(loop.nodes).filter(
 const specKey = (spec: AgentSpec): string => JSON.stringify({ ...spec, description: undefined })
 
 /** Where a person sets the loop a session's agents come from: the conf files, user and project. */
-const confWhere = () => `${userConf ?? '~/.claude/dacapo.conf'} or the repository's .dacapo.conf`
+const confWhere = () => `${userConfText(userConf)}, or the repository's .dacapo.conf`
 /** The refusal of a loop whose node differs from the agent type of its id this session holds. */
 function clashText(name: string, ids: string[]): string {
   const owner = agents.get(ids[0]!)?.loops[0] ?? 'another'
   const names = ids.map(agentType).join(', ')
-  return `the agent type${ids.length === 1 ? '' : 's'} ${names} ${ids.length === 1 ? 'is' : 'are'} registered in this session by the loop "${owner}" with a different role, and a session holds one role per agent type. Ask the user to begin a new session with loop = ${name} in your conf (${confWhere()}): the configured loop's agents win when a session begins.`
+  return `the agent type${ids.length === 1 ? '' : 's'} ${names} ${ids.length === 1 ? 'is' : 'are'} registered in this session by the loop "${owner}" with a different role, and a session holds one role per agent type. Ask the user to begin a new session with loop = ${name} in a conf file, ${confWhere()}: the configured loop's agents win when a session begins.`
 }
 
 /** The node ids of a loop whose spec differs from the agent type this session holds under the id. */
@@ -391,7 +393,7 @@ function loopText(r: { ref: LoopRef; loop: Loop }): string[] {
     return owner ? `a helper of ${owner[0]}` : 'no place'
   }
   const nodeLine = (n: LoopNode): string => {
-    const parts = [`${n.type}, contract ${n.contract}`]
+    const parts = [`${n.type}, contract ${contractText(n.contract)}`]
     if (n.models.length > 0) parts.push(`models ${n.models.join(', ')}`)
     if (n.skills.length > 0) parts.push(`skills ${n.skills.join(', ')}`)
     if (n.categories) parts.push(`categories ${n.categories.join(', ')}`)
@@ -413,7 +415,7 @@ function loopText(r: { ref: LoopRef; loop: Loop }): string[] {
     'Nodes:',
     ...Object.values(loop.nodes).map(nodeLine),
     'Transitions:',
-    ...loop.transitions.map(t => `- ${t.from} → ${t.to.join(' ∥ ')}${t.back ? ' (back)' : ''}${t.label ? `: ${t.label}` : ''}${t.when ? `. When ${t.when.replace(/\.$/, '')}` : ''}${t.then ? `. Then ${t.then.replace(/\.$/, '')}` : ''}`),
+    ...loop.transitions.map(t => `- ${transitionWords(loop, { ...t, back: false })}${t.back ? ' (back)' : ''}${t.label ? `: ${t.label}` : ''}${t.when ? `. When ${t.when.replace(/\.$/, '')}` : ''}${t.then ? `. Then ${t.then.replace(/\.$/, '')}` : ''}`),
     'Handovers:',
     ...(loop.handovers.length > 0 ? loop.handovers.map(h => `- ${h.from} → ${h.to}: ${h.label}. ${h.spec}`) : ['- none']),
     '',
@@ -423,10 +425,13 @@ function loopText(r: { ref: LoopRef; loop: Loop }): string[] {
   ]
 }
 
-/** The configuration in force and the loop a run would walk now, for the config tool and the command. */
-async function configText(): Promise<string> {
+/**
+ * The configuration in force and a loop, for the config tool and the command. The command shows the conf's loop, the
+ * one a run walks without `--loop`; the tool, with `withRun`, adds the loop a live run walks when `--loop` picked another.
+ */
+async function configText(withRun: boolean): Promise<string> {
   await readConf(loopRepo ?? (await io.cwd()))
-  const run = await currentRun()
+  const run = withRun ? await currentRun() : null
   const name = run?.loop?.name ?? conf.conf.loop
   const r = await resolveLoop(name)
   const head = [describeConf(conf, { loops: await loopNames(), runLoop: run?.loop?.name }), '']
@@ -804,14 +809,20 @@ async function start(a: Args) {
 }
 
 async function markStageTool(a: Args) {
-  const id = str(a.stage).trim()
+  // one stage id, or the stages of one step side by side: "qa, review" or a list
+  const wanted = (Array.isArray(a.stage) ? a.stage.map(v => str(v)) : str(a.stage).split(',')).map(v => v.trim()).filter(Boolean)
   const run = await currentRun()
   if (!run) return fail('stage: no active run')
   if (!run.loop) return fail(`stage: the run has no loop yet; call ${tool('start')} first`)
   const ids = run.loop.steps.flatMap(s => s.stages.map(st => st.id))
-  if (!ids.includes(id)) return fail(`stage: "${id}" is not a stage of the loop "${run.loop.name}"; its stages: ${ids.join(', ')}`)
-  await markStage(id)
-  return ok(`Stage: ${id}.`)
+  if (wanted.length === 0) return fail(`stage: name the stage, or the stages of one step; the stages of "${run.loop.name}": ${ids.join(', ')}`)
+  const unknown = wanted.filter(id => !ids.includes(id))
+  if (unknown.length > 0) return fail(`stage: ${unknown.map(id => `"${id}"`).join(', ')} ${unknown.length === 1 ? 'is not a stage' : 'are not stages'} of the loop "${run.loop.name}"; its stages: ${ids.join(', ')}`)
+  const stepOf = (id: string) => run.loop!.steps.findIndex(s => s.stages.some(st => st.id === id))
+  if (new Set(wanted.map(stepOf)).size > 1) return fail(`stage: ${wanted.join(', ')} are not in one step; several stages are marked together only when they run side by side`)
+  const stages = [...new Set(wanted)]
+  await markStage(stages[0]!, stages.length > 1 ? stages : [])
+  return ok(`Stage${stages.length > 1 ? 's' : ''}: ${stages.join(' ∥ ')}.`)
 }
 
 /** Whether a round already holds work: a worker or judge of it, not counting a node asked with `ask`. */
@@ -1696,41 +1707,24 @@ async function filesUnder(dir: string): Promise<string[]> {
   return out.sort()
 }
 
-/** Loops that exist only as a draft so far (a `loop.new` not saved yet), at the user and project levels. */
-async function draftOnlyRefs(listed: LoopRef[]): Promise<LoopRef[]> {
-  const out: LoopRef[] = []
-  const keys = await loopFs.list(loopDrafts)
-  for (const level of ['project', 'user'] as const) {
-    const root = loopRoots[level]
-    if (!root) continue
-    const prefix = keyOf({ level, name: '' })
-    for (const key of keys.filter(k => k.startsWith(prefix)).sort()) {
-      const name = key.slice(prefix.length)
-      if (!ID.test(name) || listed.some(r => r.name === name && r.level === level)) continue
-      const draft = await readDraft(loopFs, loopDrafts, key).catch(() => null)
-      if (!draft) continue
-      out.push({ name, level, dir: joinPath(root, name), description: draft.loop.description, draft: draft.info, counts: countsOf(draft.loop, Object.keys(draft.loop.nodes).length) })
-    }
-  }
-  return out
-}
-
-/** Lists every loop again (new loops still in their draft included), each one's steps for the library's strip, and the default from the conf. */
+/**
+ * Lists every loop again, a new loop still in its draft included, each one's steps for the library's strip, the roots
+ * for its sections, and the default from the conf. A name resolves as a run resolves it, project over user over
+ * plugin, with a draft alone counting at its level.
+ */
 async function refreshLibrary(): Promise<LoopRef[]> {
   await readConf(loopRepo ?? (await io.cwd()))
-  const listed = await listLoops(loopFs, loopRoots, { root: loopDrafts, repoRoot: loopRepo })
-  const unsaved = await draftOnlyRefs(listed)
-  const library = [...listed, ...unsaved]
+  const library = await listLoops(loopFs, loopRoots, { root: loopDrafts, repoRoot: loopRepo })
   const shapes: Record<string, string[][]> = {}
   for (const ref of library) {
     try {
-      const graph = unsaved.includes(ref) ? (await readLoop(loopFs, ref.draft!.dir, d2Differs)).loop : graphFromJson(await loopFs.read(joinPath(ref.dir, 'loop.json')), ref.name).graph
+      const graph = ref.unsaved ? (await readLoop(loopFs, ref.draft!.dir)).loop : graphFromJson(await loopFs.read(joinPath(ref.dir, 'loop.json')), ref.name).graph
       shapes[`${ref.level}/${ref.name}`] = graph.steps.map(s => s.stages.map(st => st.id))
     } catch {
       // the card draws grey blocks from its counts
     }
   }
-  await views.set(s => ({ ...s, library, shapes, defaultLoop: conf.conf.loop }))
+  await views.set(s => ({ ...s, library, shapes, defaultLoop: conf.conf.loop, roots: { ...loopRoots, drafts: loopDrafts } }))
   return library
 }
 
@@ -1780,6 +1774,9 @@ async function openLoop(ref: LoopRef, o: { notice?: string; view?: ViewerState['
   if (!base) throw new Error(`there is no loop ${ref.name} at the ${ref.level} level any more`)
   const plain: LoopRef = { ...ref }
   delete plain.draft
+  // a loop that is its draft alone so far shows where its save goes, not a folder
+  if (saved) delete plain.unsaved
+  else plain.unsaved = true
   const open: NonNullable<ViewerState['open']> = {
     ref: draft ? { ...plain, draft: draft.info } : plain,
     loop: forDisplay(base),
@@ -1807,23 +1804,8 @@ async function setView(fn: (view: ViewerState['view']) => ViewerState['view']): 
   return state
 }
 
-/** The library as tool text: one line per loop, then the roots in use. */
-function libraryLines(state: ViewerState): string {
-  const lines = state.library.map(r => {
-    const tags = [
-      ...(r.name === state.defaultLoop && !r.shadowedBy ? ['[default]'] : []),
-      ...(r.draft ? [`[draft: ${plural(r.draft.changes.length, 'change')}]`] : []),
-      ...(r.shadowedBy ? [`[hidden by ${r.shadowedBy}]`] : []),
-    ]
-    return `${r.name} (${r.level}) · ${r.description} · ${countsWords(r.counts)} · ${r.dir}${tags.length > 0 ? ` ${tags.join(' ')}` : ''}`
-  })
-  return [
-    `${plural(state.library.length, 'loop')}. Runs use ${state.defaultLoop} by default.`,
-    ...lines,
-    '',
-    `Roots: plugin ${loopRoots.plugin ?? 'none'} (read-only) · user ${loopRoots.user ?? 'none'} · project ${loopRoots.project ?? 'none, there is no repository here'} · drafts ${loopDrafts}`,
-  ].join('\n')
-}
+/** The library as tool text: the viewer's sections, Project, User and Plugin, a row per loop with its markers. */
+const libraryLines = (state: ViewerState): string => libraryText(state)
 
 /** Where a node works, in words. */
 function placeWords(loop: Loop, id: string): string {
@@ -1841,16 +1823,30 @@ function placeWords(loop: Loop, id: string): string {
 const D2_HAND_EDITED = 'loop.d2 was edited by hand since the last save; say “import the diagram” to fold it in'
 /** How many of a draft's changes the `open` reply lists. */
 const CHANGES_SHOWN = 5
+/** What a new loop not saved yet is, in place of its folder: the library's words. */
+const UNSAVED = 'draft, not saved yet'
+/** What a folder op that asks first says until the user agreed. */
+const CONFIRM = 'resend with confirm: true once the user agrees'
+
+/** Names in prose: `a`, `a and b`, `a, b and c`. */
+const series = (items: string[]) => (items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`)
+
+/** The other levels that hold a loop of this name, as a header says them: `; also at plugin`. */
+function alsoAt(library: LoopRef[], ref: { name: string; level: LoopLevel }): string {
+  const levels = library.filter(r => r.name === ref.name && r.level !== ref.level).map(r => r.level)
+  return levels.length > 0 ? `; also at ${series(levels)}` : ''
+}
 
 /**
- * The `open` reply: where the loop is and what it is for, its draft and changes, its notices, the canvas as text, and
- * one line per node. Roles, transitions and handovers are the focus's to tell (`loops focus` on a node or an edge).
+ * The `open` reply: where the loop is and what it is for, the other levels with its name, its draft and changes, its
+ * notices, the canvas as text, and one line per node. Roles, transitions and handovers are the focus's to tell
+ * (`loops focus` on a node or an edge).
  */
 function openReply(state: ViewerState): string {
   const open = state.open!
   const { ref, loop, draft } = open
   const nodeLine = (n: LoopNode) => {
-    const parts = [n.type, `contract ${n.contract}`, placeWords(loop, n.id)]
+    const parts = [n.type, `contract ${contractText(n.contract)}`, placeWords(loop, n.id)]
     if (n.models.length > 0) parts.push(`models ${n.models.join(', ')}`)
     if (n.skills.length > 0) parts.push(`skills ${n.skills.join(', ')}`)
     if (n.categories) parts.push(`categories ${n.categories.join(', ')}`)
@@ -1862,13 +1858,14 @@ function openReply(state: ViewerState): string {
   const shown = changes.slice(-CHANGES_SHOWN)
   const view = { folded: state.view.folded, ...(state.view.focus ? { focus: state.view.focus } : {}) }
   const canvas = renderTerminal(layout(loop, view), view, 100).map(line => line.map(span => span.text).join('').trimEnd())
+  const where = ref.unsaved ? `, ${UNSAVED}: a save writes ${ref.dir}` : ` at ${ref.dir}`
   return [
-    `Loop ${loop.name} (${ref.level}) at ${ref.dir}`,
+    `Loop ${loop.name} (${ref.level})${where}${alsoAt(state.library, ref)}`,
     loop.description,
     ...(draft
       ? [`DRAFT: ${plural(changes.length, 'change')}, kept in ${draft.dir}${changes.length > shown.length ? `; the last ${shown.length}:` : ''}`, ...shown.map(c => `- ${c}`)]
       : ['No draft: this is the saved loop.']),
-    ...(ref.level === 'plugin' ? ['A plugin loop is read-only: save is refused. Copy it with loop.new to edit it.'] : []),
+    ...(ref.level === 'plugin' ? [`A plugin loop is read-only: save is refused. To edit it, ${copyFirst(ref.name)}.`] : []),
     ...(open.d2Newer ? [`${D2_HAND_EDITED} (the import-d2 op).`] : []),
     ...(open.problems.length > 0 ? ['Problems in the saved folder:', ...open.problems.map(p => `- ${p.path}: ${p.message}`)] : []),
     '',
@@ -1879,13 +1876,22 @@ function openReply(state: ViewerState): string {
   ].join('\n')
 }
 
-/** A focus target as the tool takes it: a stage id, a node id (`stage:<id>` or `node:<id>` when both share it), or `from>to` for an edge. */
+/** A transition end as loop.json stores it: a stage id, else the entry or exit node id read as the word entry or exit. */
+const endWord = (loop: Loop, id: string): string => (stageIndexOf(loop).includes(id) ? id : id === loop.entry ? 'entry' : id === loop.exit ? 'exit' : id)
+const stageIndexOf = (loop: Loop) => loop.steps.flatMap(s => s.stages.map(st => st.id))
+
+/**
+ * A focus target as the tool takes it: a stage id, a node id (`stage:<id>` or `node:<id>` when both share it), or
+ * `from>to` for an edge, whose entry and exit may be named by their node ids (`merge>done`) or by the words.
+ */
 function parseTarget(loop: Loop, target: string): ViewerFocus | { problem: string } {
-  const stages = loop.steps.flatMap(s => s.stages.map(st => st.id))
+  const stages = stageIndexOf(loop)
   const nodes = Object.keys(loop.nodes)
-  const edges = withDefaultTransitions(loop).transitions.map(t => transitionId(t.from, t.to))
+  const transitions = withDefaultTransitions(loop).transitions
+  const edges = transitions.map(t => transitionId(t.from, t.to))
   const handovers = loop.handovers.map(h => `${h.from}>${h.to}`)
-  const what = `It has stages ${stages.join(', ') || 'none'}; nodes ${nodes.join(', ')}; transitions ${edges.join(', ') || 'none'}; handovers ${handovers.join(', ') || 'none'}.`
+  const named = transitions.map(t => transitionId(endName(loop, t.from), t.to.map(w => endName(loop, w))))
+  const what = `It has stages ${stages.join(', ') || 'none'}; nodes ${nodes.join(', ')}; transitions ${named.join(', ') || 'none'}; handovers ${handovers.join(', ') || 'none'}.`
   const prefixed = /^(stage|node):(.+)$/.exec(target)
   if (prefixed) {
     const kind = prefixed[1] as 'stage' | 'node'
@@ -1895,7 +1901,7 @@ function parseTarget(loop: Loop, target: string): ViewerFocus | { problem: strin
   if (target.includes('>')) {
     if (handovers.includes(target)) return { kind: 'handover', id: target }
     const [from, to = ''] = target.split('>', 2) as [string, string]
-    const id = transitionId(from, to.split('+'))
+    const id = transitionId(endWord(loop, from), to.split('+').map(w => endWord(loop, w)))
     if (edges.includes(id)) return { kind: 'transition', id }
     return { problem: `There is no handover or transition ${target} in ${loop.name}. ${what}` }
   }
@@ -1904,16 +1910,13 @@ function parseTarget(loop: Loop, target: string): ViewerFocus | { problem: strin
   return { problem: `There is no stage or node ${target} in ${loop.name}. ${what}` }
 }
 
-/** The focus reply: the focus panel's text, and for a node its whole role (the panel shows its first lines). */
-function focusReply(state: ViewerState): string {
-  const f = state.view.focus
-  const node = f?.kind === 'node' ? state.open?.loop.nodes[f.id] : undefined
-  return [...focusText(state), ...(node ? ['', `The whole role of ${node.id}:`, node.role.trim() || 'none'] : [])].join('\n')
-}
+/** The focus reply: the focus panel's text, a node's role given whole, once. */
+const focusReply = (state: ViewerState): string => focusText(state, { wholeRole: true }).join('\n')
 
 /**
  * A tool's `name` and `level`: when given, the loop they name is opened first, its draft included, and the tool acts on
- * it; when absent, the tool acts on the loop open now. Returns a problem when they name no loop.
+ * it; when absent, the tool acts on the loop open now. A name without a level resolves as a run does, project over
+ * user over plugin, a draft alone counting at its level. Returns a problem when they name no loop.
  */
 async function openNamed(a: Args): Promise<string | null> {
   if (a.name === undefined && a.level === undefined) return null
@@ -1962,12 +1965,13 @@ async function loopsTool(a: Args) {
     if ('problem' in focus) return fail(focus.problem)
     return ok(focusReply(await setView(v => ({ ...v, focus, tab: 'canvas' }))))
   }
+  if (Object.keys(state.open.loop.onCall).length === 0) return ok('This loop has no on-call nodes; nothing to fold.')
   const next = await setView(v => ({ ...v, folded: !v.folded }))
   return ok(next.view.folded ? 'The on-call section is folded.' : 'The on-call section is unfolded.')
 }
 
 /** The element a batch changed first, for the viewer to focus: a stage, a node or an edge it names and did not remove. */
-function changedFocus(ops: Op[]): ViewerFocus | null {
+function changedFocus(ops: Op[], loop: Loop): ViewerFocus | null {
   for (const op of ops) {
     switch (op.op) {
       case 'stage.add':
@@ -1987,55 +1991,112 @@ function changedFocus(ops: Op[]): ViewerFocus | null {
       case 'handover.set':
         return { kind: 'handover', id: `${op.from}>${op.to}` }
       case 'transition.set':
-        return { kind: 'transition', id: transitionId(op.from, op.to) }
+        return { kind: 'transition', id: transitionId(endWord(loop, op.from), op.to.map(w => endWord(loop, w))) }
     }
   }
   return null
 }
 
-/** One folder op of a `loop_edit` batch, checked then run through the on-disk functions: the reply's line, or a problem. */
-async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } | { problem: string }> {
+/** The fields each folder op takes. loop.move and loop.delete act only with confirm: true, sent after the user agreed. */
+const FOLDER_TAKES: Record<string, string[]> = {
+  'loop.new': ['name', 'level', 'from'],
+  'loop.move': ['level', 'confirm'],
+  'loop.delete': ['name', 'level', 'confirm'],
+  'loop.default': ['name', 'level'],
+}
+
+/**
+ * The loop a folder op names: `name` and `level` when given (a name alone resolves as a run does), else the open loop.
+ * A problem when neither names one.
+ */
+async function folderTarget(raw: Record<string, unknown>, op: string): Promise<LoopRef | { problem: string }> {
+  if (raw.level !== undefined && !isLevel(raw.level)) return { problem: 'level must be plugin, user or project; name the level of the loop' }
+  const level = raw.level as LoopLevel | undefined
+  const library = await refreshLibrary()
+  if (raw.name !== undefined) {
+    if (typeof raw.name !== 'string' || !raw.name.trim()) return { problem: `name must be the loop ${op} acts on; give its name, or leave name out for the open loop` }
+    return findRef(library, raw.name.trim(), level)
+  }
+  const open = (await views.get()).open
+  if (!open) return { problem: `${op} acts on the loop named by name, else on the open loop, and none is open. ${await noLoop()}` }
+  return findRef(library, open.ref.name, level ?? open.ref.level)
+}
+
+/**
+ * One folder op of a `loop_edit` batch, checked then run through the on-disk functions: the reply's line, a problem,
+ * or, for loop.move and loop.delete without confirm, what the op would do, with nothing done.
+ */
+async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } | { problem: string } | { ask: string }> {
   const name = str(raw.op)
-  const takes: Record<string, string[]> = { 'loop.new': ['name', 'level', 'from'], 'loop.move': ['level'], 'loop.delete': ['name', 'level'], 'loop.default': ['name'] }
-  const extra = Object.keys(raw).filter(k => k !== 'op' && !takes[name]!.includes(k))
-  if (extra.length > 0) return { problem: `${name} does not take ${extra.map(k => `"${k}"`).join(', ')} (it takes ${takes[name]!.join(', ')})` }
+  const takes = FOLDER_TAKES[name]!
+  const extra = Object.keys(raw).filter(k => k !== 'op' && !takes.includes(k))
+  if (extra.length > 0) return { problem: `${name} takes ${series(takes)}; ${extra.map(k => `"${k}"`).join(', ')} ${extra.length === 1 ? 'is' : 'are'} not one of them` }
+  if (raw.confirm !== undefined && raw.confirm !== true) return { problem: 'confirm is true or left out; send true only after the user agreed' }
   const state = await views.get()
 
   if (name === 'loop.new') {
-    const loopName = str(raw.name)
-    if (!loopName) return { problem: 'loop.new needs "name", a string' }
-    if (raw.level !== 'user' && raw.level !== 'project') return { problem: 'loop.new: "level" must be user or project' }
+    const loopName = typeof raw.name === 'string' ? raw.name.trim() : ''
+    if (!loopName) return { problem: "loop.new needs name; give the new loop's name" }
+    if (raw.level !== 'user' && raw.level !== 'project') return { problem: 'level must be user or project; a new loop lives at one of them' }
     let from: { name: string; level: LoopLevel } | undefined
     if (raw.from !== undefined) {
       const f = raw.from as Record<string, unknown> | null
-      if (!f || typeof f !== 'object' || typeof f.name !== 'string' || !isLevel(f.level)) return { problem: 'loop.new: "from" must be like { "name": "core", "level": "plugin" }' }
+      if (!f || typeof f !== 'object' || typeof f.name !== 'string' || !isLevel(f.level)) return { problem: 'from names the loop to copy: its name and level' }
       from = { name: f.name, level: f.level }
     }
-    const made = await loopNew(loopFs, loopRoots, loopDrafts, loopRepo, { name: loopName, level: raw.level, ...(from ? { from } : {}) })
+    const level = raw.level
+    const made = await loopNew(loopFs, loopRoots, loopDrafts, loopRepo, { name: loopName, level, ...(from ? { from } : {}) })
     if (!made.ok) return { problem: made.problem }
-    await refreshLibrary()
+    const library = await refreshLibrary()
     await openLoop(made.ref, { focus: null })
     const what = from ? `a copy of ${from.name} (${from.level}); the original stays as it was` : 'a blank loop with an entry and an exit'
-    return { text: `Started loop ${loopName} (${raw.level}) as a draft: ${what}. Nothing is in ${made.ref.dir} until you save. ${NOT_SAVED}` }
+    // a name at another level: the one higher up hides the other, for runs and in the library alike
+    const others = library.filter(r => r.name === loopName && r.level !== level)
+    const rank = (l: LoopLevel) => LEVEL_WORDS.length - 1 - LEVEL_WORDS.indexOf(l)
+    const above = others.filter(r => rank(r.level) < rank(level)).map(r => `${loopName} (${r.level})`)
+    const below = others.filter(r => rank(r.level) > rank(level)).map(r => `${loopName} (${r.level})`)
+    const hiding = [
+      ...(below.length > 0 ? [`It will hide ${series(below)}: a name resolves project over user over plugin, so once it is saved, runs that name ${loopName} use this one.`] : []),
+      ...(above.length > 0 ? [`${series(above)} will hide it: a name resolves project over user over plugin, so runs that name ${loopName} use that one.`] : []),
+    ]
+    return { text: [`Started loop ${loopName} (${level}) as a draft: ${what}. Nothing is in ${made.ref.dir} until you save.`, ...hiding, NOT_SAVED].join(' ') }
   }
 
   if (name === 'loop.move') {
-    if (raw.level !== 'user' && raw.level !== 'project') return { problem: 'loop.move: "level" must be user or project' }
+    if (raw.level !== 'user' && raw.level !== 'project') return { problem: 'level must be user or project; name the level to move the open loop to' }
     if (!state.open) return { problem: `loop.move moves the open loop. ${await noLoop()}` }
     const { ref } = state.open
-    const problem = await loopMove(loopFs, loopRoots, loopDrafts, loopRepo, { name: ref.name, from: ref.level, to: raw.level })
-    if (problem) return { problem }
-    const found = findRef(await refreshLibrary(), ref.name, raw.level)
+    const to = raw.level
+    if (raw.confirm !== true) {
+      // a move that cannot happen is refused now, not asked about
+      const problem = await loopMove(loopFs, loopRoots, loopDrafts, loopRepo, { name: ref.name, from: ref.level, to, check: true })
+      if (typeof problem === 'string') return { problem }
+      const draft = await readDraft(loopFs, loopDrafts, keyOf(ref))
+      const target = loopRoots[to] ? joinPath(loopRoots[to]!, ref.name) : `the ${to} level`
+      const seen = to === 'user' ? 'every repository sees it there' : 'only this repository sees it there'
+      return { ask: `Not moved yet: that moves ${ref.name} from the ${ref.level} level (${ref.dir}) to the ${to} level (${target})${draft ? ', with its draft' : ''}, and ${seen}. Ask the user first; ${CONFIRM}.` }
+    }
+    const moved = await loopMove(loopFs, loopRoots, loopDrafts, loopRepo, { name: ref.name, from: ref.level, to })
+    if (typeof moved === 'string') return { problem: moved }
+    const found = findRef(await refreshLibrary(), ref.name, to)
     if ('problem' in found) return found
     await openLoop(found, { view: state.view })
-    return { text: `Moved ${ref.name} from the ${ref.level} level to the ${raw.level} level, with its draft: ${found.dir}.` }
+    return { text: `Moved ${ref.name} from the ${ref.level} level to the ${to} level${moved.draftMoved ? ', with its draft' : ''}: ${found.dir}.` }
   }
 
   if (name === 'loop.delete') {
-    const loopName = str(raw.name)
-    if (!loopName) return { problem: 'loop.delete needs "name", a string' }
-    if (!isLevel(raw.level)) return { problem: 'loop.delete: "level" must be user or project' }
-    const level = raw.level
+    const target = await folderTarget(raw, name)
+    if ('problem' in target) return target
+    const { name: loopName, level } = target
+    if (raw.confirm !== true) {
+      // a plugin loop is refused now, not asked about
+      if (level === 'plugin') return { problem: (await loopDelete(loopFs, loopRoots, loopDrafts, loopRepo, { name: loopName, level })) ?? 'the plugin loop cannot be deleted' }
+      const draft = await readDraft(loopFs, loopDrafts, keyOf(target))
+      const parts = [...(target.unsaved ? [] : [`its folder ${target.dir}`]), ...(draft ? [`its draft (${plural(draft.info.changes.length, 'change')})`] : [])]
+      return { ask: `Not deleted yet: that deletes the loop ${loopName} at the ${level} level, ${series(parts)}, and cannot be undone. Ask the user first; ${CONFIRM}.` }
+    }
+    const drafted = !!(await readDraft(loopFs, loopDrafts, keyOf(target)))
+    const gone = [...(target.unsaved ? [] : ['its folder']), ...(drafted ? ['its draft'] : [])]
     const problem = await loopDelete(loopFs, loopRoots, loopDrafts, loopRepo, { name: loopName, level })
     if (problem) return { problem }
     if (sameLoop(await lastView(), { name: loopName, level })) await views.remember(null)
@@ -2056,29 +2117,35 @@ async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } 
     await views.set(s => ({ ...s, screen: 'library', notice: undefined, ...(sameLoop(s.open?.ref, { name: loopName, level }) ? { open: undefined, view: FRESH_VIEW } : {}) }))
     await views.open()
     const confNote = reset.length > 0 ? ` It was the default loop for runs: ${reset.join(' and ')} now say${reset.length === 1 ? 's' : ''} loop = core.` : ''
-    return { text: `Deleted ${loopName} (${level}): its folder and its draft are gone.${confNote}\n\n${libraryLines(await views.get())}` }
+    return { text: `Deleted ${loopName} (${level}): ${series(gone)} ${gone.length === 1 ? 'is' : 'are'} gone.${confNote}\n\n${libraryLines(await views.get())}` }
   }
 
   // loop.default: the conf beside the loop's level, the repository's for a project loop
-  const loopName = str(raw.name)
-  if (!loopName) return { problem: 'loop.default needs "name", a string' }
-  const found = findRef(await refreshLibrary(), loopName)
+  const found = await folderTarget(raw, name)
   if ('problem' in found) return found
-  const confPath = found.level === 'project' && loopRepo ? `${loopRepo}/.dacapo.conf` : userConf
-  if (!confPath) return { problem: 'loop.default: the user conf file is unknown: the session found no home folder and no DACAPO_HOME' }
+  const loopName = found.name
+  const repoConf = loopRepo ? `${loopRepo}/.dacapo.conf` : null
+  const confPath = found.level === 'project' && repoConf ? repoConf : userConf
+  if (!confPath) return { problem: `the user conf is unknown: the session found no home folder and no DACAPO_HOME; set loop = ${loopName} in ${userConfText()} by hand` }
   const problem = await setDefaultLoop(loopFs, confPath, loopName)
   if (problem) return { problem }
   // the conf is read again, so config, start and the library's default go by the new line in this session
   await refreshLibrary()
   const inForce = conf.conf.loop
-  return {
-    text: `Wrote loop = ${loopName} to ${confPath}. Runs use ${loopName} unless --loop names another.${inForce !== loopName ? ` A conf file read later names ${inForce}, so runs here still use ${inForce}.` : ''}`,
-  }
+  const written = confPath === userConf ? userConfText(userConf) : confPath
+  const later =
+    inForce !== loopName
+      ? ` ${conf.origin.loop} names ${inForce} and is read after it, so runs here still use ${inForce}: edit ${conf.origin.loop} to say loop = ${loopName}, or take its loop line out.`
+      : ''
+  return { text: `Wrote loop = ${loopName} to ${written}. Runs use ${loopName} unless --loop names another.${later}` }
 }
+
+/** A refusal of a batch: the op or ops it names, one bullet per problem, then what became of the batch. */
+const refusal = (head: string, problems: string[], tail: string) => [head, ...problems.map(p => `- ${p}`), tail].join('\n')
 
 async function loopEdit(a: Args) {
   const ops = a.ops
-  if (!Array.isArray(ops) || ops.length === 0) return fail('ops must be a list of at least one op, like [{ "op": "stage.add", "id": "security", "summary": "checks for holes", "alongside": "qa" }]. Nothing was written.')
+  if (!Array.isArray(ops) || ops.length === 0) return fail('ops must be a list of at least one op, each naming itself in op beside its fields, as the design skill lists them. Nothing was written.')
   const opName = (v: unknown) => (v && typeof v === 'object' ? str((v as Record<string, unknown>).op) : '')
   const folders = ops.filter(v => FOLDER_OPS.includes(opName(v))).length
   if (folders > 0 && folders < ops.length) {
@@ -2090,7 +2157,9 @@ async function loopEdit(a: Args) {
     const lines: string[] = []
     for (let i = 0; i < ops.length; i++) {
       const out = await folderOp(ops[i] as Record<string, unknown>)
-      if ('problem' in out) return fail([`Refused op ${i} (${opName(ops[i])}): ${out.problem}.`, i > 0 ? `The ops before it were done:\n${lines.join('\n')}` : 'Nothing was written.'].join('\n'))
+      const before = i > 0 ? `The ops before it were done:\n${lines.join('\n')}` : 'Nothing was written.'
+      if ('problem' in out) return fail(refusal(`Refused op ${i} (${opName(ops[i])}):`, [out.problem], before))
+      if ('ask' in out) return ok([...lines, out.ask, ...(i < ops.length - 1 ? ['The ops after it were not run.'] : [])].join('\n'))
       lines.push(out.text)
     }
     return ok(lines.join('\n'))
@@ -2099,7 +2168,7 @@ async function loopEdit(a: Args) {
   const parsed: Op[] = []
   for (let i = 0; i < ops.length; i++) {
     const p = parseOp(ops[i])
-    if ('problem' in p) return fail(`Refused op ${i} (${opName(ops[i]) || 'unnamed'}): ${p.problem}. Nothing was written.`)
+    if ('problem' in p) return fail(refusal(`Refused op ${i} (${opName(ops[i]) || 'unnamed'}):`, [p.problem], 'Nothing was written.'))
     parsed.push(p.op)
   }
   const state = await views.get()
@@ -2112,12 +2181,19 @@ async function loopEdit(a: Args) {
   const d2 = d2Dir && parsed.some(op => op.op === 'import-d2') ? await loopFs.read(joinPath(d2Dir, 'loop.d2')).catch(() => undefined) : undefined
   const out = applyOps(existing?.loop ?? saved!, parsed, { ...(d2 !== undefined ? { d2 } : {}), opaque: state.open.opaque ?? [] })
   if (!out.ok) {
-    const head = out.op === 'batch' ? 'Refused: after the last op the loop breaks these rules.' : `Refused op ${out.index} (${out.op}):`
-    return fail([head, ...out.problems.map(p => `- ${p}`), 'Nothing was written.'].join('\n'))
+    const culprits = out.culprits ?? []
+    const head =
+      out.op !== 'batch'
+        ? `Refused op ${out.index} (${out.op}):`
+        : culprits.length > 0
+          ? `Refused ${series(culprits.map(c => `op ${c.index} (${c.op})`))}:`
+          : 'Refused after the last op:'
+    return fail(refusal(head, out.problems, 'Nothing was written.'))
   }
   const info = existing?.info ?? (await openDraft(loopFs, loopDrafts, { level: ref.level, name: ref.name, repoRoot: loopRepo }, saved)).info
-  const after = await writeDraft(loopFs, info, out.loop, out.changes.join('; '))
-  const focus = changedFocus(parsed)
+  // one change line per op, so the draft's count is the count of lines it lists
+  const after = await writeDraft(loopFs, info, out.loop, out.changes, toD2(out.loop, out.opaque))
+  const focus = changedFocus(parsed, out.loop)
   await refreshLibrary()
   await openLoop({ ...ref, draft: after }, { focus })
   await views.set(s => (s.open ? { ...s, open: { ...s.open, opaque: out.opaque } } : s))
@@ -2125,15 +2201,13 @@ async function loopEdit(a: Args) {
     [
       `Changed in the draft of ${ref.name} (${ref.level}):`,
       ...out.changes.map(c => `- ${c}`),
+      ...out.notes.map(n => `Note: ${n}.`),
       `The draft holds ${plural(after.changes.length, 'change')}. ${NOT_SAVED}`,
-      ...(ref.level === 'plugin' ? ['This is a plugin loop, so save is refused: copy it with loop.new to keep edits in a loop of your own.'] : []),
-      ...(focus ? [`The viewer shows ${focus.kind} ${focus.id}.`] : []),
+      ...(ref.level === 'plugin' ? [`This is a plugin loop, so save is refused: to keep changes like these, ${copyFirst(ref.name)}, then make them in the copy.`] : []),
+      ...(focus ? [`The viewer shows ${focus.kind} ${focus.kind === 'transition' ? transitionWords(out.loop, { from: focus.id.split('>')[0]!, to: focus.id.split('>')[1]!.split('+') }) : focus.id}.`] : []),
     ].join('\n'),
   )
 }
-
-/** The words that send a plugin loop's edits into a copy of it. */
-const copyHint = (name: string) => `Copy it with loop.new { name, level: user or project, from: { name: ${name}, level: plugin } }, then edit the copy.`
 
 /** Saves the open loop's draft, or the named loop's: the tool and the pane's Save button. */
 async function saveLoop(force: boolean, a: Args = {}) {
@@ -2144,16 +2218,11 @@ async function saveLoop(force: boolean, a: Args = {}) {
   const { ref } = state.open
   const draft = await readDraft(loopFs, loopDrafts, keyOf(ref))
   if (!draft) {
-    return fail(`There is no draft of ${ref.name} (${ref.level}) to save.${ref.level === 'plugin' ? ` A plugin loop is read-only, so it changes only as a copy: ${copyHint(ref.name)}` : ''}`)
+    return fail(`There is no draft of ${ref.name} (${ref.level}) to save.${ref.level === 'plugin' ? ` A plugin loop is read-only; to change it, ${copyFirst(ref.name)}.` : ''}`)
   }
   const problem = await saveDraft(loopFs, { ref, loop: draft.loop, info: draft.info, opaque: state.open.opaque ?? [], force })
   if (problem) {
-    const hint =
-      ref.level === 'plugin'
-        ? ` ${copyHint(ref.name)}`
-        : /save with force/.test(problem)
-          ? ' Ask the user before saving with force: true, which overwrites it.'
-          : ''
+    const hint = ref.level !== 'plugin' && /save with force/.test(problem) ? ' Ask the user before saving with force: true, which overwrites it.' : ''
     await views.set(s => ({ ...s, notice: `Not saved: ${problem}` }))
     return fail(`Not saved: ${problem}.${hint} The draft is kept.`)
   }
@@ -2167,7 +2236,15 @@ async function saveLoop(force: boolean, a: Args = {}) {
   const found = findRef(await refreshLibrary(), name, ref.level)
   if ('problem' in found) return fail(found.problem)
   const open = await openLoop(found, { notice: 'saved' })
-  return ok([`Saved ${name} (${ref.level}) to ${found.dir}. The draft is cleared.${note}`, 'Files:', ...open.files.map(f => `- ${f}`), `Run it with /dacapo:core --loop ${name} <task>.`].join('\n'))
+  const confPath = ref.level === 'project' && loopRepo ? `${loopRepo}/.dacapo.conf` : userConfText(userConf)
+  return ok(
+    [
+      `Saved ${name} (${ref.level}) to ${found.dir}. The draft is cleared.${note}`,
+      'Files:',
+      ...open.files.map(f => `- ${f}`),
+      `Run it with /dacapo:core --loop ${name} <task>, or say "make ${name} the default" to write loop = ${name} to ${confPath}.`,
+    ].join('\n'),
+  )
 }
 
 /** Discards the open loop's draft, or the named loop's: the tool and the pane's Discard button. */
@@ -2322,7 +2399,12 @@ const TOOL_SPECS = [
     isDeferred: false,
     inputSchema: {
       type: 'object',
-      properties: { stage: { type: 'string', description: 'A stage id of the run\'s loop (config lists them).' } },
+      properties: {
+        stage: {
+          anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
+          description: 'A stage id of the run\'s loop (config lists them), or the stages of one step that run side by side: "qa, review" or a list.',
+        },
+      },
       required: ['stage'],
     },
   },
@@ -2391,7 +2473,7 @@ const LOOP_TOOL_SPECS = [
   {
     name: 'loops',
     description:
-      "The loop viewer. list: every loop at the plugin, user and project levels, one line each (level, description, counts, folder, default, draft, hidden by a higher level) and the roots; the pane opens on the library. open: one loop as text (its draft when one exists, DRAFT and its last changes, its notices, the canvas, one line per node) and the pane shows it. focus: points the viewer at a stage, a node or an edge and returns what the focus panel shows: a node's whole role (the entry's included), a transition's label, When and Then, a handover's spec. fold: folds or unfolds the on-call section. focus and fold act on the open loop, or on the loop name and level give, which they open first.",
+      "The loop viewer. list: every loop, in sections Project, User and Plugin as the pane shows them, a row per loop with its markers ([default] on the loop runs resolve to, [draft: N changes], [read-only], [hides <level>], [hidden by <level>]), counts, description and folder (or draft, not saved yet), then the drafts folder; the pane opens on the library. open: one loop as text (its draft when one exists, the other levels with its name, DRAFT and its last changes, its notices, the canvas, one line per node) and the pane shows it; a name alone resolves project over user over plugin, a draft alone counting at its level. focus: points the viewer at a stage, a node or an edge and returns what the focus panel shows: a node's whole role (the entry's included), a transition's label, When and Then, a handover's spec. fold: folds or unfolds the on-call section. focus and fold act on the open loop, or on the loop name and level give, which they open first.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
@@ -2410,7 +2492,7 @@ const LOOP_TOOL_SPECS = [
   {
     name: 'loop_edit',
     description:
-      "Applies operations in order to the open loop's draft, or to the draft of the loop name and level give (opened first), and opens the draft when none exists. The first failing op stops the batch: nothing is written and the reply names the op and the rule it broke. loop.new, loop.move, loop.delete and loop.default change folders and go in a batch of their own. The reply lists what changed and the draft's change count; the viewer focuses the first changed element.",
+      "Applies operations in order to the open loop's draft, or to the draft of the loop name and level give (opened first), and opens the draft when none exists. The first failing op stops the batch: nothing is written and the reply names the op or ops and the rule each broke. loop.new, loop.move, loop.delete and loop.default change folders and go in a batch of their own; loop.default and loop.delete act on the open loop when they name none. loop.move and loop.delete act only with confirm: true, sent in a turn after the user agreed; without it they do nothing and say what they would do. The reply lists what changed, one line per op, and the draft's change count; the viewer focuses the first changed element.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
@@ -2481,19 +2563,22 @@ function elementsFor(surface: string, resolved: Els): Els {
 /** A flag of the levels a prompt still used: the flag, the loop it became, and the rest of the prompt. */
 type Stale = { flag: string; target: string; rest: string }
 
-/** The refusal of a flag of the levels: the loop it became, in the command to type again, and every loop there is to choose from. */
-const staleText = (s: Stale, loops: readonly string[]) =>
-  `"--${s.flag}" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop ${s.target} ${s.rest || '<task>'} (the loops: ${loops.join(', ')}; /dacapo:design shows each).`
+/**
+ * A refusal of the /dacapo:core prompt before its turn, in the one shape the removed flag, an unknown `--loop` and the
+ * removed conf key share: what is wrong, then `Choose one:` with the command to type again and every loop to choose
+ * from, in the order `loopNames` gives.
+ */
+const chooseText = (what: string, command: string, loops: readonly string[]) => `${what}. Choose one: ${command} (${loopChoices(loops)}).`
 
-/** The loop each flag of the levels became, for the refusal that names it. */
-const LEVEL_LOOPS: Record<string, string> = { fast: 'core-fast', balanced: 'core', deep: 'core-deep' }
+/** The refusal of a flag of the levels: the loop it became, in the command to type again. */
+const staleText = (s: Stale, loops: readonly string[]) => chooseText(`"--${s.flag}" was removed in 0.22; depth is a loop now`, `/dacapo:core --loop ${s.target} ${s.rest || '<task>'}`, loops)
 
 /**
  * Reads the flags right after `/dacapo:core`: `--loop <name>` (or `--loop=<name>`), and the flags of the levels
  * (`--fast`, `--balanced`, `--deep`, `--level`, `--judges`), removed in 0.22, as the refusal that names their loop.
  * Null for a prompt that is not `/dacapo:core`.
  */
-function coreFlags(text: string): { loop?: string; stale?: Stale } | null {
+function coreFlags(text: string): { loop?: string; stale?: Stale; rest?: string } | null {
   const m = /^\s*\/dacapo:core(?=\s|$)([\s\S]*)$/.exec(text)
   if (!m) return null
   const words = m[1]!.trim().split(/\s+/).filter(Boolean)
@@ -2517,7 +2602,7 @@ function coreFlags(text: string): { loop?: string; stale?: Stale } | null {
     }
     break
   }
-  return loop ? { loop } : {}
+  return loop ? { loop, rest: words.slice(i).join(' ') } : {}
 }
 
 // ---------- the module ----------
@@ -2607,7 +2692,7 @@ export const register: Register = (on, options) => {
       $.tool.register(dispatchSpec(active?.loop ?? null)),
       $.tool.register(finishSpec()),
       $.command.register({ name: 'dacapo-pane', description: 'Opens the dacapo timeline pane.' }),
-      $.command.register({ name: 'dacapo-config', description: 'Shows the dacapo configuration in force, the files it was read from, and the loop a run walks.' }),
+      $.command.register({ name: 'dacapo-config', description: "Shows the dacapo configuration in force, the files it was read from, and the conf's loop: the one a run walks without --loop." }),
       ...LOOP_TOOL_SPECS.map(spec => $.tool.register(spec)),
       $.command.register({ name: 'dacapo-loops', description: 'Opens the dacapo loop viewer: the library of loops, or the loop last open.' }),
     ])
@@ -2755,23 +2840,22 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'dacapo-config' }, async () => {
-    const text = await configText()
-    const where = conf.paths.user ?? '~/.claude/dacapo.conf'
+    const text = await configText(false)
     return {
-      text: `dacapo configuration\n${text}\n\nEdit ${where} for every repository${conf.paths.project ? `, or ${conf.paths.project} for this one` : ''}; see dacapo.conf in the plugin for the keys. loop names the loop a run walks; commits-skill and prs-skill name the skills commits and pull requests follow; base-branch names the branch runs are cut from and merged into.`,
+      text: `Configuration in force:\n${text}\n\nSee dacapo.conf in the plugin for the keys. loop names the loop a run walks; commits-skill and prs-skill name the skills commits and pull requests follow; base-branch names the branch runs are cut from and merged into.`,
     }
   })
 
   on('command.run', { command: 'dacapo-pane' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Da capo', focus: true })
     await update($, uiAtom, ui => ({ ...ui, isBandHidden: false }))
-    return { text: 'dacapo timeline opened.' }
+    return { text: 'Timeline opened.' }
   })
 
   on('command.run', { command: 'dacapo-loops' }, async () => {
     await refreshLibrary()
     await views.open(true)
-    return { text: 'dacapo loops opened.' }
+    return { text: 'Loops opened.' }
   })
 
   // ----- prompts: the /dacapo:core prompt opens a run; every later prompt during a run is a row -----
@@ -2807,7 +2891,10 @@ export const register: Register = (on, options) => {
       const registered = resolved.ok ? await ensureAgents(name, resolved.loop).catch(error => ({ problem: String(error), added: [] })) : { problem: resolved.problem, added: [] }
       const problem = resolved.ok && registered.problem ? `the loop "${name}" cannot run in this session: ${registered.problem}` : registered.problem
       // a loop the prompt named is the person's to fix now; the configured loop leaves the run open, and config and start say why
-      if (problem && flags.loop) return { drop: `dacapo: ${problem}` }
+      if (problem && flags.loop) {
+        if (!resolved.ok && resolved.missing) return { drop: chooseText(`"--loop ${name}": there is no loop "${name}"`, `/dacapo:core --loop <name> ${flags.rest || '<task>'}`, await loopNames()) }
+        return { drop: `"--loop ${name}": ${problem}` }
+      }
       if (resolved.ok && !problem && dispatchFor !== name) await registerDispatch(resolved.loop).catch(() => undefined)
       run = await openRun('', conf.conf['base-branch'], resolved.ok && !problem ? resolved : undefined)
       if (problem) io.toast(`dacapo: ${problem.split('\n')[0]}`)
@@ -2831,7 +2918,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__dacapo__ask' }, ($, e) => ask(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__cancel' }, ($, e) => cancel(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__config' }, async () => ok(await configText())).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__config' }, async () => ok(await configText(true))).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__status' }, async () => {
     const snap = await snapshot()
     return ok(statusText(snap))
