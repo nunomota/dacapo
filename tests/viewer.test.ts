@@ -229,7 +229,7 @@ describe('the loop viewer: loop screen', () => {
       expect(await ui.find({ type: 'Button', key: 'panel-node-qa-collector' })).toBeDefined()
       expect(await ui.find({ type: 'Button', text: /^implement → qa  all landed · when every task of the round has landed$/ })).toBeDefined()
       expect(await ui.find({ type: 'Button', text: /^qa ⇢ implement  fix · when a verdict is fix/ })).toBeDefined()
-      expect(await ui.find({ text: /^Try saying: “move qa after review”/ })).toBeDefined()
+      expect(await ui.find({ text: /^Try saying: “move qa after merge”/ })).toBeDefined()
       await ui.unmount()
 
       held.state = core({ focus: { kind: 'transition', id: 'qa>implement' } })
@@ -239,7 +239,7 @@ describe('the loop viewer: loop screen', () => {
       expect(await ui.find({ text: /^a verdict is fix or pass-with-recommendations$/ })).toBeDefined()
       expect(await ui.find({ text: /^Then$/ })).toBeDefined()
       expect(await ui.find({ text: /^every item below strong/ })).toBeDefined()
-      expect(await ui.find({ text: /^Try saying: “only go back on fix, not on recommendations”/ })).toBeDefined()
+      expect(await ui.find({ text: /^Try saying: “change when qa goes to implement” · “remove this transition”$/ })).toBeDefined()
       await ui.unmount()
     }
   })
@@ -324,15 +324,13 @@ describe('the loop viewer as text', () => {
     expect(tryLine(core({ focus: { kind: 'node', id: 'qa-collector' } }))).toBe('Try saying: “let qa-collector use haiku” · “never let qa-collector use Edit”')
     expect(tryLine(core({ focus: { kind: 'node', id: 'worker' } }))).toMatch(/^Try saying: “let workers use fable” · “add my lint skill to workers”/)
     expect(tryLine(core({ focus: { kind: 'node', id: 'done' } }))).toBe('Try saying: “rename done to finished”')
-    expect(tryLine(core({ focus: { kind: 'stage', id: 'qa' } }))).toMatch(/^Try saying: “move qa after review”/)
-    expect(tryLine(core({ focus: { kind: 'handover', id: 'orchestrator>worker' } }))).toMatch(/^Try saying: “add a handover from reviewer to qa/)
 
     const loop: Loop = JSON.parse(JSON.stringify(LOOPS.core))
     loop.nodes.scout = { id: 'scout', type: 'agent', summary: 'answers any question', contract: 'none', models: ['sonnet'], skills: [], tools: { deny: [] }, role: 'The scout.' }
     loop.nodes.reader = { ...loop.nodes.scout, id: 'reader', summary: 'reads folders' }
     loop.onCall = { scout: ['reader'] }
     const state = (id: string) => ({ ...core({ focus: { kind: 'node', id } }), open: { ...core().open!, loop } })
-    expect(tryLine(state('scout'))).toBe('Try saying: “move scout into clarify” · “give scout a helper reader that summarises folders”')
+    expect(tryLine(state('scout'))).toBe('Try saying: “move scout into clarify” · “give scout a helper reader-2 that summarises folders”')
     expect(tryLine(state('reader'))).toBe('Try saying: “move reader on call” · “move reader into clarify”')
   })
 
@@ -342,7 +340,7 @@ describe('the loop viewer as text', () => {
       'implement → qa · transition · forward',
       'Label: all landed',
       'When: every task of the round has landed',
-      'Try saying: “only go back on fix, not on recommendations” · “remove the reconcile transition”',
+      'Try saying: “change when implement goes to qa” · “remove this transition”',
     ])
     expect(at('research>plan').filter(l => /^(When|Then):/.test(l))).toEqual([])
     expect(at('qa>implement').filter(l => /^(When|Then):/.test(l)).map(l => l.split(':')[0])).toEqual(['When', 'Then'])
@@ -350,6 +348,57 @@ describe('the loop viewer as text', () => {
     loop.transitions = loop.transitions.filter(t => !(t.from === 'research' && !t.back))
     const defaults = withDefaultTransitions(loop)
     expect(at('research>plan', { ...defaults, nodes: loop.nodes }).slice(1, 3)).toEqual(['Label: none, a default transition', 'When: a default transition'])
+  })
+
+  test('the phrases under a stage name only what the loop has: core, core-fast and a one-step loop', () => {
+    const tryLine = (id: string, loop: Loop = LOOPS.core) => focusText({ ...core({ focus: { kind: 'stage', id } }), open: { ...core().open!, loop } }).find(l => l.startsWith('Try saying: '))
+    expect(tryLine('qa')).toBe('Try saying: “move qa after merge” · “move qa alongside implement” · “rename qa to …” · “delete the qa stage” · “add a node qa-helper in qa”')
+    expect(tryLine('clarify')).toBe(
+      'Try saying: “move clarify after research” · “move clarify alongside research” · “rename clarify to …” · “delete the clarify stage” · “add a node clarify-helper in clarify”',
+    )
+    expect(tryLine('merge')).toBe('Try saying: “move merge alongside qa” · “rename merge to …” · “delete the merge stage” · “add a node merge-helper in merge”')
+    expect(tryLine('implement', LOOPS['core-fast'])).toBe(
+      'Try saying: “move implement after merge” · “move implement alongside plan” · “rename implement to …” · “delete the implement stage” · “add a node implement-helper in implement”',
+    )
+    expect(tryLine('merge', LOOPS['core-fast'])).toBe('Try saying: “move merge alongside implement” · “rename merge to …” · “delete the merge stage” · “add a node merge-helper in merge”')
+
+    const one: Loop = { ...JSON.parse(JSON.stringify(LOOPS.core)), steps: [{ stages: [{ id: 'build', summary: 'builds it', nodes: ['worker'] }] }], transitions: [] }
+    expect(tryLine('build', one)).toBe('Try saying: “rename build to …” · “delete the build stage” · “add a node build-helper in build”')
+    one.steps[0]!.stages.push({ id: 'check', summary: 'checks it', nodes: [] })
+    one.nodes['check-helper'] = { ...one.nodes.worker!, id: 'check-helper' }
+    expect(tryLine('check', one)).toBe('Try saying: “split check into its own step” · “rename check to …” · “delete the check stage” · “add a node check-helper-2 in check”')
+  })
+
+  test('the phrases under a transition and a handover fit it: real names, remove only a stored one, a back edge only where none is', () => {
+    const tryLine = (kind: 'transition' | 'handover', id: string, loop: Loop = LOOPS.core) =>
+      focusText({ ...core({ focus: { kind, id } }), open: { ...core().open!, loop } }).find(l => l.startsWith('Try saying: '))
+    expect(tryLine('transition', 'plan>implement')).toBe('Try saying: “change when plan goes to implement” · “remove this transition” · “add a back transition from implement to plan”')
+    expect(tryLine('transition', 'implement>qa')).toBe('Try saying: “change when implement goes to qa” · “remove this transition”')
+    expect(tryLine('transition', 'merge>implement')).toBe('Try saying: “change when merge goes to implement” · “remove this transition”')
+    expect(tryLine('transition', 'entry>clarify')).toBe('Try saying: “change when orchestrator goes to clarify” · “remove this transition”')
+    expect(tryLine('transition', 'merge>exit')).toBe('Try saying: “change when merge goes to done” · “remove this transition”')
+    expect(tryLine('transition', 'implement>merge', LOOPS['core-fast'])).toBe('Try saying: “change when implement goes to merge” · “remove this transition”')
+    expect(tryLine('transition', 'plan>implement', LOOPS['core-fast'])).toBe(
+      'Try saying: “change when plan goes to implement” · “remove this transition” · “add a back transition from implement to plan”',
+    )
+
+    // a default transition cannot be removed; a forward one that leads back can be marked back
+    const loop: Loop = JSON.parse(JSON.stringify(LOOPS.core))
+    loop.transitions = loop.transitions.filter(t => !(t.from === 'research' && !t.back))
+    loop.transitions.push({ from: 'qa', to: ['plan'], label: 'replan' })
+    const defaults = { ...withDefaultTransitions(loop), nodes: loop.nodes }
+    expect(tryLine('transition', 'research>plan', defaults)).toBe('Try saying: “change when research goes to plan” · “add a back transition from plan to research”')
+    expect(tryLine('transition', 'qa>plan', defaults)).toBe('Try saying: “change when qa goes to plan” · “remove this transition” · “make this a back transition”')
+    const one: Loop = { ...JSON.parse(JSON.stringify(LOOPS.core)), steps: [{ stages: [{ id: 'build', summary: 'builds it', nodes: [] }, { id: 'check', summary: 'checks it', nodes: [] }] }], transitions: [] }
+    expect(tryLine('transition', 'entry>build+check', one)).toBe('Try saying: “change when orchestrator goes to build and check”')
+
+    for (const name of ['core', 'core-fast'] as const) {
+      expect(tryLine('handover', 'orchestrator>worker', LOOPS[name])).toBe('Try saying: “change what orchestrator hands to worker” · “remove this handover”')
+    }
+    expect(tryLine('handover', 'qa>qa-collector')).toBe('Try saying: “change what qa hands to qa-collector” · “remove this handover”')
+    const oneWay: Loop = { ...JSON.parse(JSON.stringify(LOOPS.core)) }
+    oneWay.handovers = oneWay.handovers.filter(h => !(h.from === 'worker' && h.to === 'orchestrator'))
+    expect(tryLine('handover', 'orchestrator>worker', oneWay)).toBe('Try saying: “change what orchestrator hands to worker” · “remove this handover” · “add a handover from worker to orchestrator”')
   })
 
   test('focusText says when nothing is focused and when the focus is gone', () => {

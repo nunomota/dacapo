@@ -109,12 +109,14 @@ describe('each op on core', () => {
     expect(out.loop.transitions.filter(t => t.from === 'qa' || t.to.includes('qa'))).toEqual([])
     expect(out.loop.nodes.qa).toEqual(c.nodes.qa)
     expect(out.loop.handovers.length).toBe(c.handovers.length)
+    expect(ok(c, [{ op: 'stage.remove', id: 'research' }]).changes[0]).toBe('removed stage research')
   })
 
   test('stage.remove of one stage of a shared step keeps the others in the transition', async () => {
     const out = ok(await core(), [
       { op: 'stage.add', id: 'security', summary: 'checks for holes', alongside: 'qa' },
       { op: 'stage.remove', id: 'security' },
+      { op: 'loop.describe', description: 'Mine.' },
     ])
     expect(transition(out.loop, 'implement', ['qa'])?.label).toBe('all landed')
   })
@@ -376,10 +378,34 @@ describe('batches', () => {
     expect(validateLoop(out.loop)).toEqual([])
   })
 
-  test('a batch invalid at its end is refused with the problems, and nothing else', async () => {
-    const out = refused(await core(), [judge])
-    expect([out.index, out.op]).toEqual([1, 'batch'])
-    expect(out.problems).toEqual(['nodes.judge.categories: a scores node needs categories: the rubric categories it accepts'])
+  test('a batch invalid at its end is refused with the problems, named by the op that brought them in', async () => {
+    const out = refused(await core(), [{ op: 'loop.describe', description: 'Mine.' }, judge])
+    expect([out.index, out.op]).toEqual([1, 'node.add'])
+    expect(out.problems).toEqual(['node judge scores but has no categories; give it the rubric categories it accepts with node.set categories'])
+  })
+
+  test('problems brought in by two ops, or there before the first, are named as the batch', async () => {
+    const two = refused(await core(), [{ op: 'stage.add', id: 'docs', summary: 'write the docs', after: 3 }, judge])
+    expect([two.index, two.op]).toEqual([2, 'batch'])
+    expect(two.problems).toHaveLength(2)
+    const c = await core()
+    delete c.nodes.qa!.categories
+    const before = refused(c, [{ op: 'loop.describe', description: 'Mine.' }])
+    expect(before).toEqual({ ok: false, index: 1, op: 'batch', problems: ['node qa scores but has no categories; give it the rubric categories it accepts with node.set categories'] })
+  })
+
+  test('a batch that changes nothing is refused', async () => {
+    const c = await core()
+    expect(refused(c, [{ op: 'node.set', id: 'worker', models: [...c.nodes.worker!.models] }])).toEqual({ ok: false, index: 0, op: 'node.set', problems: ['nothing changed; the loop already has that'] })
+    const back = refused(c, [
+      { op: 'stage.rename', id: 'qa', to: 'judge' },
+      { op: 'stage.rename', id: 'judge', to: 'qa' },
+    ])
+    expect([back.index, back.op, back.problems]).toEqual([1, 'stage.rename', ['nothing changed; the loop already has that']])
+    const label = c.transitions.find(t => t.from === 'qa' && !t.back)!
+    expect(refused(c, [{ op: 'transition.set', from: 'qa', to: ['merge'], label: label.label, ...(label.when ? { when: label.when } : {}), ...(label.then ? { then: label.then } : {}) }]).problems).toEqual([
+      'nothing changed; the loop already has that',
+    ])
   })
 
   test('the first failing op stops the batch and is named', async () => {
@@ -417,7 +443,7 @@ describe('prose left stale', () => {
     c.nodes.qa!.role = 'You never touch the Merge stage.'
     c.nodes.orchestrator!.role = 'After merge, say what landed.'
     expect(ok(c, [{ op: 'stage.remove', id: 'merge' }]).changes).toEqual([
-      'removed stage merge and put its nodes on call',
+      'removed stage merge',
       'the roles of orchestrator and qa and the description still say "merge"; rewrite them with node.role or loop.describe',
     ])
     c.description = 'The default loop.'
@@ -461,7 +487,13 @@ describe('refusals', () => {
     ['two placements', [{ op: 'node.move', id: 'worker', stage: 'qa', onCall: true }], 'node.move takes one placement, not stage and onCall; keep one of them'],
     ['a helper of a node not on call', [{ op: 'node.move', id: 'qa-collector', helperOf: 'qa' }], '"qa" is not on call; a helper hangs off an on-call node, so move qa on call first'],
     ['removing the entry', [{ op: 'node.remove', id: 'orchestrator' }], '"orchestrator" is the entry; a loop keeps its entry and exit, so rename it or rewrite its role instead'],
-    ['moving the exit', [{ op: 'node.move', id: 'done', onCall: true }], '"done" is the exit; the entry and the exit stay where they are'],
+    ['moving the exit', [{ op: 'node.move', id: 'done', onCall: true }], '"done" is the exit; the entry and the exit stay where they are, so add a node on call instead or rename the exit'],
+    [
+      'moving the entry on call',
+      [{ op: 'node.move', id: 'orchestrator', onCall: true }],
+      '"orchestrator" is the entry; the entry and the exit stay where they are, so add a node on call instead or rename the entry',
+    ],
+    ['moving the entry into a stage', [{ op: 'node.move', id: 'orchestrator', stage: 'qa' }], '"orchestrator" is the entry; the entry and the exit stay where they are, so add a node in qa instead or rename the entry'],
     ['a summary of six words', [{ op: 'stage.add', id: 'docs', summary: 'write all of the docs now', after: 3 }], 'the summary "write all of the docs now" has 6 words; write a summary of 1 to 5 words'],
     ['an empty summary', [{ op: 'node.set', id: 'worker', summary: ' ' }], 'the summary " " has 0 words; write a summary of 1 to 5 words'],
     ['a stage id that is not an id', [{ op: 'stage.add', id: 'Security', summary: 'checks' }], `"Security" is not a stage id; ${ID_RULE}, like security`],
@@ -591,12 +623,16 @@ describe('loops on disk', () => {
     const { fs, files } = shippedFs()
     const made = await loopNew(fs, ROOTS, DRAFTS, REPO, { name: 'mine', level: 'user', from: { name: 'core', level: 'plugin' } })
     if (!made.ok) throw new Error(made.problem)
-    expect(made.info).toMatchObject({ dir: draftDir('user', 'mine'), base: null, changes: ['new from core (plugin)'] })
+    const description = `A copy of core (plugin): ${(await core()).description}`
+    const change = `new from core (plugin), described as "${description}"`
+    expect(made.info).toMatchObject({ dir: draftDir('user', 'mine'), base: null, changes: [change] })
     expect(made.ref).toMatchObject({ name: 'mine', level: 'user', dir: userDir('mine'), counts: { stages: 6, steps: 6, nodes: 5 } })
     expect(made.loop.name).toBe('mine')
+    expect(made.loop.description).toBe(description)
+    expect(made.ref.description).toBe(description)
     expect([...files.keys()].some(k => k.startsWith(`${ROOTS.user}/`))).toBe(false)
     expect(files.get(`${made.info.dir}/loop.d2`)).toBe(SHIPPED_LOOP_FILES['core/loop.d2'])
-    expect(JSON.parse(files.get(`${made.info.dir}/draft.json`)!).changes).toEqual(['new from core (plugin)'])
+    expect(JSON.parse(files.get(`${made.info.dir}/draft.json`)!).changes).toEqual([change])
 
     expect(await saveDraft(fs, { ref: made.ref, loop: made.loop, info: made.info, opaque: [] })).toBeNull()
     for (const f of ['loop.json', 'loop.d2', 'LOOP.md', 'nodes/worker.md']) expect(files.has(`${userDir('mine')}/${f}`)).toBe(true)

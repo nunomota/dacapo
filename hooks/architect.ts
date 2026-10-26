@@ -89,7 +89,7 @@ export function describeOp(op: Op): string {
     case 'stage.add':
       return `added stage ${op.id} ${position(op)}`
     case 'stage.remove':
-      return `removed stage ${op.id} and put its nodes on call`
+      return `removed stage ${op.id}`
     case 'stage.move':
       return `moved stage ${op.id} ${op.alongside === undefined && op.after === undefined ? 'to the last step' : position(op)}`
     case 'stage.split':
@@ -258,6 +258,8 @@ function stripDefaults(loop: Loop): Transition[] {
 class Draft {
   /** What the op being applied rewired beyond itself, said after its change line. */
   rewired: string[] = []
+  /** The op's change line when what it did depends on the loop, in place of `describeOp`. */
+  head: string | undefined
 
   constructor(public loop: Loop) {}
 
@@ -285,11 +287,14 @@ class Draft {
     return `name one of ${series(Object.keys(this.loop.nodes), 'or')}`
   }
 
-  /** A node that sits in a stage, on call or as a helper: not the entry or the exit. */
-  placeable(id: string, verb: string): LoopNode {
+  /** A node that sits in a stage, on call or as a helper: not the entry or the exit. `to` is where a move puts it. */
+  placeable(id: string, to?: { stage?: string; onCall?: true; helperOf?: string }): LoopNode {
     const n = this.node(id)
     const end = id === this.loop.exit || n.type === 'exit' ? 'exit' : id === this.loop.entry || n.type === 'entry' ? 'entry' : null
-    if (end && verb === 'moved') refuse(`"${id}" is the ${end}; the entry and the exit stay where they are`)
+    if (end && to) {
+      const instead = to.stage !== undefined ? `add a node in ${to.stage}` : to.helperOf !== undefined ? `add a helper of ${to.helperOf}` : 'add a node on call'
+      refuse(`"${id}" is the ${end}; the entry and the exit stay where they are, so ${instead} instead or rename the ${end}`)
+    }
     if (end) refuse(`"${id}" is the ${end}; a loop keeps its entry and exit, so rename it or rewrite its role instead`)
     return n
   }
@@ -503,6 +508,7 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
         const judge = judgeOf(id)
         if (judge) loop.onCall[judge]!.push(id)
       }
+      if (stage.nodes.length > 0) d.head = `${describeOp(op)} and put its nodes on call`
       return
     }
     case 'stage.move': {
@@ -564,14 +570,14 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
       return
     }
     case 'node.remove': {
-      d.placeable(op.id, 'removed')
+      d.placeable(op.id)
       d.unplace(op.id)
       delete loop.nodes[op.id]
       loop.handovers = loop.handovers.filter(h => h.from !== op.id && h.to !== op.id)
       return
     }
     case 'node.move': {
-      d.placeable(op.id, 'moved')
+      d.placeable(op.id, op)
       d.place(op.id, op, 'node.move')
       return
     }
@@ -716,8 +722,7 @@ function explain(loop: Loop, p: Problem): string {
   if (node) {
     const [, id, key] = node as unknown as [string, string, string | undefined]
     const n = loop.nodes[id]
-    // tests/dacapo.test.ts pins this one as validateLoop has it; it already says what the node needs.
-    if (key === 'categories' && n?.contract === 'scores') return `${p.path}: ${p.message}`
+    if (key === 'categories' && n?.contract === 'scores') return `node ${id} scores but has no categories; give it the rubric categories it accepts with node.set categories`
     if (n && (key === 'categories' || key === 'collectors') && /for scores nodes only/.test(p.message)) {
       return `node ${id} does not score, so it takes no ${key}; set its contract to ${n.contract} again with node.set to drop them, or set it to scores`
     }
@@ -731,15 +736,22 @@ function explain(loop: Loop, p: Problem): string {
     return `node ${id}: ${p.message}${key && NODE_FIX[key] ? `; ${NODE_FIX[key]}` : ''}`
   }
 
-  const stage = /^steps\[(\d+)\]\.stages\[(\d+)\]/.exec(p.path)
+  const stage = /^steps\[(\d+)\]\.stages\[(\d+)\](\.summary)?/.exec(p.path)
   if (stage) {
     const id = loop.steps[Number(stage[1])]?.stages[Number(stage[2])]?.id ?? '?'
     if (/is not reachable from entry/.test(p.message)) return `stage ${id} is not reachable from entry; lead a transition into it with transition.set`
+    if (stage[3]) return `stage ${id}: ${p.message}; set it with stage.summary`
     return `stage ${id}: ${p.message}`
   }
+  const step = /^steps\[(\d+)\]$/.exec(p.path)
+  if (step) return `step ${Number(step[1]) + 1}: ${p.message}`
+  const onCall = /^onCall\.(.+)$/.exec(p.path)
+  if (onCall) return `on call: ${p.message}; take it out with node.remove or node.move`
   if (p.path === 'exit' && /not reachable/.test(p.message)) return 'exit is not reachable from entry; lead a transition from the last step to exit with transition.set'
   if (p.path === 'description') return `${p.message}, with loop.describe`
-  return `${p.path}: ${p.message}`
+  if (p.path === 'name') return `${p.message}; rename the loop with loop.rename`
+  // entry and exit say what is wrong in a whole sentence; no raw path reaches the user
+  return p.message
 }
 
 /** The problems of a loop as refusals say them, over the loop with its default transitions. */
@@ -769,7 +781,15 @@ function staleNotes(loop: Loop, old: string[]): string[] {
   return notes
 }
 
-/** Applies the ops in order to a copy of the loop. The first op that cannot apply stops everything: nothing is returned but the problem. After the last op the whole loop must validate, else the batch is refused with the problems. A change line says what its op rewired; notes on prose an id change left stale follow the change lines. */
+/** The problems of a loop as they would be after a batch: over its transitions without the stored defaults. */
+const problemsAfter = (loop: Loop) => problemsOf({ ...loop, transitions: stripDefaults(loop) })
+
+/**
+ * Applies the ops in order to a copy of the loop. The first op that cannot apply stops everything: nothing is returned
+ * but the problem. After the last op the whole loop must validate, else the batch is refused with the problems, named
+ * by the op that brought them in when one op did, else as the batch. A batch that leaves the loop as it was is refused
+ * too. A change line says what its op rewired; notes on prose an id change left stale follow the change lines.
+ */
 export function applyOps(
   loop: Loop,
   ops: Op[],
@@ -780,9 +800,12 @@ export function applyOps(
   let opaque = [...(ctx.opaque ?? [])]
   const changes: string[] = []
   const old: string[] = []
+  // the problems before the first op and after each, to tell which op brought in a problem the batch ends with
+  const seen: string[][] = [problemsAfter(d.loop)]
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i]!
     d.rewired = []
+    d.head = undefined
     try {
       const next = apply(d, op, ctx)
       if (next) opaque = next
@@ -790,14 +813,39 @@ export function applyOps(
       const problems = e instanceof Refusal ? e.message.split('\n') : [`the op failed: ${errorText(e)}`]
       return { ok: false, index: i, op: String((op as { op?: unknown })?.op), problems }
     }
-    changes.push([describeOp(op), ...d.rewired].join('; '))
+    changes.push([d.head ?? describeOp(op), ...d.rewired].join('; '))
     if (op.op === 'node.rename' || op.op === 'stage.rename' || op.op === 'stage.remove') old.push(op.id)
+    seen.push(problemsAfter(d.loop))
+  }
+  const problems = seen[ops.length]!
+  if (problems.length > 0) {
+    const by = new Set(problems.map(p => broughtIn(seen, p)))
+    const [i] = [...by]
+    if (by.size === 1 && i !== undefined && i >= 0) return { ok: false, index: i, op: ops[i]!.op, problems }
+    return { ok: false, index: ops.length, op: 'batch', problems }
   }
   d.loop.transitions = stripDefaults(d.loop)
-  const problems = problemsOf(d.loop)
-  if (problems.length > 0) return { ok: false, index: ops.length, op: 'batch', problems }
+  const before = copyLoop(loop)
+  before.transitions = stripDefaults(before)
+  // an import that changes nothing still goes through: it is how the person settles a hand-edited loop.d2
+  const imported = ops.some(op => op.op === 'import-d2')
+  if (!imported && plainHash(d.loop) === plainHash(before) && sameList(opaque, ctx.opaque ?? [])) {
+    const last = ops.length - 1
+    return { ok: false, index: last, op: ops[last]!.op, problems: ['nothing changed; the loop already has that'] }
+  }
   return { ok: true, loop: d.loop, changes: [...changes, ...staleNotes(d.loop, old)], opaque }
 }
+
+/** The op that brought in a problem: the last after which it appeared and stayed; -1 when the loop had it before the first. */
+function broughtIn(seen: string[][], problem: string): number {
+  let i = seen.length - 1
+  while (i > 0 && seen[i - 1]!.includes(problem)) i--
+  return i - 1
+}
+
+/** The hash of a loop as it is written: a key set to undefined is the same as no key. */
+const plainHash = (loop: Loop) => hashLoop(JSON.parse(JSON.stringify(loop)) as Loop)
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i])
 
 // On disk
 
@@ -875,8 +923,10 @@ export async function loopNew(
     if (a.from) {
       const source = loopDir(roots, a.from.level, a.from.name)
       if (!(await hasLoop(fs, source))) refuse(`there is no loop ${a.from.name} at the ${a.from.level} level; ${CHECK_LIBRARY}`)
-      loop = { ...(await readLoop(fs, source)).loop, name: a.name }
-      change = `new from ${a.from.name} (${a.from.level})`
+      const read = (await readLoop(fs, source)).loop
+      const description = `A copy of ${a.from.name} (${a.from.level}): ${read.description}`
+      loop = { ...read, name: a.name, description }
+      change = `new from ${a.from.name} (${a.from.level}), described as "${description}"`
       if (await fs.exists(join(source, 'loop.d2'))) d2 = await fs.read(join(source, 'loop.d2'))
     }
     const info: DraftInfo = { dir: draftDir, base: null, since: Date.now(), changes: [change] }

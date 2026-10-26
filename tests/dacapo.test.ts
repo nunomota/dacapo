@@ -1472,7 +1472,7 @@ describe('the loop viewer and the architect', () => {
     expect(isRefused(bad)).toBe(true)
     expect(resultOf(bad)).toBe('Refused op 1 (stage.add): stage.add needs "summary", a string. Nothing was written.')
     const broken = await call($, 'loop_edit', { ops: [{ op: 'node.add', id: 'judge', type: 'agent', contract: 'scores', summary: 'judges', stage: 'qa', models: ['opus'] }] })
-    expect(resultOf(broken)).toBe('Refused: after the last op the loop breaks these rules.\n- nodes.judge.categories: a scores node needs categories: the rubric categories it accepts\nNothing was written.')
+    expect(resultOf(broken)).toBe('Refused op 0 (node.add):\n- node judge scores but has no categories; give it the rubric categories it accepts with node.set categories\nNothing was written.')
     const mixed = await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'x', level: 'user' }, { op: 'loop.describe', description: 'x' }] })
     expect(resultOf(mixed)).toMatch(/go in a batch of their own/)
     expect(files).toEqual(before)
