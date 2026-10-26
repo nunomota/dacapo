@@ -44,11 +44,31 @@ const D2_NOTICE = 'loop.d2 was edited by hand since the last save; say “import
 const NO_FOCUS = 'Press a stage or a node to see it here.'
 
 /** Example phrases under each kind of focus, so the person learns the architect's vocabulary. */
-const TRY: Record<ViewerFocus['kind'], readonly string[]> = {
+const TRY: Record<Exclude<ViewerFocus['kind'], 'node'>, readonly string[]> = {
   stage: ['move qa after review', 'add a stage security alongside qa', 'split review into its own step', 'delete the qa stage'],
-  node: ['let workers use fable', 'add my lint skill to workers', 'make workers run the linter before every commit', 'rename worker to builder', 'move worker on call'],
   transition: ['only go back on fix, not on recommendations', 'remove the reconcile transition'],
   handover: ['add a handover from reviewer to qa: findings to re-test'],
+}
+
+/** The phrases under a node, by what it is: the entry, a judge, a collector, a worker, a node on call. */
+function nodeTry(loop: Loop, n: LoopNode): readonly string[] {
+  const id = n.id
+  if (id === loop.entry || n.type === 'entry') return [`add a scout the ${id} can ask anything, any time`, `rewrite the ${id}'s role to clarify in one message`]
+  if (id === loop.exit || n.type === 'exit') return [`rename ${id} to finished`]
+  switch (n.contract) {
+    case 'scores':
+      return [`add the category risk to ${id}`, `let ${id} use fable`, `give ${id} two collectors`]
+    case 'collects':
+      return [`let ${id} use haiku`, `never let ${id} use Edit`]
+    case 'lands':
+      return ['let workers use fable', 'add my lint skill to workers', 'make workers run the linter before every commit', 'rename worker to builder', 'move worker on call']
+    case 'none': {
+      const place = placeOf(loop, id)
+      const stage = loop.steps.flatMap(s => s.stages).find(st => st.id !== place.stage)?.id ?? 'research'
+      if (place.stage || place.helperOf) return [`move ${id} on call`, `move ${id} into ${stage}`]
+      return [`move ${id} into ${stage}`, `give ${id} a helper reader that summarises folders`]
+    }
+  }
 }
 
 // Words.
@@ -199,7 +219,7 @@ function nodeRows(loop: Loop, id: string): Row[] | null {
     ...(handovers.length > 0
       ? handovers.map((h): Row => ({ kind: 'link', text: handoverTitle(loop, h), detail: `${h.label}: ${h.spec}`, color: nodeColor(loop, h.from, colors), target: { kind: 'handover', id: handoverId(h) } }))
       : [{ kind: 'note' as const, text: 'none' }]),
-    { kind: 'try', phrases: TRY.node },
+    { kind: 'try', phrases: nodeTry(loop, n) },
   ]
 }
 
@@ -209,8 +229,8 @@ function transitionRows(loop: Loop, id: string): Row[] | null {
   return [
     { kind: 'title', text: transitionTitle(loop, t), color: t.back ? YELLOW : TEXT, chips: [{ text: `transition · ${t.back ? 'back' : 'forward'}`, color: t.back ? YELLOW : DIM }] },
     { kind: 'field', label: 'Label', text: t.label || 'none, a default transition' },
-    { kind: 'field', label: 'When', text: t.when || 'not set' },
-    { kind: 'field', label: 'Then', text: t.then || 'not set' },
+    ...(t.when ? [{ kind: 'field' as const, label: 'When', text: t.when }] : t.label ? [] : [{ kind: 'field' as const, label: 'When', text: 'a default transition' }]),
+    ...(t.then ? [{ kind: 'field' as const, label: 'Then', text: t.then }] : []),
     { kind: 'try', phrases: TRY.transition },
   ]
 }

@@ -315,6 +315,43 @@ describe('the loop viewer as text', () => {
     expect(focusText(state)).toContain('Tools: never: Agent, EnterWorktree, ExitWorktree')
   })
 
+  test('the phrases to try fit the focused node: the entry, a judge, a collector, a worker, a node on call', () => {
+    const tryLine = (state: ViewerState) => focusText(state).find(l => l.startsWith('Try saying: '))
+    expect(tryLine(core({ focus: { kind: 'node', id: 'orchestrator' } }))).toBe(
+      'Try saying: “add a scout the orchestrator can ask anything, any time” · “rewrite the orchestrator\'s role to clarify in one message”',
+    )
+    expect(tryLine(core({ focus: { kind: 'node', id: 'qa' } }))).toBe('Try saying: “add the category risk to qa” · “let qa use fable” · “give qa two collectors”')
+    expect(tryLine(core({ focus: { kind: 'node', id: 'qa-collector' } }))).toBe('Try saying: “let qa-collector use haiku” · “never let qa-collector use Edit”')
+    expect(tryLine(core({ focus: { kind: 'node', id: 'worker' } }))).toMatch(/^Try saying: “let workers use fable” · “add my lint skill to workers”/)
+    expect(tryLine(core({ focus: { kind: 'node', id: 'done' } }))).toBe('Try saying: “rename done to finished”')
+    expect(tryLine(core({ focus: { kind: 'stage', id: 'qa' } }))).toMatch(/^Try saying: “move qa after review”/)
+    expect(tryLine(core({ focus: { kind: 'handover', id: 'orchestrator>worker' } }))).toMatch(/^Try saying: “add a handover from reviewer to qa/)
+
+    const loop: Loop = JSON.parse(JSON.stringify(LOOPS.core))
+    loop.nodes.scout = { id: 'scout', type: 'agent', summary: 'answers any question', contract: 'none', models: ['sonnet'], skills: [], tools: { deny: [] }, role: 'The scout.' }
+    loop.nodes.reader = { ...loop.nodes.scout, id: 'reader', summary: 'reads folders' }
+    loop.onCall = { scout: ['reader'] }
+    const state = (id: string) => ({ ...core({ focus: { kind: 'node', id } }), open: { ...core().open!, loop } })
+    expect(tryLine(state('scout'))).toBe('Try saying: “move scout into clarify” · “give scout a helper reader that summarises folders”')
+    expect(tryLine(state('reader'))).toBe('Try saying: “move reader on call” · “move reader into clarify”')
+  })
+
+  test('a transition shows When and Then only when it has them; a default one says so', () => {
+    const at = (id: string, loop = LOOPS.core) => focusText({ ...core({ focus: { kind: 'transition', id } }), open: { ...core().open!, loop } })
+    expect(at('implement>qa')).toEqual([
+      'implement → qa · transition · forward',
+      'Label: all landed',
+      'When: every task of the round has landed',
+      'Try saying: “only go back on fix, not on recommendations” · “remove the reconcile transition”',
+    ])
+    expect(at('research>plan').filter(l => /^(When|Then):/.test(l))).toEqual([])
+    expect(at('qa>implement').filter(l => /^(When|Then):/.test(l)).map(l => l.split(':')[0])).toEqual(['When', 'Then'])
+    const loop: Loop = JSON.parse(JSON.stringify(LOOPS.core))
+    loop.transitions = loop.transitions.filter(t => !(t.from === 'research' && !t.back))
+    const defaults = withDefaultTransitions(loop)
+    expect(at('research>plan', { ...defaults, nodes: loop.nodes }).slice(1, 3)).toEqual(['Label: none, a default transition', 'When: a default transition'])
+  })
+
   test('focusText says when nothing is focused and when the focus is gone', () => {
     expect(focusText(core())).toEqual(['Press a stage or a node to see it here.'])
     expect(focusText(core({ focus: { kind: 'stage', id: 'nope' } }))).toEqual(['No stage nope in this loop.'])
