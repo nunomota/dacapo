@@ -2095,6 +2095,8 @@ async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } 
       const parts = [...(target.unsaved ? [] : [`its folder ${target.dir}`]), ...(draft ? [`its draft (${plural(draft.info.changes.length, 'change')})`] : [])]
       return { ask: `Not deleted yet: that deletes the loop ${loopName} at the ${level} level, ${series(parts)}, and cannot be undone. Ask the user first; ${CONFIRM}.` }
     }
+    const drafted = !!(await readDraft(loopFs, loopDrafts, keyOf(target)))
+    const gone = [...(target.unsaved ? [] : ['its folder']), ...(drafted ? ['its draft'] : [])]
     const problem = await loopDelete(loopFs, loopRoots, loopDrafts, loopRepo, { name: loopName, level })
     if (problem) return { problem }
     if (sameLoop(await lastView(), { name: loopName, level })) await views.remember(null)
@@ -2115,7 +2117,7 @@ async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } 
     await views.set(s => ({ ...s, screen: 'library', notice: undefined, ...(sameLoop(s.open?.ref, { name: loopName, level }) ? { open: undefined, view: FRESH_VIEW } : {}) }))
     await views.open()
     const confNote = reset.length > 0 ? ` It was the default loop for runs: ${reset.join(' and ')} now say${reset.length === 1 ? 's' : ''} loop = core.` : ''
-    return { text: `Deleted ${loopName} (${level}): its folder and its draft are gone.${confNote}\n\n${libraryLines(await views.get())}` }
+    return { text: `Deleted ${loopName} (${level}): ${series(gone)} ${gone.length === 1 ? 'is' : 'are'} gone.${confNote}\n\n${libraryLines(await views.get())}` }
   }
 
   // loop.default: the conf beside the loop's level, the repository's for a project loop

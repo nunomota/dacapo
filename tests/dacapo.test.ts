@@ -1613,7 +1613,7 @@ describe('the loop viewer and the architect', () => {
     expect(files.has(`${HOME}/loops/mine/loop.json`)).toBe(true)
     // with it, and with name and level left out, it deletes the open loop
     const deleted = resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete', confirm: true }] }))
-    expect(deleted).toMatch(/^Deleted mine \(user\): its folder and its draft are gone\. It was the default loop for runs: \/home\/u\/dh\/dacapo\.conf now says loop = core\.\n\nLoops · 3 loops · default for runs: core \(plugin\)\n/)
+    expect(deleted).toMatch(/^Deleted mine \(user\): its folder is gone\. It was the default loop for runs: \/home\/u\/dh\/dacapo\.conf now says loop = core\.\n\nLoops · 3 loops · default for runs: core \(plugin\)\n/)
     expect([...files.keys()].some(k => k.startsWith(`${HOME}/loops/mine/`))).toBe(false)
     expect(files.get('/home/u/dh/dacapo.conf')).toBe('loop = core\n')
     expect(store.has(LAST)).toBe(false)
@@ -1786,6 +1786,12 @@ describe('the loop viewer and the architect', () => {
     )
     expect(files.has(`${HOME}/loops/other/loop.json`)).toBe(true)
     expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete', name: 'core' }] }))).toMatch(/^Refused op 0 \(loop\.delete\):\n- the plugin's loops are read-only and cannot be deleted; /)
+    // a new loop not saved yet: only its draft goes
+    await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'fresh', level: 'user' }] })
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete' }] }))).toBe(
+      'Not deleted yet: that deletes the loop fresh at the user level, its draft (1 change), and cannot be undone. Ask the user first; resend with confirm: true once the user agrees.',
+    )
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'loop.delete', confirm: true }] }))).toMatch(/^Deleted fresh \(user\): its draft is gone\.\n/)
   })
 
   test('a project loop made the default goes into the repository\'s conf; the config reads the user conf under DACAPO_HOME', async ($, on) => {
