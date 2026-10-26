@@ -38,7 +38,7 @@ Never save on your own. Call `mcp__dacapo__loop_save` only on the user's word. B
 
 - `mcp__dacapo__loops { action: 'list' | 'open' | 'focus' | 'fold', name?, level?, target? }`. `fold` toggles the on-call section.
 - `mcp__dacapo__loop_edit { ops: Op[] }`, with `Op` one of:
-  - `stage.add { id, summary, after?: number, alongside?: string }`. `after` is a 0-based step index. Neither means last.
+  - `stage.add { id, summary, after?: number, alongside?: string }`. `after` counts steps from 0, and the stage goes in a new step right after that one; `-1` puts the stage first. Neither means last.
   - `stage.remove { id }`. Its nodes go on call.
   - `stage.move { id, after?: number, alongside?: string }`
   - `stage.split { id }`. Out of a shared step into its own step right after.
@@ -117,7 +117,7 @@ A role is the system prompt of that node's agent. Write it in the second person:
 
 ## Writing a summary
 
-A summary is two to four words, lower case, shown on the canvas. The rules enforce one to five words; write two to four.
+A summary is written as two to four words, lower case, shown on the canvas. One to five words are accepted; write two to four.
 - For a node, a verb phrase: `builds one task`, `judges as the user`, `gathers evidence`.
 - For a stage, a noun or short phrase: `as the end user`, `build in parallel`, `integrate the run`.
 
