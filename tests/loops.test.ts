@@ -23,6 +23,7 @@ import {
   writeLoop,
   type LoopFs,
 } from '../hooks/loops'
+import { toD2 } from '../hooks/loopd2'
 import { SHIPPED_LOOP_FILES } from '../loops/shipped'
 
 /** An in-memory file system: files by absolute path, folders implied by them, an optional clock for stat. */
@@ -478,7 +479,7 @@ describe('the shipped loops', () => {
       expect(read.problems, name).toEqual([])
       expect(validateLoop(read.loop), name).toEqual([])
       const out = memFs()
-      await writeLoop(out.fs, `/out/${name}`, read.loop)
+      await writeLoop(out.fs, `/out/${name}`, read.loop, { 'loop.d2': toD2(read.loop) })
       const shippedFiles = Object.keys(SHIPPED_LOOP_FILES).filter(k => k.startsWith(`${name}/`)).sort()
       expect([...out.files.keys()].map(k => k.slice('/out/'.length)).sort()).toEqual(shippedFiles)
       for (const k of shippedFiles) expect(out.files.get(`/out/${k}`), k).toBe(SHIPPED_LOOP_FILES[k])
