@@ -10,7 +10,7 @@ The third command rebuilds `loops/shipped.ts` from the shipped loop folders; run
 
 Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude Code API; it may change between releases. Pull request state comes from one `gh pr list` call every 20 seconds on the mod's timer. Cost estimates use Anthropic list prices per model; override them with the plugin's `prices` option (`claude plugin configure dacapo`).
 
-To try a development build, start Claude Code on this folder: `claude --plugin-dir <path to this repository>`. Set `DACAPO_HOME` to a temporary folder to keep your own loops and drafts out of it.
+To try a development build, start Claude Code on this folder: `claude --plugin-dir <path to this repository>`. Set `DACAPO_HOME` to a temporary folder to keep your own loops, drafts and user conf out of it.
 
 ## Layout
 
@@ -46,7 +46,7 @@ To try a development build, start Claude Code on this folder: `claude --plugin-d
 - Branch protection that requires reviews stops a worker's merge and the final merge; the orchestrator is told, and merging on GitHub by hand finishes the run.
 - The timeline lives for the session; it is not kept across restarts.
 - The configuration is read when a session starts, when a `/dacapo:core` prompt opens a run and when `/dacapo-config` runs; a file edited mid-run applies to the next run.
-- A loop's agents register when a session starts, and before the turn when the first `/dacapo:core` prompt names a loop with `--loop`. A loop saved or changed mid-session runs in the next session, like the configuration. A session holds one role per agent type, so two loops whose nodes share an id with different roles cannot both run in one session.
+- The agents of every loop at the three levels register when a session starts. A loop saved or changed mid-session runs in the next session, like the configuration, and `start` says so when its agents are missing. A session holds one role per agent type, so two loops whose nodes share an id with different roles cannot both run in one session: the loop that wins resolution for that name registers its version, and `start --loop` on the other refuses and asks for a new session with `loop = <name>` in the conf.
 - `loops/shipped.ts` is a copy. A shipped loop changed without running `node scripts/mirror-loops.mjs` leaves the tests reading the old files.
 - `loop.d2` is read as the subset dacapo writes: shapes with a label, a class and a summary, one container per step, transitions and handovers. Anything else at the top level is kept verbatim and written back; anything else inside the generated part is a problem the import names by line.
 - Print mode cannot finish a run. `claude -p` ends when the turn ends, and nothing keeps the process alive after `finish` for the mod's timer to merge the final pull request and wake the orchestrator. Try a development build interactively with `claude --plugin-dir`.
