@@ -89,3 +89,25 @@ export type LoopRef = {
 
 /** A validation problem at a path like `nodes.worker.models`, `steps[4].stages[0]`, `transitions[2]`. */
 export type Problem = { path: string; message: string }
+
+/** What the viewer points at: a stage, a node, or an edge by its id (`from>to` for a handover, `from>a+b` for a transition). */
+export type ViewerFocus = { kind: 'stage' | 'node' | 'transition' | 'handover'; id: string }
+
+/** The loop viewer's whole state: what the pane draws. The mod keeps it in plugin state; the tools of the next round change it. */
+export type ViewerState = {
+  screen: 'library' | 'loop'
+  /** Every loop as last listed. */
+  library: LoopRef[]
+  /** The name the `loop` conf key gives. */
+  defaultLoop: string
+  /** The loop on screen: its draft when one exists. `problems` are the saved folder's, `d2Newer` says loop.d2 is newer than loop.json. */
+  open?: { ref: LoopRef; loop: Loop; draft?: DraftInfo; d2Newer: boolean; problems: Problem[]; files: string[] }
+  view: { folded: boolean; focus?: ViewerFocus; tab: 'canvas' | 'files' }
+  /** One line under the draft bar: a refusal, a confirmation, a warning. */
+  notice?: string
+  /**
+   * Each listed loop's stage ids, one list per step, by `<level>/<name>`: the library card's colour strip. A loop left
+   * out here draws a grey block per step from its counts.
+   */
+  shapes?: Record<string, string[][]>
+}
