@@ -186,6 +186,13 @@ describe('the configuration', () => {
     ])
     expect(DEFAULT_CONF.loop).toBe('core')
     expect(describeConf(loadConf([]))).toMatch(/^loop = core  \(default\)\n/)
+    // the config names the loops the session found; called without them, the shipped ones
+    const stale = loadConf([{ path: '/repo/.dacapo.conf', text: 'level = deep\n', role: 'project' }])
+    expect(describeConf(stale)).toMatch(/- \/repo\/\.dacapo\.conf: line 1: "level" was removed in 0\.22; depth is a loop now \(loop = core-fast \| core \| core-deep\)$/m)
+    expect(describeConf(stale, { loops: ['core-fast', 'core', 'core-deep', 'mine'] })).toMatch(/depth is a loop now \(loop = core-fast \| core \| core-deep \| mine\)$/m)
+    // a run on another loop than the configured one says so on the loop line
+    expect(describeConf(stale, { runLoop: 'core-deep' })).toMatch(/^loop = core \(conf: default\); this run walks core-deep \(--loop\)\n/)
+    expect(describeConf(stale, { runLoop: 'core' })).toMatch(/^loop = core  \(default\)\n/)
   })
 })
 
@@ -584,8 +591,8 @@ describe('the loop', () => {
     expect('result' in started && started.result).not.toMatch(/registered now/)
     // the configuration in force, with where each value came from, and the loop with the orchestrator's role; agents never read the files
     const config = await $.tool.call({ tool: 'mcp__dacapo__config' } as never)
-    expect('result' in config && config.result).toMatch(/loop = core  \(default\)/)
-    expect('result' in config && config.result).toMatch(/Ignored:[\s\S]*"judges" was removed in 0\.22; depth is a loop now/)
+    expect('result' in config && config.result).toMatch(/^loop = core \(conf: default\); this run walks core-wide \(--loop\)$/m)
+    expect('result' in config && config.result).toMatch(/Ignored:[\s\S]*"judges" was removed in 0\.22; depth is a loop now \(loop = core-fast \| core \| core-deep \| core-wide\)/)
     expect('result' in config && config.result).toMatch(/qa = sonnet, opus/)
     expect('result' in config && config.result).toMatch(/Loop: core-wide \(user level, \/home\/u\/.claude\/dacapo\/loops\/core-wide\)/)
     expect('result' in config && config.result).toMatch(/5\. qa: as the end user \(qa, qa-collector\) ∥ review: as an engineer \(reviewer\)/)
@@ -812,6 +819,7 @@ describe('the loop', () => {
     expect(wakeQa).toMatch(/Next: plan the fixes and call mcp__dacapo__dispatch/)
     const preempted = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in preempted && preempted.result).toMatch(/Review round 1 \(reviewer\) \[agent-3\] cancelled/)
+    expect('result' in preempted && preempted.result).toMatch(/stages qa ∥ review/)
     expect('result' in preempted && preempted.result).toMatch(/loop core-wide/)
 
     for (const surface of ['terminal', 'desktop'] as const) {
@@ -861,6 +869,8 @@ describe('the loop', () => {
     expect(files.get(`/repo/.workspaces/.dacapo/${runId}/reviewer-1-2.json`)).toMatch(/"verdict": "pass"/)
     const afterReview = await $.tool.call({ tool: 'mcp__dacapo__status' } as never)
     expect('result' in afterReview && afterReview.result).toMatch(/Review round 2 \(reviewer\) \[agent-6\] finished .*2 strong/)
+    // both judges of the step have ended and nothing marked a later stage: the run still stands on the whole step
+    expect('result' in afterReview && afterReview.result).toMatch(/loop core-wide \(user\), stages qa ∥ review/)
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
       expect(await ui.find({ text: /Review \(2\)/ })).toBeDefined()
@@ -1019,6 +1029,9 @@ function repoHarness(on: On, files: Map<string, string>, env: Record<string, str
   const tools: string[] = []
   const agentCalls: Array<Record<string, unknown>> = []
   const opened: string[] = []
+  // the branches on origin: a push puts one there, a push --delete takes it away; every git and gh call is kept
+  const remote = new Set<string>()
+  const commands: string[][] = []
   const clock = mock.clock(on, { now: Date.UTC(2026, 9, 10, 12, 0, 0) })
   mock.env(on, { HOME: '/home/u', ...env })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -1053,6 +1066,7 @@ function repoHarness(on: On, files: Map<string, string>, env: Record<string, str
       for (const path of [...files.keys()]) if (path === gone || path.startsWith(`${gone}/`)) files.delete(path)
       return out('')
     }
+    commands.push(argv.map(String))
     if (argv[0]?.endsWith('gh')) {
       if (argv[1] === '--version') return out('gh version 2.80.0\n')
       if (argv[1] === 'auth') return out('Logged in to github.com\n')
@@ -1064,9 +1078,11 @@ function repoHarness(on: On, files: Map<string, string>, env: Record<string, str
     if (argv[1] === 'rev-parse' && argv[2] === '--path-format=absolute') return out('/repo/.git\n')
     // only main exists locally, so every branch the run cuts is free
     if (argv[1] === 'rev-parse' && argv[2] === '--verify') return String(argv[4]) === 'refs/heads/main' ? out('abc\n') : out('', 1)
-    if (argv[1] === 'ls-remote') return out('')
+    if (argv[1] === 'ls-remote') return out(remote.has(String(argv[4])) ? `abc\trefs/heads/${String(argv[4])}\n` : '')
     if (argv[1] === 'worktree' && argv[2] === 'list') return out('worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n')
     if (argv[1] === 'remote') return out('git@github.com:x/y.git\n')
+    if (argv[1] === 'push' && argv[2] === '--set-upstream') remote.add(String(argv[4]))
+    if (argv[1] === 'push' && argv[3] === '--delete') remote.delete(String(argv[4]))
     return out('')
   })
   on('turn.complete', (_, e) => ({ text: e.answer }))
@@ -1080,7 +1096,7 @@ function repoHarness(on: On, files: Map<string, string>, env: Record<string, str
   // the engine offers the model every agent type a test lists in `listed`
   const listed: string[] = []
   on('agent.offer', (_, e) => ({ isOffered: listed.includes(e.agent) }))
-  return { registered, tools, agentCalls, opened, clock, agentReply, listed }
+  return { registered, tools, agentCalls, opened, clock, agentReply, listed, remote, commands }
 }
 
 const resultOf = (r: unknown): string => String((r as { result?: unknown }).result ?? '')
@@ -1111,8 +1127,8 @@ describe('the active loop', () => {
     // the loop's tools replace the level's: stage, judge and ask in, phase, qa and review out
     expect(tools).toEqual(expect.arrayContaining(['config', 'start', 'stage', 'dispatch', 'judge', 'ask', 'finish', 'sync', 'cancel', 'status']))
     for (const gone of ['phase', 'qa', 'review']) expect(tools).not.toContain(gone)
-    // the project's loops stay out of git
-    expect(files.get('/repo/.git/info/exclude')).toMatch(/^\.claude\/dacapo\/$/m)
+    // what dacapo writes in a repository stays out of git from the session's start, before any run or architect write
+    expect(files.get('/repo/.git/info/exclude')).toBe('# dacapo\n.workspaces/\n.context/\n.dacapo.conf\n.claude/dacapo/\n')
   })
 
   test('start refuses an unknown loop and names the loops there are', async ($, on) => {
@@ -1303,19 +1319,41 @@ describe('every loop\'s agents, and the prompt\'s flags', () => {
     expect(resultOf(unknown)).toMatch(/^Agent type 'dacapo:scout' not found\. Available agents: general-purpose\. dacapo: the loop "core-plus" was saved after this session began, .*A new session is needed/)
   })
 
+  test('config names the loop a --loop run walks; abort deletes the run branch on origin and says so', async ($, on) => {
+    const files = new Map<string, string>()
+    const { remote, commands } = repoHarness(on, files)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await $.prompt.submit({ text: '/dacapo:core --loop core-deep add a page', wait: false, origin: { kind: 'composer' } })
+    const started = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
+    expect(isRefused(started)).toBe(false)
+    expect(remote.has('add-a-page')).toBe(true)
+    const config = resultOf(await $.tool.call({ tool: 'mcp__dacapo__config' } as never))
+    expect(config).toMatch(/^loop = core \(conf: default\); this run walks core-deep \(--loop\)$/m)
+    expect(config).toMatch(/^Loop: core-deep \(plugin level, /m)
+    const aborted = resultOf(await $.tool.call({ tool: 'mcp__dacapo__finish', abort: true } as never))
+    expect(aborted).toMatch(/^Run \S+ aborted\. Deleted the run branch add-a-page on origin\. Worktrees under \.workspaces\/ and the local branches are kept for inspection\.$/)
+    expect(remote.has('add-a-page')).toBe(false)
+    expect(commands).toContainEqual(['git', 'push', 'origin', '--delete', 'add-a-page'])
+    // never the base branch
+    expect(commands.some(c => c.includes('--delete') && c.includes('main'))).toBe(false)
+  })
+
   test('the flags of the levels are refused before the turn and name the loop that replaced them; so is a loop that does not exist', async ($, on) => {
     const files = new Map<string, string>()
+    wideLoop(files)
     const { opened } = repoHarness(on, files)
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     const drop = async (text: string) => (await $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } }) as { drop?: string }).drop
-    expect(await drop('/dacapo:core --deep add a page')).toBe('"--deep" was removed in 0.22; depth is a loop now: /dacapo:core --loop core-deep add a page')
-    expect(await drop('/dacapo:core --fast add a page')).toBe('"--fast" was removed in 0.22; depth is a loop now: /dacapo:core --loop core-fast add a page')
-    expect(await drop('/dacapo:core --balanced')).toBe('"--balanced" was removed in 0.22; depth is a loop now: /dacapo:core --loop core ...')
-    expect(await drop('/dacapo:core --level deep add a page')).toBe('"--level" was removed in 0.22; depth is a loop now: /dacapo:core --loop core-deep add a page')
-    expect(await drop('/dacapo:core --level=fast add a page')).toBe('"--level" was removed in 0.22; depth is a loop now: /dacapo:core --loop core-fast add a page')
-    expect(await drop('/dacapo:core --judges parallel add a page')).toBe('"--judges" was removed in 0.22; depth is a loop now: /dacapo:core --loop core-deep add a page')
+    // the refusal names the loop the flag became and every loop to choose from, the user's own included
+    const loops = '(the loops: core-fast, core, core-deep, core-wide; /dacapo:design shows each).'
+    expect(await drop('/dacapo:core --deep add a page')).toBe(`"--deep" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop core-deep add a page ${loops}`)
+    expect(await drop('/dacapo:core --fast add a page')).toBe(`"--fast" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop core-fast add a page ${loops}`)
+    expect(await drop('/dacapo:core --balanced')).toBe(`"--balanced" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop core <task> ${loops}`)
+    expect(await drop('/dacapo:core --level deep add a page')).toBe(`"--level" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop core-deep add a page ${loops}`)
+    expect(await drop('/dacapo:core --level=fast add a page')).toBe(`"--level" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop core-fast add a page ${loops}`)
+    expect(await drop('/dacapo:core --judges parallel add a page')).toBe(`"--judges" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop core-deep add a page ${loops}`)
     expect(await drop('/dacapo:core --loop core --deep add a page')).toMatch(/^"--deep" was removed in 0.22/)
-    expect(await drop('/dacapo:core --loop nope add a page')).toBe('dacapo: there is no loop "nope"; the loops available: core, core-deep, core-fast')
+    expect(await drop('/dacapo:core --loop nope add a page')).toBe('dacapo: there is no loop "nope"; the loops available: core-wide, core, core-deep, core-fast')
     // nothing opened a run; a task that merely mentions a flag is a task
     expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))).toMatch(/^No dacapo run\./)
     expect(opened).not.toContain('dacapo')
@@ -1580,18 +1618,28 @@ describe('the loop viewer and the architect', () => {
 
   test('open lists the last five changes of a long draft and the hand-edited diagram in the viewer\'s words', async ($, on) => {
     const files = new Map<string, string>()
-    const mtimes = new Map<string, number>()
-    on('fs.stat', (_, e) => ({ value: { kind: 'file' as const, size: 0, mtimeMs: mtimes.get(e.path) ?? 1, isLink: false } }))
     repoHarness(on, files, { DACAPO_HOME: HOME })
     storeOf(on)
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'mine', level: 'user', from: { name: 'core', level: 'plugin' } }] })
     await call($, 'loop_save')
     for (let i = 1; i <= 7; i++) await call($, 'loop_edit', { ops: [{ op: 'loop.describe', description: `Take ${i}.` }] })
-    mtimes.set(`${HOME}/loops/mine/loop.d2`, 5)
+    const d2 = `${HOME}/loops/mine/loop.d2`
+    const notice = 'loop.d2 was edited by hand since the last save; say “import the diagram” to fold it in (the import-d2 op).'
+    // a draft alone is no hand edit: the diagram still draws the saved loop
+    expect(resultOf(await call($, 'loops', { action: 'open', name: 'mine' }))).not.toContain(notice)
+    // a hand edit is the diagram drawing something neither the saved loop nor the draft holds
+    files.set(d2, files.get(d2)!.replace('builds one task', 'builds one small task'))
     const open = resultOf(await call($, 'loops', { action: 'open', name: 'mine' }))
     expect(open).toMatch(/^Loop mine \(user\) at \/home\/u\/dh\/loops\/mine\nTake 7\.\nDRAFT: 7 changes, kept in \/home\/u\/dh\/drafts\/user--mine; the last 5:\n(- .*\n){5}loop\.d2 was edited by hand since the last save; say “import the diagram” to fold it in \(the import-d2 op\)\.\n\n/)
     expect(open).not.toMatch(/Take 2\./)
+    // once imported the draft draws what the diagram does, so the notice is gone until the file changes again
+    expect(resultOf(await call($, 'loop_edit', { ops: [{ op: 'import-d2' }] }))).toMatch(/imported the hand-edited loop\.d2/)
+    const imported = resultOf(await call($, 'loops', { action: 'open', name: 'mine' }))
+    expect(imported).toMatch(/- imported the hand-edited loop\.d2/)
+    expect(imported).not.toContain(notice)
+    files.set(d2, files.get(d2)!.replace('builds one small task', 'builds one tiny task'))
+    expect(resultOf(await call($, 'loops', { action: 'open', name: 'mine' }))).toContain(notice)
   })
 
   test('a project loop made the default goes into the repository\'s conf; the config reads the user conf under DACAPO_HOME', async ($, on) => {

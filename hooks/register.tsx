@@ -4,13 +4,13 @@ import type { Register } from 'claude-code'
 import type { Activity, AgentStats, Collector, Gh, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
 import type { Loop, LoopLevel, LoopNode, LoopRef, Stage, Transition, ViewerFocus, ViewerState } from '../types/loops'
 import { applyOps, loopDelete, loopMove, loopNew, loopRename, parseOp, saveDraft, setDefaultLoop, type Op } from './architect'
-import { BRANCH_NAME, describeConf, loadConf, parseConf, SHIPPED_COMMITS, SHIPPED_PRS, userConfPath, type Layer, type Loaded } from './conf'
+import { BRANCH_NAME, describeConf, loadConf, parseConf, SHIPPED_COMMITS, SHIPPED_LOOPS, SHIPPED_PRS, userConfPath, type Layer, type Loaded } from './conf'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as gh from './gh'
 import * as git from './git'
 import type { Io } from './io'
 import { ID, countsOf, discardDraft, draftKey, draftsRoot, fnv1a, graphFromJson, listLoops, nodeOrder, openDraft, readDraft, readLoop, roots, validateLoop, withDefaultTransitions, writeDraft, type LoopFs, type Roots } from './loops'
-import { fromD2 } from './loopd2'
+import { d2Differs, fromD2 } from './loopd2'
 import { layout, renderTerminal, transitionId } from './looplayout'
 import { PHASES, currentStages, drawBand, drawPane, elapsed, hhmm, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
 import { COLLECTS_SUFFIX, LANDS_SUFFIX, SCORES_SUFFIX, qaBrief, reviewBrief, workerBrief } from './prompts'
@@ -138,6 +138,17 @@ async function resolveLoop(name: string): Promise<Resolved> {
     return { ok: false, problem: `there is no loop "${name}"; the loops available: ${names.length > 0 ? names.join(', ') : 'none'}` }
   }
   return checkLoop(ref)
+}
+
+/** The names of the loops a run may walk (none hidden by another), the shipped ones first, shallowest first, then the rest by name; the shipped names when listing fails. */
+async function loopNames(): Promise<string[]> {
+  let names: string[]
+  try {
+    names = [...new Set((await listLoops(loopFs, loopRoots)).filter(r => !r.shadowedBy).map(r => r.name))]
+  } catch {
+    return [...SHIPPED_LOOPS]
+  }
+  return [...SHIPPED_LOOPS.filter(n => names.includes(n)), ...names.filter(n => !SHIPPED_LOOPS.includes(n)).sort()]
 }
 
 /** Reads the loop a listing found and checks it as `resolveLoop` does. */
@@ -418,7 +429,7 @@ async function configText(): Promise<string> {
   const run = await currentRun()
   const name = run?.loop?.name ?? conf.conf.loop
   const r = await resolveLoop(name)
-  const head = [describeConf(conf), '']
+  const head = [describeConf(conf, { loops: await loopNames(), runLoop: run?.loop?.name }), '']
   // the loops whose agents session start left out: a run on one of them cannot start in this session
   const skipped = [...notRegistered].map(([loop, why]) => `- ${loop}: ${why}`)
   const tail = skipped.length > 0 ? ['', 'Loops whose agents this session did not register, so no run of theirs starts here:', ...skipped] : []
@@ -1203,6 +1214,31 @@ async function cancel(a: Args) {
 
 const ATTRIBUTION = /co-authored-by|signed-off-by|generated with/i
 
+/**
+ * What an abort cleans on GitHub: the run's open pull requests closed, then the run branch deleted on origin (never
+ * the base branch). Returns one sentence per outcome for the reply; a failure is reported, never thrown.
+ */
+async function abortCleanup(run: Run): Promise<string[]> {
+  const notes: string[] = []
+  const cwd = run.worktree || run.root
+  const open = run.prs.filter(p => p.state === 'open' || p.state === 'draft')
+  const closed: number[] = []
+  for (const pr of open) {
+    const done = await gh.closePr(io, cwd, pr.number)
+    if (done.ok) closed.push(pr.number)
+    else notes.push(`Pull request #${pr.number} was not closed: ${(done.err || done.out).split('\n')[0] ?? ''}.`)
+  }
+  if (closed.length > 0) notes.push(`Closed pull request${closed.length === 1 ? '' : 's'} ${closed.map(n => `#${n}`).join(', ')}.`)
+  if (!run.branch) notes.push('No run branch was cut, so none was deleted.')
+  else if (run.branch === run.baseBranch) notes.push(`The run branch is the base branch ${run.baseBranch}, so it was not deleted.`)
+  else if (!run.root || !(await git.remoteBranchExists(io, run.root, run.branch))) notes.push(`The run branch ${run.branch} is not on origin, so nothing was deleted there.`)
+  else {
+    const problem = await git.deleteRemoteBranch(io, run.root, run.branch)
+    notes.push(problem ? `The run branch was not deleted: ${problem}.` : `Deleted the run branch ${run.branch} on origin.`)
+  }
+  return notes
+}
+
 async function finish(a: Args) {
   const run = await currentRun()
   if (!run) return fail('finish: no active run')
@@ -1211,7 +1247,8 @@ async function finish(a: Args) {
   if (unfinished.length > 0) return fail(`finish: ${unfinished.length} agent(s) still running; wait or cancel them first`)
   if (a.abort === true) {
     await io.setRun(() => ({ ...run, status: 'aborted' }))
-    return ok(`Run ${run.id} aborted; ${run.branch || 'no branch'} keeps what landed. Worktrees under .workspaces/ and open pull requests are kept for inspection.`)
+    const notes = await abortCleanup(run)
+    return ok(`Run ${run.id} aborted. ${notes.join(' ')} Worktrees under .workspaces/ and the local branches are kept for inspection.`)
   }
   if (!run.worktree) return fail('finish: nothing was ever dispatched; call finish with abort=true to close the run')
   const unsynced = rows.filter((r): r is WorkerRow => isLanding(r) && r.status === 'finished')
@@ -1427,16 +1464,22 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   await git.removeWorktree(io, run.root, row.worktree)
 }
 
-/** Drops from the run's active stages every stage that no longer has a live judge, once a judge ended. */
+/**
+ * Once a judge ended: while the run still stands on the judge's step (stage, dispatch, judge or finish marked no later
+ * stage), the run's current stages are every stage of that step, so a step whose stages run side by side reads as
+ * `qa ∥ review` until the run moves on, not as the last judge to finish.
+ */
 async function settleStages(endedId: string) {
   const run = await io.getRun()
-  if (!run?.loop || !run.activeStages || run.activeStages.length < 2) return
+  if (!run?.loop) return
   const loop = await loopOf(run)
   if (!loop) return
-  const rows = await io.getRows()
-  const live = rows.filter((r): r is QaRow => r.kind === 'qa' && r.id !== endedId && (isLive(r) || r.status === 'pending')).map(r => placeOf(loop, judgeNode(r))?.stage.id)
-  const kept = run.activeStages.filter(s => live.includes(s))
-  if (kept.length !== run.activeStages.length) await io.setRun(cur => (cur ? { ...cur, activeStages: kept } : cur))
+  const row = (await io.getRows()).find((r): r is QaRow => r.kind === 'qa' && r.id === endedId)
+  const place = row ? placeOf(loop, judgeNode(row)) : undefined
+  if (!place || stepOfStage(loop, run.stage ?? run.phase) !== place.step) return
+  const stages = loop.steps[place.step]!.stages.map(st => st.id)
+  if (stages.length < 2) return
+  await io.setRun(cur => (cur ? { ...cur, activeStages: stages } : cur))
 }
 
 const FAILURE_OPTIONS =
@@ -1681,7 +1724,7 @@ async function refreshLibrary(): Promise<LoopRef[]> {
   const shapes: Record<string, string[][]> = {}
   for (const ref of library) {
     try {
-      const graph = unsaved.includes(ref) ? (await readLoop(loopFs, ref.draft!.dir)).loop : graphFromJson(await loopFs.read(joinPath(ref.dir, 'loop.json')), ref.name).graph
+      const graph = unsaved.includes(ref) ? (await readLoop(loopFs, ref.draft!.dir, d2Differs)).loop : graphFromJson(await loopFs.read(joinPath(ref.dir, 'loop.json')), ref.name).graph
       shapes[`${ref.level}/${ref.name}`] = graph.steps.map(s => s.stages.map(st => st.id))
     } catch {
       // the card draws grey blocks from its counts
@@ -1714,12 +1757,24 @@ async function opaqueBlocks(dirs: string[], loop: Loop): Promise<string[]> {
 }
 
 /**
+ * Whether the saved folder's loop.d2 holds a hand edit not folded in yet: it draws something the saved loop does not
+ * (or fails to parse), and, with a draft, something the draft does not either; so once import-d2 folded it into the
+ * draft the notice is gone until the file changes again.
+ */
+async function d2HandEdited(dir: string, saved: { d2Edited: boolean } | null, draft: Loop | undefined): Promise<boolean> {
+  if (!saved?.d2Edited) return false
+  if (!draft) return true
+  const text = await loopFs.read(joinPath(dir, 'loop.d2')).catch(() => null)
+  return text !== null && d2Differs(text, draft)
+}
+
+/**
  * Puts a loop on the viewer's screen: its draft when one exists, else the saved folder; its files (the draft's last);
  * the view the store kept for it, else the one on screen when it is the same loop, else a fresh one. The store
  * remembers it for the next session.
  */
 async function openLoop(ref: LoopRef, o: { notice?: string; view?: ViewerState['view']; focus?: ViewerFocus | null; pane?: 'open' | 'quiet' } = {}): Promise<NonNullable<ViewerState['open']>> {
-  const saved = (await loopFs.exists(joinPath(ref.dir, 'loop.json'))) ? await readLoop(loopFs, ref.dir) : null
+  const saved = (await loopFs.exists(joinPath(ref.dir, 'loop.json'))) ? await readLoop(loopFs, ref.dir, d2Differs) : null
   const draft = await readDraft(loopFs, loopDrafts, keyOf(ref))
   const base = draft?.loop ?? saved?.loop
   if (!base) throw new Error(`there is no loop ${ref.name} at the ${ref.level} level any more`)
@@ -1729,7 +1784,7 @@ async function openLoop(ref: LoopRef, o: { notice?: string; view?: ViewerState['
     ref: draft ? { ...plain, draft: draft.info } : plain,
     loop: forDisplay(base),
     ...(draft ? { draft: draft.info } : {}),
-    d2Newer: saved?.d2Newer ?? false,
+    d2Newer: await d2HandEdited(ref.dir, saved, draft?.loop),
     problems: saved?.problems ?? [],
     files: [...(saved ? await filesUnder(ref.dir) : []), ...(draft ? await filesUnder(draft.info.dir) : [])],
     opaque: await opaqueBlocks([...(draft ? [draft.info.dir] : []), ...(saved ? [ref.dir] : [])], base),
@@ -2052,7 +2107,7 @@ async function loopEdit(a: Args) {
   const { ref } = state.open
   // the ops apply to the draft on disk, or to the saved loop as stored; the draft is opened only once they pass
   const existing = await readDraft(loopFs, loopDrafts, keyOf(ref))
-  const saved = existing ? null : (await readLoop(loopFs, ref.dir)).loop
+  const saved = existing ? null : (await readLoop(loopFs, ref.dir, d2Differs)).loop
   const d2Dir = (await loopFs.exists(joinPath(ref.dir, 'loop.d2'))) ? ref.dir : existing?.info.dir
   const d2 = d2Dir && parsed.some(op => op.op === 'import-d2') ? await loopFs.read(joinPath(d2Dir, 'loop.d2')).catch(() => undefined) : undefined
   const out = applyOps(existing?.loop ?? saved!, parsed, { ...(d2 !== undefined ? { d2 } : {}), opaque: state.open.opaque ?? [] })
@@ -2423,6 +2478,13 @@ function elementsFor(surface: string, resolved: Els): Els {
   return { Box, Text, Button, Link }
 }
 
+/** A flag of the levels a prompt still used: the flag, the loop it became, and the rest of the prompt. */
+type Stale = { flag: string; target: string; rest: string }
+
+/** The refusal of a flag of the levels: the loop it became, in the command to type again, and every loop there is to choose from. */
+const staleText = (s: Stale, loops: readonly string[]) =>
+  `"--${s.flag}" was removed in 0.22; depth is a loop now. Choose one: /dacapo:core --loop ${s.target} ${s.rest || '<task>'} (the loops: ${loops.join(', ')}; /dacapo:design shows each).`
+
 /** The loop each flag of the levels became, for the refusal that names it. */
 const LEVEL_LOOPS: Record<string, string> = { fast: 'core-fast', balanced: 'core', deep: 'core-deep' }
 
@@ -2431,7 +2493,7 @@ const LEVEL_LOOPS: Record<string, string> = { fast: 'core-fast', balanced: 'core
  * (`--fast`, `--balanced`, `--deep`, `--level`, `--judges`), removed in 0.22, as the refusal that names their loop.
  * Null for a prompt that is not `/dacapo:core`.
  */
-function coreFlags(text: string): { loop?: string; stale?: string } | null {
+function coreFlags(text: string): { loop?: string; stale?: Stale } | null {
   const m = /^\s*\/dacapo:core(?=\s|$)([\s\S]*)$/.exec(text)
   if (!m) return null
   const words = m[1]!.trim().split(/\s+/).filter(Boolean)
@@ -2451,7 +2513,7 @@ function coreFlags(text: string): { loop?: string; stale?: string } | null {
     if (key in LEVEL_LOOPS || key === 'level' || key === 'judges') {
       const target = key in LEVEL_LOOPS ? LEVEL_LOOPS[key]! : key === 'level' && value && value in LEVEL_LOOPS ? LEVEL_LOOPS[value]! : 'core-deep'
       const rest = words.slice(i + (key in LEVEL_LOOPS ? 1 : used)).filter(w => !/^--(fast|balanced|deep|level|judges)(=|$)/.test(w))
-      return { stale: `"--${key}" was removed in 0.22; depth is a loop now: /dacapo:core --loop ${target} ${rest.join(' ') || '...'}` }
+      return { stale: { flag: key, target, rest: rest.join(' ') } }
     }
     break
   }
@@ -2508,7 +2570,8 @@ export const register: Register = (on, options) => {
         if (out.exitCode !== 0) throw new Error(`rm -rf ${path} failed: ${out.stderr.trim()}`)
       },
     }
-    if (repo) await git.ensureExclude(io, repo, ['.claude/dacapo/']).catch(() => undefined)
+    // what dacapo writes in a repository (worktrees, briefs, its conf, project loops) is kept out of git before any run or architect write
+    if (repo) await git.ensureExclude(io, repo).catch(() => undefined)
     loopRepo = repo
     // the store is the machine's, shared by every session: the open loop is kept under this scope's key alone
     const key = lastKey(env.dacapoHome ?? `${env.home}/.claude/dacapo`, repo)
@@ -2733,7 +2796,7 @@ export const register: Register = (on, options) => {
     let run = await currentRun()
     if (flags) {
       // a flag of the levels, or a loop that cannot run, refuses the prompt before the turn: the person sees why and types it again
-      if (flags.stale) return { drop: flags.stale }
+      if (flags.stale) return { drop: staleText(flags.stale, await loopNames()) }
       // the run has no heading yet: the prompt is the person's words, the title and overview come from `start` once the task is clear;
       // a --loop flag right after the command names the loop now, so the pane shows its stages while the task is clarified
       const cwd = await io.cwd()

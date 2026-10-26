@@ -22,6 +22,10 @@ export type ConfKey = keyof Conf
 export const CONF_KEYS: readonly ConfKey[] = ['loop', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill', 'base-branch', 'qa-collectors']
 /** Keys a conf file may still carry from before loops; each is named as removed, never applied. */
 const REMOVED_KEYS = ['level', 'judges']
+/** The loops the plugin ships, shallowest first: what a removed key is told to choose from when no loops are known. */
+export const SHIPPED_LOOPS: readonly string[] = ['core-fast', 'core', 'core-deep']
+/** The words that name the loops to choose from, in a removed key's problem. */
+const loopChoice = (names: readonly string[]) => `(loop = ${names.join(' | ')})`
 
 /** The skills the plugin ships; while one is the configured skill, the mod checks the rules it states (commit titles, attribution lines) itself. */
 export const SHIPPED_COMMITS = 'dacapo:rules-commits'
@@ -68,7 +72,7 @@ export function parseConf(text: string): Parsed {
     }
     const key = m[1] as ConfKey
     if (REMOVED_KEYS.includes(key)) {
-      problems.push(`line ${i + 1}: "${key}" was removed in 0.22; depth is a loop now (loop = core-fast | core | core-deep)`)
+      problems.push(`line ${i + 1}: "${key}" was removed in 0.22; depth is a loop now ${loopChoice(SHIPPED_LOOPS)}`)
       return
     }
     if (!CONF_KEYS.includes(key)) {
@@ -144,14 +148,22 @@ export function loadConf(layers: readonly Layer[]): Loaded {
   return { conf, origin, problems, read, paths }
 }
 
-/** The values in force as text, one key per line with where it came from; for the config tool and the command. */
-export function describeConf(loaded: Loaded): string {
+/**
+ * The values in force as text, one key per line with where it came from; for the config tool and the command. With
+ * `loops` (the loops the session found), a removed key names those to choose from, else the shipped ones. With
+ * `runLoop`, the loop a live run walks: when it is not the configured one, the loop line says so.
+ */
+export function describeConf(loaded: Loaded, o: { loops?: readonly string[]; runLoop?: string } = {}): string {
   const { conf, origin } = loaded
   const value = (k: ConfKey) => (Array.isArray(conf[k]) ? (conf[k] as string[]).join(', ') : String(conf[k]))
+  const line = (k: ConfKey) =>
+    k === 'loop' && o.runLoop && o.runLoop !== conf.loop ? `loop = ${conf.loop} (conf: ${origin.loop}); this run walks ${o.runLoop} (--loop)` : `${k} = ${value(k)}  (${origin[k]})`
+  const shipped = loopChoice(SHIPPED_LOOPS)
+  const problems = o.loops && o.loops.length > 0 ? loaded.problems.map(p => p.replace(shipped, loopChoice(o.loops!))) : loaded.problems
   return [
-    ...CONF_KEYS.map(k => `${k} = ${value(k)}  (${origin[k]})`),
+    ...CONF_KEYS.map(line),
     `Files read: ${loaded.read.length > 0 ? loaded.read.join(', ') : 'none; defaults'}.`,
     ...(loaded.paths.user || loaded.paths.project ? [`To change a value, edit ${[loaded.paths.user ? `${loaded.paths.user} for every repository` : '', loaded.paths.project ? `${loaded.paths.project} for this one` : ''].filter(Boolean).join(', or ')}; a later file wins key by key.`] : []),
-    ...(loaded.problems.length > 0 ? ['Ignored:', ...loaded.problems.map(p => `- ${p}`)] : []),
+    ...(problems.length > 0 ? ['Ignored:', ...problems.map(p => `- ${p}`)] : []),
   ].join('\n')
 }
