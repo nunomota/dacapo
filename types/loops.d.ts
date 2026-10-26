@@ -100,8 +100,8 @@ export type ViewerState = {
   library: LoopRef[]
   /** The name the `loop` conf key gives. */
   defaultLoop: string
-  /** The loop on screen: its draft when one exists. `problems` are the saved folder's, `d2Newer` says loop.d2 is newer than loop.json. */
-  open?: { ref: LoopRef; loop: Loop; draft?: DraftInfo; d2Newer: boolean; problems: Problem[]; files: string[] }
+  /** The loop on screen: its draft when one exists. `problems` are the saved folder's, `d2Newer` says loop.d2 is newer than loop.json, `opaque` holds the diagram's blocks the loop model does not know, kept for the save. */
+  open?: { ref: LoopRef; loop: Loop; draft?: DraftInfo; d2Newer: boolean; problems: Problem[]; files: string[]; opaque?: string[] }
   view: { folded: boolean; focus?: ViewerFocus; tab: 'canvas' | 'files' }
   /** One line under the draft bar: a refusal, a confirmation, a warning. */
   notice?: string

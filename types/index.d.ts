@@ -257,8 +257,65 @@ export type Ui = {
   isBandHidden: boolean
 }
 
+// The loop viewer's state, as types/loops.d.ts has it (ViewerState and the loop types under it). A contract cannot
+// import, so the shape is repeated here: keep the two in step.
+
+export type ViewerLevel = 'plugin' | 'user' | 'project'
+export type ViewerNode = {
+  id: string
+  type: 'entry' | 'agent' | 'swarm' | 'exit'
+  summary: string
+  contract: 'lands' | 'scores' | 'collects' | 'none'
+  models: string[]
+  skills: string[]
+  tools: { deny: string[] }
+  categories?: string[]
+  collectors?: number
+  role: string
+}
+export type ViewerLoop = {
+  name: string
+  description: string
+  entry: string
+  exit: string
+  steps: Array<{ stages: Array<{ id: string; summary: string; nodes: string[] }> }>
+  onCall: Record<string, string[]>
+  transitions: Array<{ from: string; to: string[]; back?: boolean; label: string; when?: string; then?: string }>
+  handovers: Array<{ from: string; to: string; label: string; spec: string }>
+  nodes: Record<string, ViewerNode>
+}
+export type ViewerDraft = { dir: string; base: string | null; since: number; changes: string[] }
+export type ViewerRef = {
+  name: string
+  level: ViewerLevel
+  dir: string
+  description: string
+  shadowedBy?: ViewerLevel
+  draft?: ViewerDraft
+  counts: { stages: number; steps: number; nodes: number; edges: number }
+}
+
+/** What the loop viewer draws: the library, the loop open with its draft, the view, a notice. */
+export type Viewer = {
+  screen: 'library' | 'loop'
+  library: ViewerRef[]
+  defaultLoop: string
+  open?: {
+    ref: ViewerRef
+    loop: ViewerLoop
+    draft?: ViewerDraft
+    d2Newer: boolean
+    problems: Array<{ path: string; message: string }>
+    files: string[]
+    opaque?: string[]
+  }
+  view: { folded: boolean; focus?: { kind: 'stage' | 'node' | 'transition' | 'handover'; id: string }; tab: 'canvas' | 'files' }
+  notice?: string
+  shapes?: Record<string, string[][]>
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'dacapo': { run: Run | null; rows: Row[]; ui: Ui }
+    'dacapo': { run: Run | null; rows: Row[]; ui: Ui; viewer: Viewer }
   }
 }
