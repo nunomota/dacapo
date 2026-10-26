@@ -96,8 +96,16 @@ function check(key: ConfKey, list: string[]): string | null {
   return bad ? `"${key}" has a model name that is not one (${bad})` : null
 }
 
-/** A file in the order it is applied, with its text; a file that does not exist is passed with `text: null`. */
-export type Layer = { path: string; text: string | null }
+/** Which layer a conf file is: the plugin's shipped defaults, the user's file for every repository, or one repository's. */
+export type ConfRole = 'plugin' | 'user' | 'project'
+
+/** A file in the order it is applied, with its text and its layer; a file that does not exist is passed with `text: null`. */
+export type Layer = { path: string; text: string | null; role?: ConfRole }
+
+/** The user's conf file, for every repository: `$DACAPO_HOME/dacapo.conf` when DACAPO_HOME is set, else `~/.claude/dacapo.conf`. */
+export function userConfPath(env: { home: string; dacapoHome: string | null }): string {
+  return env.dacapoHome ? `${env.dacapoHome.replace(/\/+$/, '')}/dacapo.conf` : `${env.home.replace(/\/+$/, '')}/.claude/dacapo.conf`
+}
 
 export type Loaded = {
   conf: Conf
@@ -107,6 +115,8 @@ export type Loaded = {
   problems: string[]
   /** The files that were read. */
   read: string[]
+  /** The file of each layer the loader was given, read or not: where a value is changed. */
+  paths: Partial<Record<ConfRole, string>>
 }
 
 /** Applies the files in order over the defaults, key by key; a value a file gets wrong keeps the earlier one. */
@@ -115,7 +125,9 @@ export function loadConf(layers: readonly Layer[]): Loaded {
   const origin = Object.fromEntries(CONF_KEYS.map(k => [k, 'default'])) as Record<ConfKey, string>
   const problems: string[] = []
   const read: string[] = []
+  const paths: Partial<Record<ConfRole, string>> = {}
   for (const layer of layers) {
+    if (layer.role) paths[layer.role] = layer.path
     if (layer.text === null) continue
     read.push(layer.path)
     const parsed = parseConf(layer.text)
@@ -129,7 +141,7 @@ export function loadConf(layers: readonly Layer[]): Loaded {
       origin[key] = layer.path
     }
   }
-  return { conf, origin, problems, read }
+  return { conf, origin, problems, read, paths }
 }
 
 /** The values in force as text, one key per line with where it came from; for the config tool and the command. */
@@ -139,6 +151,7 @@ export function describeConf(loaded: Loaded): string {
   return [
     ...CONF_KEYS.map(k => `${k} = ${value(k)}  (${origin[k]})`),
     `Files read: ${loaded.read.length > 0 ? loaded.read.join(', ') : 'none; defaults'}.`,
+    ...(loaded.paths.user || loaded.paths.project ? [`To change a value, edit ${[loaded.paths.user ? `${loaded.paths.user} for every repository` : '', loaded.paths.project ? `${loaded.paths.project} for this one` : ''].filter(Boolean).join(', or ')}; a later file wins key by key.`] : []),
     ...(loaded.problems.length > 0 ? ['Ignored:', ...loaded.problems.map(p => `- ${p}`)] : []),
   ].join('\n')
 }
