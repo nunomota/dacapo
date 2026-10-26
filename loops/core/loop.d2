@@ -1,0 +1,66 @@
+direction: down
+
+classes: {
+  entry: {}
+  agent: {}
+  swarm: { multiple: true }
+  exit: {}
+  stage: {}
+  transition: { style.stroke-dash: 4 }
+  back: { style.stroke-dash: 4 }
+  handover: {}
+}
+
+orchestrator: Orchestrator { class: entry; summary: talks to you }
+
+step1: {
+  clarify: Clarify { class: stage; summary: until nothing is open }
+}
+
+step2: {
+  research: Research { class: stage; summary: stack, commands, hazards }
+}
+
+step3: {
+  plan: Plan { class: stage; summary: tasks, rubric, harness }
+}
+
+step4: {
+  implement: Implement {
+    class: stage
+    summary: build in parallel
+    worker: Worker { class: swarm; summary: builds one task }
+  }
+}
+
+step5: {
+  qa: Qa {
+    class: stage
+    summary: as the end user
+    qa: Qa { class: agent; summary: judges as the user }
+    qa-collector: Qa-collector { class: swarm; summary: gathers evidence }
+  }
+}
+
+step6: {
+  merge: Merge { class: stage; summary: integrate the run }
+}
+
+done: Done { class: exit; summary: the run ends }
+
+orchestrator -> step1: handed over { class: transition }
+step1 -> step2: nothing open { class: transition }
+step2 -> step3: findings noted { class: transition }
+step3 -> step4: plan shown { class: transition }
+step4 -> step5: all landed { class: transition }
+step5 -> step6: all pass { class: transition }
+step5 -> step4: fix { class: back }
+step6 -> step4: reconcile { class: back }
+step6 -> done: integrated { class: transition }
+
+orchestrator -> step4.implement.worker: brief { class: handover }
+step4.implement.worker -> orchestrator: report { class: handover }
+orchestrator -> step5.qa.qa: judge { class: handover }
+step5.qa.qa -> orchestrator: scored report { class: handover }
+step5.qa.qa -> step5.qa.qa-collector: slice { class: handover }
+step5.qa.qa-collector -> step5.qa.qa: evidence { class: handover }
