@@ -498,7 +498,7 @@ describe('the loop', () => {
       }
       if (argv[1] === 'rev-parse' && argv[2] === '--show-toplevel') return out('/repo\n')
       if (argv[1] === 'rev-parse' && argv[2] === '--path-format=absolute') return out('/repo/.git\n')
-      if (argv[1] === 'rev-parse' && argv[2] === '--balanced') return String(argv[4]) === 'refs/heads/main' ? out('abc\n') : out('', 1)
+      if (argv[1] === 'rev-parse' && argv[2] === '--verify') return String(argv[4]) === 'refs/heads/main' ? out('abc\n') : out('', 1)
       if (argv[1] === 'ls-remote') return out('')
       if (argv[1] === 'worktree' && argv[2] === 'list') return out('worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n')
       if (argv[1] === 'rev-list') return out('2\n')
@@ -950,7 +950,7 @@ describe('the loop', () => {
       }
       if (argv[1] === 'rev-parse' && argv[2] === '--show-toplevel') return out('/repo\n')
       if (argv[1] === 'rev-parse' && argv[2] === '--path-format=absolute') return out('/repo/.git\n')
-      if (argv[1] === 'rev-parse' && argv[2] === '--balanced') return String(argv[4]) === 'refs/heads/main' ? out('abc\n') : out('', 1)
+      if (argv[1] === 'rev-parse' && argv[2] === '--verify') return String(argv[4]) === 'refs/heads/main' ? out('abc\n') : out('', 1)
       if (argv[1] === 'ls-remote') return out('')
       if (argv[1] === 'worktree' && argv[2] === 'list') return out('worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n')
       if (argv[1] === 'rev-list') return out('2\n')
@@ -1040,7 +1040,7 @@ function repoHarness(on: On, files: Map<string, string>) {
     if (argv[1] === 'rev-parse' && argv[2] === '--show-toplevel') return out('/repo\n')
     if (argv[1] === 'rev-parse' && argv[2] === '--path-format=absolute') return out('/repo/.git\n')
     // only main exists locally, so every branch the run cuts is free
-    if (argv[1] === 'rev-parse' && argv[2] === '--balanced') return String(argv[4]) === 'refs/heads/main' ? out('abc\n') : out('', 1)
+    if (argv[1] === 'rev-parse' && argv[2] === '--verify') return String(argv[4]) === 'refs/heads/main' ? out('abc\n') : out('', 1)
     if (argv[1] === 'ls-remote') return out('')
     if (argv[1] === 'worktree' && argv[2] === 'list') return out('worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n')
     if (argv[1] === 'remote') return out('git@github.com:x/y.git\n')

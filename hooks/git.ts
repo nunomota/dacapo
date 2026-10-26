@@ -19,7 +19,7 @@ export async function repoRoot(io: Io, cwd: string): Promise<string | null> {
 }
 
 export async function branchExists(io: Io, root: string, branch: string): Promise<boolean> {
-  return (await git(io, root, ['rev-parse', '--balanced', '--quiet', `refs/heads/${branch}`])).ok
+  return (await git(io, root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).ok
 }
 
 export async function remoteBranchExists(io: Io, root: string, branch: string): Promise<boolean> {
