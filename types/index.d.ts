@@ -64,6 +64,16 @@ export type Run = {
   /** Absolute path of the run log folder, `.workspaces/.dacapo/<id>`. */
   runDir: string
   phase: Phase
+  /**
+   * The loop the run walks, as it was read at start: its name, where it was found, and its steps in order, each
+   * holding one stage or several that run side by side. Absent on a run saved before loops, which walks the
+   * phases of its `level`.
+   */
+  loop?: { name: string; level: 'plugin' | 'user' | 'project'; steps: { stages: { id: string; summary: string }[] }[] }
+  /** The current stage's id when `loop` is set; `phase` stands in for it on a run without a loop. */
+  stage?: string
+  /** The stages of the current step that have a live agent, when that step runs several side by side; empty or absent otherwise. */
+  activeStages?: string[]
   iterations: IterationInfo[]
   /** The orchestrator's own model steps during the run. */
   orchestrator: Usage & { steps: number; modelId?: string }
