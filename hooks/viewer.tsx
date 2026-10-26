@@ -1,5 +1,5 @@
 import type { Handover, Loop, LoopLevel, LoopNode, LoopRef, Transition, ViewerFocus, ViewerState } from '../types/loops'
-import { nodeOrder, withDefaultTransitions } from './loops'
+import { nodeOrder, stageIndex, withDefaultTransitions } from './loops'
 import { layout, renderSvg, renderTerminal, transitionId, type Span, type View } from './looplayout'
 import { GREEN, ORANGE, TEAL, YELLOW, stageColor, type Els } from './pane'
 
@@ -43,11 +43,65 @@ const LOOP_FOOTER =
 const D2_NOTICE = 'loop.d2 was edited by hand since the last save; say “import the diagram” to fold it in'
 const NO_FOCUS = 'Press a stage or a node to see it here.'
 
-/** Example phrases under each kind of focus, so the person learns the architect's vocabulary. */
-const TRY: Record<Exclude<ViewerFocus['kind'], 'node'>, readonly string[]> = {
-  stage: ['move qa after review', 'add a stage security alongside qa', 'split review into its own step', 'delete the qa stage'],
-  transition: ['only go back on fix, not on recommendations', 'remove the reconcile transition'],
-  handover: ['add a handover from reviewer to qa: findings to re-test'],
+// Example phrases under each kind of focus, so the person learns the architect's vocabulary. Each is built from the
+// loop as it is: it names only stages and nodes the loop has, and offers only a change the loop can take.
+
+/** Names in prose: `a`, `a and b`, `a, b and c`. */
+const series = (items: string[]) => (items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`)
+
+/** An id no stage or node of the loop has yet: `base`, else `base-2`, `base-3`, ... */
+function freshId(loop: Loop, base: string): string {
+  const taken = (id: string) => !!loop.nodes[id] || stageIndex(loop).has(id)
+  let id = base
+  for (let n = 2; taken(id); n++) id = `${base}-${n}`
+  return id
+}
+
+/** The phrases under a stage: a move to the next step or alongside a neighbour's stage, a split when its step is shared, a rename, a delete, a node. */
+function stageTry(loop: Loop, id: string): string[] {
+  const at = loop.steps.findIndex(s => s.stages.some(st => st.id === id))
+  const next = loop.steps[at + 1]?.stages[0]?.id
+  const near = (loop.steps[at - 1] ?? loop.steps[at + 1])?.stages[0]?.id
+  return [
+    ...(next ? [`move ${id} after ${next}`] : []),
+    ...(near ? [`move ${id} alongside ${near}`] : []),
+    ...((loop.steps[at]?.stages.length ?? 0) > 1 ? [`split ${id} into its own step`] : []),
+    `rename ${id} to …`,
+    `delete the ${id} stage`,
+    `add a node ${freshId(loop, `${id}-helper`)} in ${id}`,
+  ]
+}
+
+/** Whether a transition is one the loop stores, not one it takes by default: a default has no label, when or then, and goes where the default would. */
+function isStored(loop: Loop, t: Transition): boolean {
+  const i = loop.transitions.findIndex(u => u.from === t.from && !!u.back === !!t.back && u.to.length === t.to.length && u.to.every(s => t.to.includes(s)))
+  if (i < 0) return false
+  const u = loop.transitions[i]!
+  if (u.back || u.label || u.when || u.then) return true
+  const others = loop.transitions.filter((_, j) => j !== i)
+  const added = withDefaultTransitions({ ...loop, transitions: others }).transitions.slice(others.length)
+  return !added.some(d => d.from === u.from && d.to.length === u.to.length && d.to.every(s => u.to.includes(s)))
+}
+
+/**
+ * The phrases under a transition: when it fires; removing it when the loop stores it; marking it back when it is
+ * marked forward but leads to its own step or an earlier one; a back transition the other way when there is none.
+ */
+function transitionTry(loop: Loop, t: Transition): string[] {
+  const index = stageIndex(loop)
+  const stepOf = (s: string) => (s === 'entry' ? -1 : s === 'exit' ? loop.steps.length : (index.get(s)?.step ?? -1))
+  const out = [`change when ${endName(loop, t.from)} goes to ${series(t.to.map(s => endName(loop, s)))}`]
+  if (isStored(loop, t)) out.push('remove this transition')
+  if (!t.back && t.from !== 'entry' && t.to.every(s => s !== 'exit' && stepOf(s) <= stepOf(t.from))) out.push('make this a back transition')
+  const backFrom = t.back || t.from === 'entry' ? undefined : t.to.find(s => s !== 'exit' && stepOf(s) > stepOf(t.from) && !loop.transitions.some(u => u.back && u.from === s && u.to.includes(t.from)))
+  if (backFrom) out.push(`add a back transition from ${backFrom} to ${t.from}`)
+  return out
+}
+
+/** The phrases under a handover: what it carries, removing it, and one the other way when there is none. */
+function handoverTry(loop: Loop, h: Handover): string[] {
+  const back = loop.handovers.some(x => x.from === h.to && x.to === h.from)
+  return [`change what ${h.from} hands to ${h.to}`, 'remove this handover', ...(back ? [] : [`add a handover from ${h.to} to ${h.from}`])]
 }
 
 /** The phrases under a node, by what it is: the entry, a judge, a collector, a worker, a node on call. */
@@ -64,9 +118,10 @@ function nodeTry(loop: Loop, n: LoopNode): readonly string[] {
       return ['let workers use fable', 'add my lint skill to workers', 'make workers run the linter before every commit', 'rename worker to builder', 'move worker on call']
     case 'none': {
       const place = placeOf(loop, id)
-      const stage = loop.steps.flatMap(s => s.stages).find(st => st.id !== place.stage)?.id ?? 'research'
-      if (place.stage || place.helperOf) return [`move ${id} on call`, `move ${id} into ${stage}`]
-      return [`move ${id} into ${stage}`, `give ${id} a helper reader that summarises folders`]
+      const stage = loop.steps.flatMap(s => s.stages).find(st => st.id !== place.stage)?.id
+      const into = stage ? [`move ${id} into ${stage}`] : []
+      if (place.stage || place.helperOf) return [`move ${id} on call`, ...into]
+      return [...into, `give ${id} a helper ${freshId(loop, 'reader')} that summarises folders`]
     }
   }
 }
@@ -187,7 +242,7 @@ function stageRows(loop: Loop, id: string): Row[] | null {
     { kind: 'field', label: 'Summary', text: stage.summary || 'none' },
     { kind: 'chips', label: 'Nodes', items: stage.nodes.map(n => ({ text: n, color: colors.get(id) ?? TEXT, target: { kind: 'node', id: n } })) },
     ...groups.flatMap(([heading, list]): Row[] => (list.length === 0 ? [] : [{ kind: 'heading', text: heading }, ...list.map(link)])),
-    { kind: 'try', phrases: TRY.stage },
+    { kind: 'try', phrases: stageTry(loop, id) },
   ]
 }
 
@@ -231,7 +286,7 @@ function transitionRows(loop: Loop, id: string): Row[] | null {
     { kind: 'field', label: 'Label', text: t.label || 'none, a default transition' },
     ...(t.when ? [{ kind: 'field' as const, label: 'When', text: t.when }] : t.label ? [] : [{ kind: 'field' as const, label: 'When', text: 'a default transition' }]),
     ...(t.then ? [{ kind: 'field' as const, label: 'Then', text: t.then }] : []),
-    { kind: 'try', phrases: TRY.transition },
+    { kind: 'try', phrases: transitionTry(loop, t) },
   ]
 }
 
@@ -242,7 +297,7 @@ function handoverRows(loop: Loop, id: string): Row[] | null {
     { kind: 'title', text: `${h.from} → ${h.to}`, color: TEXT, chips: [{ text: 'handover', color: DIM }] },
     { kind: 'field', label: 'Label', text: h.label || 'none' },
     { kind: 'field', label: 'Spec', text: h.spec || 'none' },
-    { kind: 'try', phrases: TRY.handover },
+    { kind: 'try', phrases: handoverTry(loop, h) },
   ]
 }
 
