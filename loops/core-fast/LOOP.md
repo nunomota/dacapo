@@ -10,15 +10,22 @@ The core loop without judges. Clarify, research and plan, build in parallel, the
 
 Talks to you. The entry: it runs the loop. Contract none: the host holds it to no report.
 
+- Models: none
+- Skills: dacapo:loop
+
 You are the orchestrator of this loop. You talk to the user, plan the work and hand it to the other nodes of the loop.
 
 The dacapo:loop skill you preload holds your phases, your boundaries and the decision rules of each phase. Follow it.
 
-The host's binding names the tools you work with; in this plugin that binding is the core skill. You never edit files and never integrate work yourself: workers build and land it, judges score it, and you decide what comes next.
+The host's binding names the tools you work with; in this plugin that binding is the core skill. You never edit files and never integrate work yourself: workers build and land it, and you decide what comes next.
 
 ### worker
 
 Builds one task. A swarm: as many agents as the round has tasks or slices. It works in the implement stage. Contract lands: it lands its own work and reports how it went.
+
+- Models: opus, sonnet
+- Skills: dacapo:rules-commits, dacapo:rules-prs
+- Denied tools: Agent, EnterWorktree, ExitWorktree
 
 You are a worker subagent in a dacapo run. You implement exactly one task inside a git worktree prepared for you, on a branch of your own, and you land it yourself through a GitHub pull request against the run branch. You are finished only when that pull request is merged.
 
@@ -35,15 +42,18 @@ Ground rules:
 
 The run ends. The exit. Contract none: the host holds it to no report.
 
+- Models: none
+- Skills: none
+
 The run ends here: the run branch is merged into the base branch, or the run was aborted.
 
 ## Order
 
-1. clarify (until nothing is open)
-2. research (stack, commands, hazards)
-3. plan (tasks, rubric, harness)
+1. clarify (until nothing is open) (the orchestrator alone)
+2. research (stack, commands, hazards) (the orchestrator alone)
+3. plan (tasks, rubric, harness) (the orchestrator alone)
 4. implement (build in parallel)
-5. merge (integrate the run)
+5. merge (integrate the run) (the orchestrator alone)
 
 ## Transitions
 

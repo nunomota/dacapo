@@ -2,7 +2,8 @@ import type { Contract, DraftInfo, Loop, LoopGraph, LoopLevel, LoopNode, LoopRef
 
 /**
  * The file system the loop functions work over: the mod passes `$.fs` and a shell remove, tests an in-memory fake.
- * `stat` is optional; without it a `loop.d2` is never taken as newer than `loop.json`.
+ * `stat` is optional; `readLoop` uses it only when it is given no content check, and without either it never takes
+ * `loop.d2` as edited.
  */
 export type LoopFs = {
   /** Rejects when the file is missing. */
@@ -514,12 +515,28 @@ export function referencedNodes(graph: LoopGraph): Set<string> {
 
 const baseName = (dir: string) => dir.replace(/\/+$/, '').split('/').pop() ?? ''
 
+/** Whether loop.d2's text says something the stored loop does not; hooks/loopd2.ts has `d2Differs`. */
+export type D2Check = (d2: string, loop: Loop) => boolean
+
 /**
  * Reads a loop folder: loop.json and every nodes/*.md, as stored (no default transitions). A file that cannot be read
- * or parsed, a node file nothing refers to and a node referred to without a file are problems. `d2Newer` is true when
- * loop.d2 exists and was changed after loop.json.
+ * or parsed, a node file nothing refers to and a node referred to without a file are problems.
+ *
+ * `d2Edited` is true when loop.d2 exists and was edited by hand since the last save. With `isEdited` (pass
+ * `d2Differs` from hooks/loopd2.ts) that is a content rule: the diagram fails to parse or draws something the stored
+ * loop does not. Without it, the older rule stands: loop.d2 changed after loop.json, when `fs.stat` is there.
  */
-export async function readLoop(fs: LoopFs, dir: string): Promise<{ loop: Loop; problems: Problem[]; d2Newer: boolean }> {
+export async function readLoop(
+  fs: LoopFs,
+  dir: string,
+  isEdited?: D2Check,
+): Promise<{
+  loop: Loop
+  problems: Problem[]
+  d2Edited: boolean
+  /** @deprecated The same value as `d2Edited`, kept for the callers that read this name. */
+  d2Newer: boolean
+}> {
   const problems: Problem[] = []
   let text: string | null = null
   try {
@@ -544,17 +561,25 @@ export async function readLoop(fs: LoopFs, dir: string): Promise<{ loop: Loop; p
   const referenced = referencedNodes(parsed.graph)
   for (const id of referenced) if (!nodes[id] && !files.includes(`${id}.md`)) problems.push({ path: `nodes.${id}`, message: `loop.json refers to "${id}" but there is no nodes/${id}.md` })
   for (const id of Object.keys(nodes)) if (!referenced.has(id)) problems.push({ path: `nodes.${id}`, message: `nodes/${id}.md is not referred to by loop.json` })
-  let d2Newer = false
-  if (fs.stat && text !== null && (await fs.exists(join(dir, 'loop.d2')))) {
-    const [d2, json] = await Promise.all([fs.stat(join(dir, 'loop.d2')), fs.stat(join(dir, 'loop.json'))])
-    d2Newer = !!d2 && !!json && d2.mtime > json.mtime
+  const loop = { ...parsed.graph, nodes }
+  let d2Edited = false
+  if (text !== null && (isEdited || fs.stat) && (await fs.exists(join(dir, 'loop.d2')))) {
+    if (isEdited) {
+      const d2 = await fs.read(join(dir, 'loop.d2')).catch(() => null)
+      d2Edited = d2 !== null && isEdited(d2, loop)
+    } else {
+      const [d2, json] = await Promise.all([fs.stat!(join(dir, 'loop.d2')), fs.stat!(join(dir, 'loop.json'))])
+      d2Edited = !!d2 && !!json && d2.mtime > json.mtime
+    }
   }
-  return { loop: { ...parsed.graph, nodes }, problems, d2Newer }
+  return { loop, problems, d2Edited, d2Newer: d2Edited }
 }
 
-/** Writes a loop folder: loop.json, nodes/<id>.md for every node, LOOP.md, and each `extra` file; node files of ids no longer in the loop go. */
+/**
+ * Writes a loop folder: nodes/<id>.md for every node, LOOP.md, each `extra` file, then loop.json last, so no file of
+ * the save is newer than it; node files of ids no longer in the loop go.
+ */
 export async function writeLoop(fs: LoopFs, dir: string, loop: Loop, extra?: Record<string, string>): Promise<void> {
-  await fs.write(join(dir, 'loop.json'), graphToJson(loop))
   const ids = Object.keys(loop.nodes)
   for (const id of ids) await fs.write(join(dir, 'nodes', `${id}.md`), nodeToFile(loop.nodes[id]!))
   for (const name of await fs.list(join(dir, 'nodes'))) {
@@ -562,6 +587,7 @@ export async function writeLoop(fs: LoopFs, dir: string, loop: Loop, extra?: Rec
   }
   await fs.write(join(dir, 'LOOP.md'), toSpec(loop))
   for (const [name, text] of Object.entries(extra ?? {})) await fs.write(join(dir, name), text)
+  await fs.write(join(dir, 'loop.json'), graphToJson(loop))
 }
 
 // The prose spec
@@ -610,16 +636,26 @@ function placeWords(loop: Loop, id: string): string {
   return ' It has no place in the loop yet.'
 }
 
+/** The settings of a node the role section lists under its summary line: models, skills, a judge's categories and collectors, denied tools. */
+function settingLines(n: LoopNode): string[] {
+  const list = (items: string[] | undefined) => (items?.length ? items.join(', ') : 'none')
+  const out = [`- Models: ${list(n.models)}`, `- Skills: ${list(n.skills)}`]
+  if (n.contract === 'scores') out.push(`- Categories: ${list(n.categories)}`, `- Collectors: ${n.collectors ?? 0}`)
+  if (n.tools.deny.length) out.push(`- Denied tools: ${n.tools.deny.join(', ')}`)
+  return out
+}
+
 /** LOOP.md: the loop as prose, generated from loop.json and the node files. */
 export function toSpec(loop: Loop): string {
   const out = ['<!-- generated by dacapo from loop.json and nodes/*.md; edit those, not this -->', '', `# ${loop.name}`, '', sentence(loop.description), '', '## Roles', '']
   for (const id of nodeOrder(loop)) {
     const n = loop.nodes[id]!
-    out.push(`### ${id}`, '', `${sentence(n.summary)} ${TYPE_WORDS[n.type]}${placeWords(loop, id)} ${contractWords(n)}`, '')
+    out.push(`### ${id}`, '', `${sentence(n.summary)} ${TYPE_WORDS[n.type]}${placeWords(loop, id)} ${contractWords(n)}`, '', ...settingLines(n), '')
     if (n.role.trim()) out.push(n.role.trim(), '')
   }
   out.push('## Order', '')
-  loop.steps.forEach((s, i) => out.push(`${i + 1}. ${s.stages.map(st => `${st.id} (${st.summary})`).join(' ∥ ')}`))
+  const alone = `(the ${loop.entry} alone)`
+  loop.steps.forEach((s, i) => out.push(`${i + 1}. ${s.stages.map(st => `${st.id} (${st.summary})${st.nodes.length ? '' : ` ${alone}`}`).join(' ∥ ')}`))
   if (loop.steps.length === 0) out.push('No steps: the entry hands straight to the exit.')
   out.push('', '## Transitions', '')
   for (const t of withDefaultTransitions(loop).transitions) {

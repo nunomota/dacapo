@@ -3,7 +3,7 @@ direction: down
 classes: {
   entry: {}
   agent: {}
-  swarm: { multiple: true }
+  swarm: { style.multiple: true }
   exit: {}
   stage: {}
   transition: { style.stroke-dash: 4 }
@@ -11,50 +11,50 @@ classes: {
   handover: {}
 }
 
-orchestrator: Orchestrator { class: entry; summary: talks to you }
+orchestrator: { class: entry; summary: talks to you }
 
 step1: {
-  clarify: Clarify { class: stage; summary: until nothing is open }
+  clarify: { class: stage; summary: until nothing is open }
 }
 
 step2: {
-  research: Research { class: stage; summary: stack, commands, hazards }
+  research: { class: stage; summary: stack, commands, hazards }
 }
 
 step3: {
-  plan: Plan { class: stage; summary: tasks, rubric, harness }
+  plan: { class: stage; summary: tasks, rubric, harness }
 }
 
 step4: {
-  implement: Implement {
+  implement: {
     class: stage
     summary: build in parallel
-    worker: Worker { class: swarm; summary: builds one task }
+    worker: { class: swarm; summary: builds one task }
   }
 }
 
 step5: {
-  qa: Qa {
+  qa: {
     class: stage
     summary: as the end user
-    qa: Qa { class: agent; summary: judges as the user }
-    qa-collector: Qa-collector { class: swarm; summary: gathers evidence }
+    qa: { class: agent; summary: judges as the user }
+    qa-collector: { class: swarm; summary: gathers evidence }
   }
 }
 
 step6: {
-  review: Review {
+  review: {
     class: stage
     summary: as an engineer
-    reviewer: Reviewer { class: agent; summary: judges the change }
+    reviewer: { class: agent; summary: judges the change }
   }
 }
 
 step7: {
-  merge: Merge { class: stage; summary: integrate the run }
+  merge: { class: stage; summary: integrate the run }
 }
 
-done: Done { class: exit; summary: the run ends }
+done: { class: exit; summary: the run ends }
 
 orchestrator -> step1: handed over { class: transition }
 step1 -> step2: nothing open { class: transition }
