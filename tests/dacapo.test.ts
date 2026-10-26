@@ -1,7 +1,9 @@
+import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { checksOf, parsePrs } from '../hooks/gh'
-import { cut, elapsed, phasesOf, rowsOf } from '../hooks/pane'
+import { PHASES, PHASE_COLOR, STAGE_PALETTE, cut, drawBar, type Els, elapsed, phasesOf, rowsOf, stageColor, stepsOf } from '../hooks/pane'
+import type { Run } from '../types'
 import { DEFAULT_CONF, describeConf, loadConf, parseConf } from '../hooks/conf'
 import { REVIEW_CATEGORIES, summarize, validateReport, validateRubric } from '../hooks/report'
 
@@ -190,6 +192,176 @@ describe('the pane', () => {
       expect(await ui.find({ text: /also keep it tiny/ })).toBeDefined()
       if (surface === 'desktop') expect(await ui.find({ type: 'Svg' })).toBeDefined()
       else expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+})
+
+/** A run as the store keeps it, at the implement phase of the balanced level and with no loop: a run saved before loops. */
+const LEGACY_RUN: Run = {
+  id: 'r1',
+  task: 'Ship loops',
+  startedAt: Date.UTC(2026, 9, 10, 12, 0, 0),
+  status: 'active',
+  iteration: 1,
+  root: '/repo',
+  branch: 'ship-loops',
+  worktree: '/repo/.workspaces/ship-loops',
+  baseBranch: 'main',
+  level: 'balanced',
+  runDir: '/repo/.workspaces/.dacapo/r1',
+  phase: 'implement',
+  iterations: [],
+  orchestrator: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, steps: 0 },
+  wakes: [],
+  prs: [],
+}
+
+/** Four steps, the third holding QA and the review side by side. */
+const LOOP: NonNullable<Run['loop']> = {
+  name: 'core-deep',
+  level: 'plugin',
+  steps: [
+    { stages: [{ id: 'plan', summary: 'Plan the work' }] },
+    { stages: [{ id: 'implement', summary: 'Workers land it' }] },
+    { stages: [{ id: 'qa', summary: 'QA as the end user' }, { id: 'review', summary: 'Engineering review' }] },
+    { stages: [{ id: 'merge', summary: 'Merge the run' }] },
+  ],
+}
+
+/** Answers the plugin's reads of its run with `held.run`, beneath the plugin as the kit's store would; set it to change the run. */
+function seedRun(on: On, run: Run): { run: Run } {
+  const held = { run }
+  let version = 0
+  on('state.get', (_, e, next) => (e.plugin === 'dacapo' && e.key === 'run' ? { value: { value: held.run, version: ++version } } : next(e)))
+  return held
+}
+const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
+
+/** An element as a fake table builds it, to read drawBar's tree outside a surface. */
+type Node = { type: string; props: { children?: unknown[] } & Record<string, unknown> }
+const element = (type: string) => (props: Node['props']): Node => ({ type, props })
+/** The terminal's table as drawBar sees it: no Svg, so it draws glyph rows. */
+const GLYPH_ELS = { Box: element('Box'), Text: element('Text'), Button: element('Button'), Link: element('Link') } as unknown as Els
+/** A remote surface's table: an Svg, so it draws one vector bar. */
+const SVG_ELS = { ...GLYPH_ELS, Svg: element('Svg') } as unknown as Els
+
+const childrenOf = (node: unknown): unknown[] => {
+  const kids = (node as Node).props.children
+  return kids === undefined ? [] : Array.isArray(kids) ? kids.flat(Infinity) : [kids]
+}
+/** The text of each child of the bar's outer Box: the glyph row, then the label. */
+const textOf = (tree: unknown): string[] => {
+  const flat = (node: unknown): string => (typeof node === 'string' ? node : typeof node === 'object' && node ? childrenOf(node).map(flat).join('') : '')
+  return childrenOf(tree).map(flat)
+}
+/** The first node of the tree, outermost first, that matches. */
+const findNode = (tree: unknown, match: (n: Node) => boolean): Node | undefined => {
+  if (typeof tree !== 'object' || !tree) return undefined
+  if (match(tree as Node)) return tree as Node
+  for (const kid of childrenOf(tree)) {
+    const hit = findNode(kid, match)
+    if (hit) return hit
+  }
+  return undefined
+}
+const BAND = {
+  component: 'AbovePrompt' as const,
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+}
+
+describe('the bar from loop steps', () => {
+  test('a run without a loop walks its level\'s phases, one stage per step', () => {
+    expect(stepsOf(LEGACY_RUN)).toHaveLength(6)
+    expect(stepsOf({ ...LEGACY_RUN, level: 'fast' })).toHaveLength(5)
+    expect(stepsOf({ ...LEGACY_RUN, level: 'fast' }).map(s => s.stages.map(st => st.id).join())).toEqual(['clarify', 'research', 'plan', 'implement', 'merge'])
+    expect(stepsOf({ ...LEGACY_RUN, loop: LOOP })).toHaveLength(4)
+  })
+
+  test('a phase keeps its color; other stages take distinct palette colors', () => {
+    expect(stageColor('qa', 7)).toBe(PHASE_COLOR.qa)
+    const ten = Array.from({ length: 10 }, (_, i) => stageColor(`stage-${i}`, i))
+    expect(new Set(ten).size).toBe(10)
+    expect(ten.slice(0, 7)).toEqual(PHASES.map(p => PHASE_COLOR[p]))
+    expect(STAGE_PALETTE.length).toBeGreaterThanOrEqual(8)
+  })
+
+  test('the terminal bar halves a two-stage column and names every current stage', () => {
+    const steps = stepsOf({ ...LEGACY_RUN, loop: LOOP })
+    const both = drawBar(GLYPH_ELS, steps, ['qa', 'review'], 'active')
+    expect(textOf(both)).toEqual(['█████ █████ ▀▀▀▄▄ ░░░░░', 'qa ∥ review'])
+    expect(findNode(both, n => n.props.children?.[0] === 'qa ∥ review')?.props.color).toBe(PHASE_COLOR.qa)
+    expect(findNode(both, n => n.props.children?.[0] === '▄▄')?.props.color).toBe(PHASE_COLOR.review)
+    // QA still running, the review reported: the review's half is grey, the label names QA alone
+    const one = drawBar(GLYPH_ELS, steps, ['qa'], 'active')
+    expect(textOf(one)).toEqual(['█████ █████ ▀▀▀▄▄ ░░░░░', 'qa'])
+    expect(findNode(one, n => n.props.children?.[0] === '▄▄')?.props.dimColor).toBe(true)
+    expect(textOf(drawBar(GLYPH_ELS, steps, ['merge'], 'done'))).toEqual(['█████ █████ ▀▀▀▄▄ █████', 'merged'])
+    // a run without a loop draws its level's phases as it always has
+    expect(textOf(drawBar(GLYPH_ELS, stepsOf(LEGACY_RUN), ['implement'], 'active'))).toEqual(['█████ █████ █████ █████ ░░░░░ ░░░░░', 'implement'])
+  })
+
+  test('the terminal bar narrows its blocks past seven steps and stays within the deep bar\'s width', () => {
+    for (let n = 1; n <= 21; n++) {
+      const steps = Array.from({ length: n }, (_, i) => ({ stages: [{ id: `stage-${i}` }] }))
+      const [bar] = textOf(drawBar(GLYPH_ELS, steps, ['stage-0'], 'active'))
+      expect(bar!.length).toBeLessThanOrEqual(41)
+      if (n <= 7) expect(bar!.length).toBe(n * 6 - 1)
+    }
+  })
+
+  test('the SVG bar stacks a two-stage column in the same height and colors each current stage\'s name', () => {
+    const steps = stepsOf({ ...LEGACY_RUN, loop: LOOP })
+    const svg = findNode(drawBar(SVG_ELS, steps, ['qa', 'review'], 'active'), n => n.type === 'Svg')
+    expect(svg?.props.alt).toBe('stage qa ∥ review')
+    const source = String(svg?.props.source)
+    expect(source).toContain(`<rect x="104" y="0" width="46" height="5.5" rx="2.75" fill="${PHASE_COLOR.qa}"/>`)
+    expect(source).toContain(`<rect x="104" y="7.5" width="46" height="5.5" rx="2.75" fill="${PHASE_COLOR.review}"/>`)
+    expect(source).toContain(`<tspan fill="${PHASE_COLOR.qa}">qa</tspan><tspan fill="#6e7681"> ∥ </tspan><tspan fill="${PHASE_COLOR.review}">review</tspan>`)
+    const legacy = findNode(drawBar(SVG_ELS, stepsOf(LEGACY_RUN), ['implement'], 'active'), n => n.type === 'Svg')
+    expect(legacy?.props.alt).toBe('stage implement')
+    expect(String(legacy?.props.source)).toContain(`<rect x="156" y="0" width="46" height="13" rx="3" fill="${PHASE_COLOR.implement}"/>`)
+  })
+
+  test('a loop run shows its loop in the header, never the word phase, on every surface', async ($, on) => {
+    const held = seedRun(on, { ...LEGACY_RUN, phase: 'qa', loop: LOOP, stage: 'qa', activeStages: ['qa', 'review'] })
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
+      expect(await ui.find({ text: /^Loop$/ })).toBeDefined()
+      expect(await ui.find({ text: /^Level$/ })).toBeUndefined()
+      expect(await ui.find({ text: /^core-deep · plugin · 5 stages in 4 steps$/ })).toBeDefined()
+      expect(await ui.find({ text: /phase/ })).toBeUndefined()
+      if (surface !== 'terminal') expect((await ui.findAll({ type: 'Svg' })).map(n => n.props.alt).find(alt => String(alt).startsWith('stage '))).toBe('stage qa ∥ review')
+      await ui.unmount()
+    }
+    held.run = { ...held.run, activeStages: ['qa'] }
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
+      expect(await ui.find({ text: /^Loop$/ })).toBeDefined()
+      if (surface !== 'terminal') expect((await ui.findAll({ type: 'Svg' })).map(n => n.props.alt).find(alt => String(alt).startsWith('stage '))).toBe('stage qa')
+      await ui.unmount()
+    }
+  })
+
+  test('the band names the loop and its current stages; a run without a loop keeps its level and phase', async ($, on) => {
+    const held = seedRun(on, { ...LEGACY_RUN, phase: 'qa', loop: LOOP, stage: 'qa', activeStages: ['qa', 'review'] })
+    let ui = await $.ui.mount({ plugin: 'dacapo', surface: 'terminal', ...BAND })
+    expect(await ui.find({ text: /^dacapo  ·  core-deep  ·  qa ∥ review  ·  Ship loops$/ })).toBeDefined()
+    await ui.unmount()
+    held.run = LEGACY_RUN
+    ui = await $.ui.mount({ plugin: 'dacapo', surface: 'terminal', ...BAND })
+    expect(await ui.find({ text: /^dacapo  ·  balanced  ·  implement  ·  Ship loops$/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a run without a loop keeps its Level line and its phase on every surface', async ($, on) => {
+    seedRun(on, LEGACY_RUN)
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ plugin: 'dacapo', surface, ...PANE })
+      expect(await ui.find({ text: /^Level$/ })).toBeDefined()
+      expect(await ui.find({ text: /^Loop$/ })).toBeUndefined()
+      expect(await ui.find({ text: /^balanced$/ })).toBeDefined()
+      if (surface !== 'terminal') expect((await ui.findAll({ type: 'Svg' })).map(n => n.props.alt).find(alt => String(alt).startsWith('stage '))).toBe('stage implement')
       await ui.unmount()
     }
   })

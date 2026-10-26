@@ -54,6 +54,37 @@ export const RED = ORANGE
 
 export const PHASES: readonly Phase[] = ['clarify', 'research', 'plan', 'implement', 'qa', 'review', 'merge']
 
+/** One column of the bar: a step of the run, holding one stage or several that run side by side. */
+export type BarStep = { stages: { id: string; summary?: string }[] }
+
+/** The steps a run walks: its loop's, or, for a run without a loop, the legacy phases of its level as one stage per step. */
+export function stepsOf(run: Run): BarStep[] {
+  return run.loop ? run.loop.steps : phasesOf(levelOf(run)).map(id => ({ stages: [{ id }] }))
+}
+
+/** The stage ids that count as current: run.activeStages when non-empty, else [run.stage ?? run.phase]. */
+export function currentStages(run: Run): string[] {
+  return run.activeStages && run.activeStages.length > 0 ? run.activeStages : [run.stage ?? run.phase]
+}
+
+/**
+ * The stage colors in order: the seven phases' own in step order, then rose, brown and steel blue, none of them a
+ * state color, for the stages of a loop that are not phases.
+ */
+export const STAGE_PALETTE: readonly string[] = [...PHASES.map(p => PHASE_COLOR[p]), '#D4537E', '#A0785A', '#5E7CA6']
+
+/** A stage's color: a phase keeps its own, any other stage takes the palette's entry at its index among the run's stages. */
+export function stageColor(id: string, index: number): string {
+  if (Object.prototype.hasOwnProperty.call(PHASE_COLOR, id)) return PHASE_COLOR[id as Phase]
+  return STAGE_PALETTE[Math.max(0, index) % STAGE_PALETTE.length]!
+}
+
+/** A stage's index among every stage of the steps, in order: the index `stageColor` takes. */
+export const stageIndex = (steps: readonly BarStep[], id: string): number => steps.flatMap(s => s.stages).findIndex(s => s.id === id)
+
+/** The color a run draws one of its stages in. */
+export const stageColorOf = (run: Run, id: string): string => stageColor(id, stageIndex(stepsOf(run), id))
+
 const two = (n: number) => `${n}`.padStart(2, '0')
 
 export function hhmm(ms: number): string {
@@ -354,57 +385,104 @@ function keyLine(els: Els, key: string, value: JSX.Element | string): JSX.Elemen
 /** How many of the latest entries the timeline shows until "earlier" is pressed. */
 export const TIMELINE_LATEST = 5
 
+/** The terminal bar's width at most: seven blocks of BLOCK_COLS and their gaps, the deep level's bar. */
+const BAR_COLS = 7 * (BLOCK_COLS + 1) - 1
+
+/** How wide a terminal block is for this many steps: BLOCK_COLS up to seven, then narrower so the bar keeps within BAR_COLS. */
+export const blockColsFor = (steps: number): number => (steps <= 7 ? BLOCK_COLS : Math.max(1, Math.floor((BAR_COLS + 1) / steps) - 1))
+
+const xmlText = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
 /**
- * One block per phase of the run's level (five at fast, six at balanced, seven at deep): the ones done greyed out, the current one in its own color with its name beneath,
- * the ones ahead hollow. A merged run fills every block green and reads "merged"; an aborted one stops on
- * its phase in orange and reads "aborted". One SVG on the remote surfaces so the label sits under its block
- * whatever the font; glyph rows in the terminal.
+ * One column per step of the run: the steps done greyed out, the current one in its stages' colors with their names
+ * beneath, the ones ahead hollow. A step of several stages splits its column into that many thin blocks: a stage of
+ * the current step that is not current has already reported or landed, so it is grey. A merged run fills every block
+ * green and reads "merged"; an aborted one stops on its step in orange and reads "aborted". One SVG on the remote
+ * surfaces so the label sits under its column whatever the font; glyph rows in the terminal, a two-stage column as
+ * upper and lower half blocks.
  */
-function drawBar(els: Els, phases: readonly Phase[], current: Phase, status: Run['status']): JSX.Element {
+export function drawBar(els: Els, steps: readonly BarStep[], current: readonly string[], status: Run['status']): JSX.Element {
   const { Box, Text, Svg } = els
-  const at = phases.indexOf(current)
+  const ids = steps.flatMap(s => s.stages.map(st => st.id))
+  const colorOf = (id: string): string => stageColor(id, ids.indexOf(id))
+  const at = steps.findIndex(s => s.stages.some(st => current.includes(st.id)))
   const grey = '#6e7681'
   const isMerged = status === 'done'
   const isAborted = status === 'aborted'
-  const label = isMerged ? 'merged' : isAborted ? 'aborted' : current
-  const labelColor = isMerged ? GREEN : isAborted ? ORANGE : PHASE_COLOR[current]
-  const labelAt = isMerged ? phases.length - 1 : at
-  // the fill of block i: a color, grey, or null for hollow
-  const fillOf = (p: Phase, i: number): string | null => (isMerged ? GREEN : i < at ? grey : i === at ? (isAborted ? ORANGE : PHASE_COLOR[p]) : null)
+  // the current stages in the order their step lists them; the run's own order when its step is not found
+  const live = at < 0 ? [...current] : steps[at]!.stages.map(st => st.id).filter(id => current.includes(id))
+  const labels: Array<[string, string]> = isMerged ? [['merged', GREEN]] : isAborted ? [['aborted', ORANGE]] : live.map(id => [id, colorOf(id)])
+  const label = labels.map(([text]) => text).join(' ∥ ')
+  const labelColor = labels[0]?.[1] ?? grey
+  const labelAt = Math.max(0, isMerged ? steps.length - 1 : at)
+  // the fill of a stage of step i: a color, grey, or null for hollow
+  const fillOf = (id: string, i: number): string | null =>
+    isMerged ? GREEN : i < at ? grey : i === at ? (current.includes(id) ? (isAborted ? ORANGE : colorOf(id)) : grey) : null
   if (Svg) {
     const w = 46
     const gap = 6
     const bar = 13
-    const rects = phases.map((p, i) => {
+    const split = 2
+    const rects = steps.flatMap((step, i) => {
       const x = i * (w + gap)
-      const fill = fillOf(p, i)
-      return fill
-        ? `<rect x="${x}" y="0" width="${w}" height="${bar}" rx="3" fill="${fill}"/>`
-        : `<rect x="${x + 0.5}" y="0.5" width="${w - 1}" height="${bar - 1}" rx="3" fill="none" stroke="${grey}" stroke-width="1"/>`
+      const n = step.stages.length
+      const h = (bar - split * (n - 1)) / n
+      const rx = Math.min(3, h / 2)
+      return step.stages.map((st, j) => {
+        const y = j * (h + split)
+        const fill = fillOf(st.id, i)
+        return fill
+          ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" fill="${fill}"/>`
+          : `<rect x="${x + 0.5}" y="${y + 0.5}" width="${w - 1}" height="${Math.max(0.5, h - 1)}" rx="${rx}" fill="none" stroke="${grey}" stroke-width="1"/>`
+      })
     })
     const cx = labelAt * (w + gap) + w / 2
-    const total = phases.length * (w + gap) - gap
-    const source = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${bar + 18}">${rects.join('')}<text x="${cx}" y="${bar + 14}" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="${labelColor}">${label}</text></svg>`
+    const total = steps.length * (w + gap) - gap
+    const text =
+      labels.length === 1
+        ? xmlText(label)
+        : labels.map(([t, c], i) => `${i > 0 ? `<tspan fill="${grey}"> ∥ </tspan>` : ''}<tspan fill="${c}">${xmlText(t)}</tspan>`).join('')
+    const source = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${bar + 18}">${rects.join('')}<text x="${cx}" y="${bar + 14}" text-anchor="middle" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="${labelColor}">${text}</text></svg>`
     return (
       <Box>
-        <Svg source={source} alt={`phase ${label}`} width={total} height={bar + 18} />
+        <Svg source={source} alt={`stage ${label}`} width={total} height={bar + 18} />
       </Box>
     )
+  }
+  const block = blockColsFor(steps.length)
+  // a column is a block wide, wider only when it holds more stages than a block has cells
+  const widths = steps.map(s => Math.max(block, s.stages.length))
+  const cells = (step: BarStep, i: number): JSX.Element[] => {
+    const n = step.stages.length
+    const cols = widths[i]!
+    return step.stages.map((st, j) => {
+      const fill = fillOf(st.id, i)
+      // the column's cells shared out between its stages, the first ones taking what does not divide evenly
+      const count = Math.floor(cols / n) + (j < cols % n ? 1 : 0)
+      const glyph = fill === null ? '░' : n === 2 ? (j === 0 ? '▀' : '▄') : '█'
+      const run = glyph.repeat(count)
+      return fill === null || fill === grey ? (
+        <Text key={`bar-${i}-${j}`} dimColor>
+          {run}
+        </Text>
+      ) : (
+        <Text key={`bar-${i}-${j}`} color={fill}>
+          {run}
+        </Text>
+      )
+    })
   }
   return (
     <Box flexDirection="column">
       <Text>
-        {phases.map((p, i) => {
-          const fill = fillOf(p, i)
-          return (
-            <Text key={`bar-${p}`}>
-              {i > 0 ? ' ' : ''}
-              {fill === null ? <Text dimColor>{'░'.repeat(BLOCK_COLS)}</Text> : fill === grey ? <Text dimColor>{'█'.repeat(BLOCK_COLS)}</Text> : <Text color={fill}>{'█'.repeat(BLOCK_COLS)}</Text>}
-            </Text>
-          )
-        })}
+        {steps.map((step, i) => (
+          <Text key={`bar-${i}`}>
+            {i > 0 ? ' ' : ''}
+            {cells(step, i)}
+          </Text>
+        ))}
       </Text>
-      <Box paddingLeft={labelAt * (BLOCK_COLS + 1)}>
+      <Box paddingLeft={widths.slice(0, labelAt).reduce((sum, cols) => sum + cols + 1, 0)}>
         <Text color={labelColor}>{label}</Text>
       </Box>
     </Box>
@@ -480,6 +558,8 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
   const qas = judges.filter(q => roleOf(q) === 'qa')
   const reviews = judges.filter(q => roleOf(q) === 'review')
   const level = levelOf(run)
+  const steps = stepsOf(run)
+  const stageCount = steps.reduce((n, step) => n + step.stages.length, 0)
   const total = spend(agents, theme.prices, run.orchestrator)
   const prs = [...run.prs].sort((a, b) => a.createdAt - b.createdAt)
   const entries = entriesOf(rows)
@@ -594,20 +674,29 @@ export function drawPane(els: Els, snap: Snapshot, act: Actions, columns: number
           )}
           {keyLine(els, 'Elapsed', elapsedValue)}
           {keyLine(els, 'Branch', run.branch ? `${run.branch} → ${run.baseBranch}` : `not started (into ${run.baseBranch})`)}
-          {keyLine(
-            els,
-            'Level',
-            <Text wrap="truncate-end">
-              <Text color={LEVEL_COLOR[level]}>{level}</Text>
-              <Text dimColor>{` · ${LEVEL_GLOSS[level]}`}</Text>
-            </Text>,
-          )}
+          {run.loop
+            ? keyLine(
+                els,
+                'Loop',
+                <Text wrap="truncate-end">
+                  {run.loop.name}
+                  <Text dimColor>{` · ${run.loop.level} · ${stageCount} ${stageCount === 1 ? 'stage' : 'stages'} in ${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`}</Text>
+                </Text>,
+              )
+            : keyLine(
+                els,
+                'Level',
+                <Text wrap="truncate-end">
+                  <Text color={LEVEL_COLOR[level]}>{level}</Text>
+                  <Text dimColor>{` · ${LEVEL_GLOSS[level]}`}</Text>
+                </Text>,
+              )}
           {keyLine(els, 'Models', modelsText)}
           {keyLine(els, 'Spend', spendText_)}
         </Box>
       </Box>
       <Box marginTop={1} paddingLeft={LOGO_COLS + 1}>
-        {drawBar(els, phasesOf(level), run.phase, run.status)}
+        {drawBar(els, steps, currentStages(run), run.status)}
       </Box>
       {run.gh && !run.gh.ok && (
         <Box marginTop={1}>
@@ -651,8 +740,8 @@ function drawTimeline(els: Els, entries: Entry[], ui: Ui, act: Actions, width: n
   const hidden = ui.isTimelineFull ? 0 : Math.max(0, entries.length - TIMELINE_LATEST)
   const shown = hidden > 0 ? entries.slice(hidden) : entries
   const bits = [`${entries.length} ${entries.length === 1 ? 'event' : 'events'}`, ...(running > 0 ? [`${running} running`] : [])]
-  // the band wears the phase bar's current color: the phase's own, green once merged, orange when aborted
-  const band = run.status === 'done' ? GREEN : run.status === 'aborted' ? ORANGE : PHASE_COLOR[run.phase]
+  // the band wears the bar's current color: the first current stage's own, green once merged, orange when aborted
+  const band = run.status === 'done' ? GREEN : run.status === 'aborted' ? ORANGE : stageColorOf(run, currentStages(run)[0]!)
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row" backgroundColor={band} paddingX={1} justifyContent="space-between">
@@ -1010,7 +1099,11 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   if (review) second.push(`review ${verdictWord(review)}`)
   if (money) second.push(money)
 
-  const first = `dacapo${SEP}${level}${SEP}${run.phase}`
+  // a run with a loop names the loop and every current stage; one without names its level and phase
+  const stages = currentStages(run)
+  const stageText = stages.join(' ∥ ')
+  const kind = run.loop ? run.loop.name : level
+  const first = `dacapo${SEP}${kind}${SEP}${stageText}`
   const buttons = (
     <Box flexDirection="row" flexShrink={0}>
       <Button key="open-pane" plain onPress={() => act.openPane()}>
@@ -1042,10 +1135,21 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
           dacapo
         </Text>
         <Text dimColor>{SEP}</Text>
-        <Text color={LEVEL_COLOR[level]}>{level}</Text>
+        {run.loop ? <Text>{run.loop.name}</Text> : <Text color={LEVEL_COLOR[level]}>{level}</Text>}
         <Text dimColor>{SEP}</Text>
-        <Text bold>{run.phase}</Text>
-        <Text dimColor>{`${SEP}${cut(run.task || 'clarifying the task', Math.max(8, inner - 29 - level.length - run.phase.length))}`}</Text>
+        {run.loop ? (
+          stages.map((id, i) => (
+            <Text key={`band-stage-${id}`}>
+              {i > 0 ? <Text dimColor> ∥ </Text> : ''}
+              <Text bold color={stageColorOf(run, id)}>
+                {id}
+              </Text>
+            </Text>
+          ))
+        ) : (
+          <Text bold>{stageText}</Text>
+        )}
+        <Text dimColor>{`${SEP}${cut(run.task || 'clarifying the task', Math.max(8, inner - 29 - kind.length - stageText.length))}`}</Text>
       </Text>
       <Box flexDirection="row" justifyContent="space-between">
         <Text dimColor wrap="truncate-end">
