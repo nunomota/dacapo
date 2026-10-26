@@ -19,13 +19,9 @@ If a person invoked this skill directly rather than a host loading it, tell them
 
 **Reviewer.** The reviewer produces one scored report on the run's change, as an engineer who will maintain the codebase.
 
-## Levels
+## Variants
 
-A run is held to one of three levels, each adding a judge to the one below. The level is chosen in phase 1, recorded with the decisions, and never raised or lowered once work is dispatched.
-
-- **fast**: clarify, research, plan, implement, merge. The run merges once every task of the round has landed; a failed or dropped task is a limitation in the final report. No rubric, no harness.
-- **balanced**: adds QA (phase 5). The default: the loop as it has always run.
-- **deep**: adds the engineering review (phase 5b) after QA passes, so the codebase stays maintainable past this run.
+The loop ships in three variants, `core-fast`, `core` and `core-deep`, that differ only in which judges run: none, QA, or QA then the reviewer. A host names the variant when a run opens, and it is never changed once work is dispatched. The rest of this file reads with QA and the reviewer present when the variant has them.
 
 ## Boundaries
 
