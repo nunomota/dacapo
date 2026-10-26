@@ -1,22 +1,22 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Activity, AgentStats, Collector, Gh, Level, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
+import type { Activity, AgentStats, Collector, Gh, OrchestratorRow, Phase, Pr, QaRow, Row, Run, UserRow, Wake, WorkerRow } from '../types'
+import type { Loop, LoopNode, LoopRef, Stage, Transition } from '../types/loops'
 import { BRANCH_NAME, describeConf, loadConf, SHIPPED_COMMITS, SHIPPED_PRS, type Layer, type Loaded } from './conf'
 import { ZERO, addUsage, parsePrices, type Price } from './cost'
 import * as gh from './gh'
 import * as git from './git'
 import type { Io } from './io'
-import { LEVELS, PHASES, drawBand, drawPane, elapsed, hhmm, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
-import { COLLECTOR_SYSTEM, QA_SYSTEM, REVIEW_SYSTEM, WORKER_SYSTEM, qaBrief, reviewBrief, workerBrief } from './prompts'
-import { QA_CATEGORIES, REVIEW_CATEGORIES, validateReport, validateRubric, type RubricItem } from './report'
+import { ID, draftsRoot, listLoops, readLoop, roots, validateLoop, withDefaultTransitions, type LoopFs, type Roots } from './loops'
+import { PHASES, currentStages, drawBand, drawPane, elapsed, hhmm, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
+import { COLLECTS_SUFFIX, LANDS_SUFFIX, SCORES_SUFFIX, qaBrief, reviewBrief, workerBrief } from './prompts'
+import { validateReport, validateRubric, type RubricItem } from './report'
 
 const PANE = 'dacapo'
-const WORKER_AGENT = 'dacapo:worker'
-const QA_AGENT = 'dacapo:qa'
-/** The evidence collectors QA may start: bound like QA, they use the product on a slice of the rubric and never score. */
-const COLLECTOR_AGENT = 'dacapo:qa-collector'
-const REVIEW_AGENT = 'dacapo:reviewer'
+/** The agent types of rows saved before loops, which name no node. */
+const LEGACY_AGENT = { worker: 'dacapo:worker', qa: 'dacapo:qa', review: 'dacapo:reviewer', collector: 'dacapo:qa-collector' } as const
+const agentType = (node: string) => `dacapo:${node}`
 const tool = (name: string) => `mcp__dacapo__${name}`
 
 const STALE_MS = 30 * 60_000
@@ -65,15 +65,267 @@ async function readConf(root: string): Promise<Loaded> {
   return conf
 }
 const freshStats = (): AgentStats => ({ usage: ZERO, steps: 0, toolCalls: 0, activity: [] })
-const setPhase = (phase: Phase) => io.setRun(run => (run ? { ...run, phase } : run))
 /** Prompts this module queued itself, so `prompt.submit` does not log them as the person's. */
 const ownPrompts = new Set<string>()
-/** Rubrics by judge (`qa-<iteration>-<round>`, `review-...`), for validation; the run folder holds the copy that survives a reload. */
+/** Rubrics by judge (`<node>-<iteration>-<round>`), for validation; the run folder holds the copy that survives a reload. */
 const rubrics = new Map<string, RubricItem[]>()
-type Role = 'qa' | 'review'
-/** The key of a judge row's rubric, report and wake-up: its role, iteration and round. */
-const judgeKey = (row: QaRow) => `${roleOf(row)}-${row.iteration}-${row.round}`
+/** The node a judge row runs as; a row saved before loops is named by its role. */
+const judgeNode = (row: QaRow) => row.node ?? roleOf(row)
+/** How a judge is spoken of to the agents it starts and in refusals: QA for the shipped `qa` node, else its node id. */
+const judgeName = (row: QaRow) => (judgeNode(row) === 'qa' ? 'QA' : judgeNode(row))
+/** The key of a judge row's rubric, report and wake-up: its node, iteration and round. */
+const judgeKey = (row: QaRow) => `${judgeNode(row)}-${row.iteration}-${row.round}`
 
+// ---------- the loop ----------
+
+/** The file system the loop functions work over: `$.fs`, and a remove that only ever reaches a loops or drafts folder. */
+let loopFs: LoopFs
+/** The loops folder of each level, as the session found them at start. */
+let loopRoots: Roots = { plugin: null, user: null, project: null }
+/** The user's drafts folder, beside the user's loops. */
+let loopDrafts = ''
+/** The loop the session resolved at start from the `loop` conf key; null when it could not be loaded (see `activeProblem`). */
+let active: { ref: LoopRef; loop: Loop } | null = null
+let activeProblem = ''
+/** The loop the /dacapo:core prompt asked for when it could not be loaded: `start` and `config` name it and its problems. */
+let asked: string | null = null
+/** Loops read this session, by name, so a run's nodes are at hand once its loop was read. */
+const loaded = new Map<string, { ref: LoopRef; loop: Loop }>()
+/** Agent types this session registered, by node id: the loop that registered each, and the spec as JSON. */
+const agents = new Map<string, { loop: string; spec: string }>()
+type AgentSpec = { name: string; description: string; prompt: string; disallowedTools: string[]; skills: string[]; omitClaudeMd?: true }
+/** Registers an agent type; set at session start over `$.agent.register`. */
+let registerAgent: (spec: AgentSpec) => Promise<unknown> = async () => undefined
+/** Registers the dispatch tool again with the model enum of a loop's lands node; set at session start. */
+let registerDispatch: (loop: Loop | null) => Promise<unknown> = async () => undefined
+/** The loop the dispatch tool's schema was last registered for. */
+let dispatchFor: string | null = null
+
+type Resolved = { ok: true; ref: LoopRef; loop: Loop } | { ok: false; problem: string }
+
+/**
+ * Finds a loop by name (project over user over plugin), reads it, and checks it: the loop's own rules, and every
+ * node's models drawn from the configured ones (`workers`, `qa`, `review`). The loop comes back with its default
+ * transitions added.
+ */
+async function resolveLoop(name: string): Promise<Resolved> {
+  if (!ID.test(name)) return { ok: false, problem: `"${name}" is not a loop name: lowercase letters, digits and inner hyphens` }
+  let refs: LoopRef[]
+  try {
+    refs = await listLoops(loopFs, loopRoots)
+  } catch (error) {
+    return { ok: false, problem: `the loops could not be listed: ${String(error)}` }
+  }
+  const ref = refs.find(r => r.name === name && !r.shadowedBy)
+  if (!ref) {
+    const names = [...new Set(refs.map(r => r.name))]
+    return { ok: false, problem: `there is no loop "${name}"; the loops available: ${names.length > 0 ? names.join(', ') : 'none'}` }
+  }
+  let read: Awaited<ReturnType<typeof readLoop>>
+  try {
+    read = await readLoop(loopFs, ref.dir)
+  } catch (error) {
+    return { ok: false, problem: `the loop "${name}" at ${ref.dir} could not be read: ${String(error)}` }
+  }
+  const problems = read.problems.length > 0 ? read.problems : validateLoop(read.loop)
+  const universe = [...new Set([...conf.conf.workers, ...conf.conf.qa, ...conf.conf.review])]
+  for (const n of Object.values(read.loop.nodes)) {
+    const outside = n.models.filter(m => !universe.includes(m))
+    if (outside.length > 0) problems.push({ path: `nodes.${n.id}.models`, message: `${outside.join(', ')} ${outside.length === 1 ? 'is' : 'are'} not among the configured models (${universe.join(', ')}; the workers, qa and review keys)` })
+  }
+  if (problems.length > 0) {
+    return { ok: false, problem: `the loop "${name}" (${ref.level}, ${ref.dir}) cannot run:\n${problems.map(p => `- ${p.path}: ${p.message}`).join('\n')}` }
+  }
+  const loop: Loop = { ...withDefaultTransitions(read.loop), nodes: read.loop.nodes }
+  loaded.set(name, { ref, loop })
+  return { ok: true, ref, loop }
+}
+
+/** The whole loop a run walks, read again when this session has not read it yet; null for a run without a loop. */
+async function loopOf(run: Run): Promise<Loop | null> {
+  if (!run.loop) return null
+  const held = loaded.get(run.loop.name)
+  if (held) return held.loop
+  const r = await resolveLoop(run.loop.name)
+  return r.ok ? r.loop : null
+}
+
+/** The loop as the run keeps it: its name, level, and steps of stage ids and summaries. */
+const runLoopOf = (r: { ref: LoopRef; loop: Loop }): NonNullable<Run['loop']> => ({
+  name: r.ref.name,
+  level: r.ref.level,
+  steps: r.loop.steps.map(s => ({ stages: s.stages.map(st => ({ id: st.id, summary: st.summary })) })),
+})
+
+/** Where a node works: its stage and the index of the step holding it; undefined for a node on call or a helper. */
+function placeOf(loop: Loop, id: string): { step: number; stage: Stage } | undefined {
+  for (let step = 0; step < loop.steps.length; step += 1) {
+    const stage = loop.steps[step]!.stages.find(st => st.nodes.includes(id))
+    if (stage) return { step, stage }
+  }
+  return undefined
+}
+const stepOfStage = (loop: Loop, id: string): number => loop.steps.findIndex(s => s.stages.some(st => st.id === id))
+const nodesIn = (loop: Loop, stageId: string): LoopNode[] =>
+  loop.steps.flatMap(s => s.stages).find(st => st.id === stageId)?.nodes.map(id => loop.nodes[id]).filter((n): n is LoopNode => !!n) ?? []
+/** A judge that uses the product as its end user (QA), rather than reading the change (a reviewer). */
+const usesProduct = (n: LoopNode) => (n.categories ?? []).some(c => c === 'core' || c === 'ui-ux')
+/** The collects node a judge hands slices to, if any. */
+const collectsOf = (loop: Loop, judge: string): LoopNode | undefined =>
+  loop.handovers.map(h => (h.from === judge ? loop.nodes[h.to] : undefined)).find((n): n is LoopNode => n?.contract === 'collects')
+/** How many collectors a judge may run at once: its node's `collectors`, else the `qa-collectors` conf key. */
+const collectorCap = (n: LoopNode) => n.collectors ?? conf.conf['qa-collectors']
+/** The scores nodes of a loop, in step order. */
+const judgesOf = (loop: Loop): LoopNode[] =>
+  loop.steps.flatMap(s => s.stages.flatMap(st => st.nodes)).map(id => loop.nodes[id]).filter((n): n is LoopNode => n?.contract === 'scores')
+const forwardFrom = (loop: Loop, from: string): Transition | undefined => loop.transitions.find(t => t.from === from && !t.back)
+/** The stage whose forward transition leads to the exit: where the run integrates (`merge` in the shipped loops). */
+const exitStage = (loop: Loop): string | undefined => loop.transitions.find(t => !t.back && t.to.includes('exit') && t.from !== 'entry')?.from
+/** The last stage without nodes before the first step holding a lands node: where `start` puts the run (`plan` in the shipped loops). */
+function planStage(loop: Loop): string | undefined {
+  const first = loop.steps.findIndex(s => s.stages.some(st => st.nodes.some(id => loop.nodes[id]?.contract === 'lands')))
+  if (first <= 0) return undefined
+  const before = loop.steps[first - 1]!.stages
+  return before.length === 1 && before[0]!.nodes.length === 0 ? before[0]!.id : undefined
+}
+
+const CONTRACT_WORDS: Record<LoopNode['contract'], string> = {
+  lands: 'lands its own work through a pull request and reports how it went',
+  scores: 'scores a rubric and writes a report the run collects',
+  collects: 'gathers evidence on a slice of a rubric for its judge and never scores',
+  none: 'answers when the orchestrator asks it',
+}
+
+/** The agent type of a node: its role and the contract's suffix as the system prompt, its skills, its denied tools. */
+function agentSpec(loopName: string, node: LoopNode): AgentSpec {
+  const suffix = node.contract === 'lands' ? LANDS_SUFFIX : node.contract === 'scores' ? SCORES_SUFFIX(node.categories ?? []) : node.contract === 'collects' ? COLLECTS_SUFFIX : ''
+  return {
+    name: node.id,
+    description: `dacapo ${node.id} of the loop ${loopName}: ${node.summary}; ${CONTRACT_WORDS[node.contract]}. Spawned through the dacapo tools only.`,
+    prompt: [node.role.trim(), suffix].filter(Boolean).join('\n\n'),
+    disallowedTools: [...node.tools.deny],
+    skills: [...node.skills],
+    ...(node.contract === 'scores' || node.contract === 'collects' ? { omitClaudeMd: true as const } : {}),
+  }
+}
+
+/**
+ * Registers one agent type per node of the loop other than entry and exit, unless this session already holds it. A node
+ * id another loop registered with a different role is refused: a session holds one role per agent type, so the run
+ * of the other loop would lose its agent. Returns the agent types registered now.
+ */
+async function ensureAgents(name: string, loop: Loop): Promise<{ problem?: string; added: string[] }> {
+  const specs = Object.values(loop.nodes)
+    .filter(n => n.type !== 'entry' && n.type !== 'exit')
+    .map(node => ({ node, spec: agentSpec(name, node) }))
+  const clashes = specs.filter(({ node, spec }) => {
+    const held = agents.get(node.id)
+    return !!held && held.loop !== name && (JSON.parse(held.spec) as AgentSpec).prompt !== spec.prompt
+  })
+  if (clashes.length > 0) {
+    const owner = agents.get(clashes[0]!.node.id)!.loop
+    const names = clashes.map(c => agentType(c.node.id)).join(', ')
+    return {
+      problem: `the agent type${clashes.length === 1 ? '' : 's'} ${names} ${clashes.length === 1 ? 'is' : 'are'} registered in this session by the loop "${owner}" with a different role, and a session holds one role per agent type. Ask the user to begin a new session with \`/dacapo:core --loop ${name} <task>\` to run this loop.`,
+      added: [],
+    }
+  }
+  const added: string[] = []
+  for (const { node, spec } of specs) {
+    const text = JSON.stringify(spec)
+    if (agents.get(node.id)?.spec === text) continue
+    await registerAgent(spec)
+    agents.set(node.id, { loop: name, spec: text })
+    added.push(agentType(node.id))
+  }
+  return { added }
+}
+
+/** Marks the run's stage; `activeStages` names the stages of its step with a live agent when several run side by side. */
+async function markStage(stage: string, activeStages: string[] = []) {
+  await io.setRun(run => (run ? { ...run, stage, activeStages, ...((PHASES as readonly string[]).includes(stage) ? { phase: stage as Phase } : {}) } : run))
+}
+
+/** The words that send the orchestrator to `finish`, with what it passes. */
+const finishWords = (run: Run) =>
+  `call ${tool('finish')} with the final pull request's title and body (to the ${conf.conf['prs-skill']} skill) to open it from ${run.branch} into ${run.baseBranch}`
+
+/** What the orchestrator does once the work of the stage `from` is in, by the loop's forward transition out of it. */
+function nextMove(loop: Loop, from: string, run: Run): string {
+  const t = forwardFrom(loop, from)
+  if (!t || t.to.includes('exit')) return finishWords(run)
+  const judges = t.to.flatMap(id => nodesIn(loop, id)).filter(n => n.contract === 'scores')
+  if (judges.length > 0) {
+    const names = judges.map(n => `"${n.id}"`).join(' and ')
+    return judges.length === 1 ? `call ${tool('judge')} with node ${names}` : `call ${tool('judge')} with node ${names}, one call each, then make their Agent calls in one message`
+  }
+  if (t.to.length === 1 && nodesIn(loop, t.to[0]!).length === 0) {
+    if (forwardFrom(loop, t.to[0]!)?.to.includes('exit')) return finishWords(run)
+    return `call ${tool('stage')} with "${t.to[0]}" and work through it as the loop says`
+  }
+  return `go on to ${t.to.join(' and ')} as the loop's transitions say`
+}
+
+/** The judges to run again after a reconciliation or repair, in step order, as a phrase; empty for a loop without judges. */
+function judgeAgain(loop: Loop | null): string {
+  const judges = loop ? judgesOf(loop) : []
+  if (judges.length === 0) return ''
+  return `run ${tool('judge')} once more for ${judges.map(n => `"${n.id}"`).join(', then ')} since a conflict resolution can break things, and `
+}
+
+/** The loop as text, for `config`: where it is, its steps, nodes, transitions and handovers, and the entry's role. */
+function loopText(r: { ref: LoopRef; loop: Loop }): string[] {
+  const { ref, loop } = r
+  const onCall = Object.entries(loop.onCall)
+  const placeWords = (id: string): string => {
+    const p = placeOf(loop, id)
+    if (p) return `works in ${p.stage.id}`
+    if (loop.onCall[id]) return 'on call'
+    const owner = onCall.find(([, helpers]) => helpers.includes(id))
+    return owner ? `a helper of ${owner[0]}` : 'no place'
+  }
+  const nodeLine = (n: LoopNode): string => {
+    const parts = [`${n.type}, contract ${n.contract}`]
+    if (n.models.length > 0) parts.push(`models ${n.models.join(', ')}`)
+    if (n.skills.length > 0) parts.push(`skills ${n.skills.join(', ')}`)
+    if (n.categories) parts.push(`categories ${n.categories.join(', ')}`)
+    if (n.contract === 'scores') {
+      const helper = collectsOf(loop, n.id)
+      parts.push(helper ? `up to ${collectorCap(n)} ${agentType(helper.id)} at once` : 'no collectors')
+    }
+    if (n.tools.deny.length > 0) parts.push(`denied ${n.tools.deny.join(', ')}`)
+    const kind = n.type === 'entry' ? 'you' : n.type === 'exit' ? 'the end' : `agent type ${agentType(n.id)}, ${placeWords(n.id)}`
+    return `- ${n.id}: ${n.summary} (${kind}). ${parts.join('; ')}.`
+  }
+  const entry = loop.nodes[loop.entry]
+  return [
+    `Loop: ${ref.name} (${ref.level} level, ${ref.dir})`,
+    loop.description,
+    'Steps, in order; stages in one step run side by side:',
+    ...loop.steps.map((s, i) => `${i + 1}. ${s.stages.map(st => `${st.id}: ${st.summary} (${st.nodes.length > 0 ? st.nodes.join(', ') : 'you alone'})`).join(' ∥ ')}`),
+    `On call: ${onCall.length > 0 ? onCall.map(([k, v]) => `${k}${v.length > 0 ? ` (helpers ${v.join(', ')})` : ''}`).join(', ') : 'none'}`,
+    'Nodes:',
+    ...Object.values(loop.nodes).map(nodeLine),
+    'Transitions:',
+    ...loop.transitions.map(t => `- ${t.from} → ${t.to.join(' ∥ ')}${t.back ? ' (back)' : ''}${t.label ? `: ${t.label}` : ''}${t.when ? `. When ${t.when.replace(/\.$/, '')}` : ''}${t.then ? `. Then ${t.then.replace(/\.$/, '')}` : ''}`),
+    'Handovers:',
+    ...(loop.handovers.length > 0 ? loop.handovers.map(h => `- ${h.from} → ${h.to}: ${h.label}. ${h.spec}`) : ['- none']),
+    '',
+    '## Your role',
+    '',
+    entry?.role.trim() || 'The loop gives its entry node no role text.',
+  ]
+}
+
+/** The configuration in force and the loop a run would walk now, for the config tool and the command. */
+async function configText(): Promise<string> {
+  const run = await currentRun()
+  const name = run?.loop?.name ?? asked ?? conf.conf.loop
+  const r = await resolveLoop(name)
+  const head = [describeConf(conf), '']
+  if (!r.ok) return [...head, `Loop: "${name}" cannot be used: ${r.problem}`, `No run can start on it until it is fixed or another loop is named (\`loop\` of ${tool('start')}, or the loop conf key).`].join('\n')
+  return [...head, ...loopText(r)].join('\n')
+}
 // ---------- small helpers ----------
 
 const slug = (text: string) =>
@@ -104,10 +356,18 @@ const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : 
 
 const isLive = (row: WorkerRow | QaRow) => row.status === 'running' || row.status === 'stale'
 const isTerminal = (row: WorkerRow | QaRow) => !isLive(row) && row.status !== 'pending'
-const pendingId = (kind: 'worker' | Role, iteration: number, key: string) => `pending-${kind}-${iteration}-${key}`
-/** The first line of every prompt the Agent hook hands a worker, QA or reviewer agent; the spawn hook reads the worktree off it. */
+/** The id of a row until its Agent call started it: a worker's by round and task, a judge's by node, round and judge round, an asked node's by node and count. */
+const pendingWorker = (iteration: number, taskId: string) => `pending-worker-${iteration}-${taskId}`
+const pendingJudge = (node: string, iteration: number, round: number) => `pending-judge-${node}-${iteration}-${round}`
+const pendingAsk = (node: string, n: number) => `pending-ask-${node}-${n}`
+/** The first line of every prompt the Agent hook hands an agent of the run; the spawn hook reads the worktree off it. */
 const WORKTREE_LINE = /^\[dacapo worktree: (.+)\]$/m
-const ASK_LINE = /^\s*dacapo (worker|qa|review) (\S+)\s*$/
+/** The prompts the tools' replies list for the Agent calls: `dacapo worker <id>`, `dacapo judge <node> <round>-<n>`, `dacapo ask <node> <n>`. */
+const CALL_LINE = /^\s*dacapo (?:worker (\S+)|judge (\S+) (\d+)-(\d+)|ask (\S+) (\d+))\s*$/
+/** A worker row of a node asked with `ask`: no branch, no pull request, its answer is its Agent result. */
+const isAsk = (r: Row): boolean => r.kind === 'worker' && r.contract === 'none'
+/** A worker row that lands through a pull request: every worker but an asked node. */
+const isLanding = (r: Row): r is WorkerRow => r.kind === 'worker' && r.contract !== 'none'
 /** The last line of a worker's answer: `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`. */
 const STATUS_LINE = /^\s*dacapo:\s*(done with limitations|done|failed)\s*\.?\s*$/im
 /** The last line of a collector's answer to QA: `dacapo: collected`, `dacapo: collected with gaps` or `dacapo: failed`. */
@@ -188,11 +448,14 @@ const crashed = (_: unknown, e: { tool: string }, next: { error: { kind: string;
 
 // ---------- the run ----------
 
-async function openRun(task: string, baseBranch: string, at?: string, level: Level = 'balanced'): Promise<Run> {
-  const cwd = at ?? (await io.cwd())
+/** Opens a run; with a loop, the run walks its steps and stands on the first stage of the first step. */
+async function openRun(task: string, baseBranch: string, loop?: { ref: LoopRef; loop: Loop }): Promise<Run> {
+  const cwd = await io.cwd()
   const root = (await git.repoRoot(io, cwd)) ?? cwd
   const now = await io.now()
   const id = `${new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15)}-${slug(task || 'run').slice(0, 24)}`
+  const steps = loop ? runLoopOf(loop) : undefined
+  const first = steps?.steps[0]?.stages[0]?.id
   const run: Run = {
     id,
     task,
@@ -203,10 +466,9 @@ async function openRun(task: string, baseBranch: string, at?: string, level: Lev
     branch: '',
     worktree: '',
     baseBranch,
-    level,
-    judges: conf.conf.judges,
     runDir: `${root}/.workspaces/.dacapo/${id}`,
-    phase: 'clarify',
+    phase: first && (PHASES as readonly string[]).includes(first) ? (first as Phase) : 'clarify',
+    ...(steps ? { loop: steps, stage: first, activeStages: [] } : {}),
     iterations: [],
     orchestrator: { ...ZERO, steps: 0 },
     wakes: [],
@@ -287,7 +549,7 @@ let polling = false
 async function refreshPrs(run: Run): Promise<Pr[] | null> {
   if (!run.gh?.ok || !run.worktree) return null
   const rows = await io.getRows()
-  const heads = new Set<string>([run.branch, ...rows.filter((r): r is WorkerRow => r.kind === 'worker').map(r => r.branch)])
+  const heads = new Set<string>([run.branch, ...rows.filter(isLanding).map(r => r.branch)])
   const prs = await gh.listPrs(io, run.worktree, heads)
   const now = await io.now()
   if (prs) await io.setRun(cur => (cur ? { ...cur, prs, prsAt: now } : cur))
@@ -296,6 +558,7 @@ async function refreshPrs(run: Run): Promise<Pr[] | null> {
 }
 
 const latestPr = (run: Run, branch: string): Pr | undefined => prsOf(run, branch)[0]
+
 
 // ---------- status text for the orchestrator ----------
 
@@ -306,7 +569,11 @@ function statusText(snap: Snapshot): string {
     `Run ${run.id}${run.task ? ` (${run.task.replace(/\s+/g, ' ')})` : ' (task not yet named; call start when it is clear)'}: ${run.status}, round ${run.iteration}, branch=${run.branch || '(not started)'}, base=${run.baseBranch}`,
   ]
   const total = spendText(spend(rows.filter(isAgentRow), prices, run.orchestrator))
-  lines[0] += `, level ${levelOf(run)}${run.judges === 'parallel' ? ' (judges in parallel)' : ''}, phase ${run.phase}${total ? `, ${total}` : ''}`
+  const stages = currentStages(run)
+  const where = run.loop
+    ? `loop ${run.loop.name} (${run.loop.level}), stage${stages.length > 1 ? 's' : ''} ${stages.join(' ∥ ')}`
+    : `no loop yet${asked ? ` (asked for "${asked}", which could not be loaded; see ${tool('config')})` : ''}, level ${levelOf(run)}, phase ${run.phase}`
+  lines[0] += `, ${where}${total ? `, ${total}` : ''}`
   if (run.overview) lines.push(`  ${run.overview.replace(/\s+/g, ' ').slice(0, 300)}`)
   if (run.gh && !run.gh.ok) lines.push(`gh: ${run.gh.problem} (${run.gh.detail})`)
   if (run.pushProblem) lines.push(`Push problem: ${run.pushProblem}`)
@@ -324,16 +591,19 @@ function statusText(snap: Snapshot): string {
       const t = hhmm(row.at)
       if (row.kind === 'user') lines.push(`  ${t} user: ${row.text.replace(/\s+/g, ' ').slice(0, 120)}`)
       else if (row.kind === 'orchestrator') lines.push(`  ${t} orchestrator: ${row.text.replace(/\s+/g, ' ').slice(0, 120)}`)
-      else if (row.kind === 'worker') {
+      else if (isAsk(row)) {
+        const span = elapsed(row.at, row.endedAt ?? ui.tick)
+        lines.push(`  ${t} ask ${row.node} [${row.id}] ${statusWord[row.status]} (${span}${row.model ? `, ${row.model}` : ''})${row.note ? `: ${row.note.slice(0, 200)}` : ''}`)
+      } else if (row.kind === 'worker') {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
         const pr = latestPr(run, row.branch)
         lines.push(
-          `  ${t} worker ${row.taskId} [${row.id}] ${statusWord[row.status]}${row.outcome === 'limited' ? ' with limitations' : ''}${row.restarts ? ` (restarted ${row.restarts}x)` : ''} (${span}, ${row.model}, ${row.branch}${row.isResumed ? ', resumed' : ''}) PR: ${pr ? prText(pr) : 'none'}${row.note ? `: ${row.note.slice(0, 200)}` : ''}`,
+          `  ${t} ${row.node && row.node !== 'worker' ? `${row.node} ` : 'worker '}${row.taskId} [${row.id}] ${statusWord[row.status]}${row.outcome === 'limited' ? ' with limitations' : ''}${row.restarts ? ` (restarted ${row.restarts}x)` : ''} (${span}, ${row.model}, ${row.branch}${row.isResumed ? ', resumed' : ''}) PR: ${pr ? prText(pr) : 'none'}${row.note ? `: ${row.note.slice(0, 200)}` : ''}`,
         )
       } else {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
         const collectors = row.collectors?.length ? `, ${collectorsText(row)}` : ''
-        lines.push(`  ${t} ${roundName(row)} [${row.id}] ${statusWord[row.status]} (${span}${collectors}): ${scoreLine(row)}`)
+        lines.push(`  ${t} ${roundName(row)}${row.node ? ` (${row.node})` : ''} [${row.id}] ${statusWord[row.status]} (${span}${collectors}): ${scoreLine(row)}`)
       }
     }
   }
@@ -345,30 +615,33 @@ function statusText(snap: Snapshot): string {
 async function start(a: Args) {
   const task = str(a.task).trim()
   if (!task) return fail('start: "task" is required')
-  const root = str(a.root).trim()
-  if (root && !(await git.repoRoot(io, root))) return fail(`start: ${root} is not inside a git repository`)
   const overview = str(a.overview).trim() || undefined
   const baseBranch = str(a.baseBranch).trim() || conf.conf['base-branch']
-  const askedLevel = str(a.level).trim()
-  if (askedLevel && !LEVELS.includes(askedLevel as Level)) return fail(`start: "level" must be one of ${LEVELS.join(', ')}; got ${JSON.stringify(askedLevel)}`)
-  const askedJudges = str(a.judges).trim()
-  if (askedJudges && askedJudges !== 'sequential' && askedJudges !== 'parallel') return fail(`start: "judges" must be "sequential" or "parallel"; got ${JSON.stringify(askedJudges)}`)
   const wanted = str(a.branch).trim() || slug(task)
   if (!BRANCH_NAME.test(wanted) || wanted.includes('--') || wanted === baseBranch) {
     return fail(`start: "branch" must be a lowercase git branch name without "--" and different from ${baseBranch}; got ${JSON.stringify(wanted)}`)
   }
   let run = await currentRun()
-  if (!run) run = await openRun(task, baseBranch, root || undefined, (askedLevel as Level) || 'balanced')
-  // the level is fixed once work can exist: a start after setup keeps it
-  if (askedLevel && run.worktree && askedLevel !== levelOf(run)) return fail(`start: the run is at level ${levelOf(run)} and a level is never changed mid-run`)
-  const level: Level = (askedLevel as Level) || levelOf(run)
-  if (askedJudges && run.worktree && askedJudges !== (run.judges ?? 'sequential')) return fail(`start: the run's judges are ${run.judges ?? 'sequential'} and that is never changed mid-run`)
-  const judges = (askedJudges as Run['judges']) || run.judges || conf.conf.judges
-  const named: Run = { ...run, task, level, judges, overview: overview ?? run.overview, baseBranch: run.worktree ? run.baseBranch : baseBranch }
-  if (root && !run.worktree) {
-    const top = (await git.repoRoot(io, root)) ?? root
-    named.root = top
-    named.runDir = `${top}/.workspaces/.dacapo/${run.id}`
+  const name = str(a.loop).trim() || run?.loop?.name || asked || conf.conf.loop
+  // the loop is fixed once work can exist: a start after setup keeps it
+  if (run?.worktree && run.loop && name !== run.loop.name) return fail(`start: the run walks the loop "${run.loop.name}" and a loop is never changed mid-run`)
+  const resolved = await resolveLoop(name)
+  if (!resolved.ok) return fail(`start: ${resolved.problem}`)
+  const registered = await ensureAgents(name, resolved.loop)
+  if (registered.problem) return fail(`start: ${registered.problem}`)
+  if (dispatchFor !== name) await registerDispatch(resolved.loop).catch(() => undefined)
+  asked = null
+  if (!run) run = await openRun(task, baseBranch, resolved)
+  const loopInfo = runLoopOf(resolved)
+  const sameLoop = run.loop?.name === loopInfo.name && !!run.stage
+  const named: Run = {
+    ...run,
+    task,
+    overview: overview ?? run.overview,
+    baseBranch: run.worktree ? run.baseBranch : baseBranch,
+    loop: loopInfo,
+    stage: sameLoop ? run.stage : loopInfo.steps[0]?.stages[0]?.id,
+    activeStages: sameLoop ? run.activeStages : [],
   }
   await io.setRun(() => named)
   run = named
@@ -390,25 +663,46 @@ async function start(a: Args) {
     notes.push(pushed)
     if ((await io.getRun())?.pushProblem) return fail(`start: ${pushed} Pull requests need the run branch on origin; fix the push and call start again.`)
   }
-  if (PHASES.indexOf(run.phase) < PHASES.indexOf('plan')) await setPhase('plan')
+  // start marks the stage the run plans in: the last stage without nodes before the first lands node's step
+  const loop = resolved.loop
+  const plan = planStage(loop)
+  if (plan && stepOfStage(loop, (await io.getRun())?.stage ?? '') < stepOfStage(loop, plan)) await markStage(plan)
   void io.openPane()
   const repo = run.gh?.ok ? run.gh.repo : 'GitHub'
+  const nodes = Object.values(loop.nodes).filter(n => n.type !== 'entry' && n.type !== 'exit')
+  const landers = nodes.filter(n => n.contract === 'lands')
+  const nodeWords = (n: LoopNode) => {
+    const helper = n.contract === 'scores' ? collectsOf(loop, n.id) : undefined
+    return `${n.id} (${n.contract}${n.models.length > 0 ? `; ${n.models.join(', ')}` : ''}${helper && collectorCap(n) > 0 ? `; up to ${collectorCap(n)} ${agentType(helper.id)} at once, so the harness must say what the product can share between testers` : ''})`
+  }
   return ok(
     [
       `Run ${run.id} ready on ${repo} (${run.root}).`,
       ...notes.map(n => `- ${n}`),
       `- every worker branches from "${run.branch}" and lands through a pull request into it; the final pull request goes from "${run.branch}" into "${run.baseBranch}"`,
       `- run folder ${run.runDir}`,
-      `- level ${levelOf(run)}: ${levelOf(run) === 'fast' ? 'no QA; the run merges once the work has landed' : levelOf(run) === 'balanced' ? 'QA as the end user, then merge' : run.judges === 'parallel' ? 'QA as the end user and an engineering review side by side, then merge' : 'QA as the end user, then an engineering review, then merge'}`,
-      `- models: workers ${conf.conf.workers.join(', ')}; QA ${conf.conf.qa.join(', ')}; review ${conf.conf.review.join(', ')} (the first of each is the strong tier and the default, the last the fast tier)`,
-      ...(levelOf(run) === 'fast' ? [] : [`- QA collectors: ${conf.conf['qa-collectors'] > 0 ? `up to ${conf.conf['qa-collectors']} at once, so the harness must say what the product can share between testers` : 'off; QA collects every piece of evidence itself'}`]),
+      `- loop ${name} (${resolved.ref.level}): ${loopInfo.steps.map(s => s.stages.map(st => st.id).join(' ∥ ')).join(' → ')}`,
+      `- nodes: ${nodes.length > 0 ? nodes.map(nodeWords).join('; ') : 'none'} (the first model of each is the strong tier and the default, the last the fast tier)`,
+      ...(registered.added.length > 0 ? [`- agent types ${registered.added.join(', ')} registered now; the Agent tool takes them from your next turn, so end this turn before you start them`] : []),
       `- rules: commits follow the ${conf.conf['commits-skill']} skill, pull requests the ${conf.conf['prs-skill']} skill; workers load them from their brief, and you load ${conf.conf['prs-skill']} before writing the final pull request`,
-      `Plan the work, then call ${tool('dispatch')}.`,
+      landers.length > 0 ? `Plan the work, then call ${tool('dispatch')}.` : 'Plan the work, then follow the loop: its stages say what comes next.',
     ].join('\n'),
   )
 }
 
-const rows_hadWork = (rows: Row[], iteration: number) => rows.some(r => isAgentRow(r) && r.iteration === iteration)
+async function markStageTool(a: Args) {
+  const id = str(a.stage).trim()
+  const run = await currentRun()
+  if (!run) return fail('stage: no active run')
+  if (!run.loop) return fail(`stage: the run has no loop yet; call ${tool('start')} first`)
+  const ids = run.loop.steps.flatMap(s => s.stages.map(st => st.id))
+  if (!ids.includes(id)) return fail(`stage: "${id}" is not a stage of the loop "${run.loop.name}"; its stages: ${ids.join(', ')}`)
+  await markStage(id)
+  return ok(`Stage: ${id}.`)
+}
+
+/** Whether a round already holds work: a worker or judge of it, not counting a node asked with `ask`. */
+const hadWork = (rows: Row[], iteration: number) => rows.some(r => isAgentRow(r) && !isAsk(r) && r.iteration === iteration)
 
 const COMMIT_TITLE = /^(feat|fix|docs|style|refactor|test|chore|perf|ci|revert)!?: \S/
 /** Whether the shipped rules skills are the configured ones; only then does the mod check the rules they state itself. */
@@ -419,10 +713,25 @@ async function dispatch(a: Args) {
   let run = await currentRun()
   if (!run) return fail(`dispatch: no active run; call ${tool('start')} first`)
   if (!run.worktree) return fail(`dispatch: the run is not set up; call ${tool('start')} first`)
+  const loop = await loopOf(run)
+  if (!loop || !run.loop) return fail(`dispatch: the run's loop could not be read; call ${tool('config')} to see why`)
+  const landers = Object.values(loop.nodes).filter(n => n.contract === 'lands')
+  const nodeId = str(a.node).trim()
+  let node: LoopNode
+  if (nodeId) {
+    const found = loop.nodes[nodeId]
+    if (!found || found.contract !== 'lands') return fail(`dispatch: "${nodeId}" is not a lands node of the loop "${run.loop.name}"; its lands nodes: ${landers.map(n => n.id).join(', ') || 'none'}`)
+    node = found
+  } else if (landers.length === 1) {
+    node = landers[0]!
+  } else {
+    return fail(landers.length === 0 ? `dispatch: the loop "${run.loop.name}" has no lands node, so it dispatches no workers` : `dispatch: the loop "${run.loop.name}" has several lands nodes (${landers.map(n => n.id).join(', ')}); name one with "node"`)
+  }
+  const place = placeOf(loop, node.id)
   const tasks = Array.isArray(a.tasks) ? (a.tasks as Args[]) : []
   if (tasks.length === 0) return fail('dispatch: "tasks" must hold at least one task')
   const rows0 = await io.getRows()
-  const iterationTitle = str(a.title).trim() || `Round ${run.iteration + (rows_hadWork(rows0, run.iteration) ? 1 : 0)}`
+  const iterationTitle = str(a.title).trim() || `Round ${run.iteration + (hadWork(rows0, run.iteration) ? 1 : 0)}`
   const overview = str(a.overview).trim()
   const ids = new Set<string>()
   for (const t of tasks) {
@@ -431,24 +740,24 @@ async function dispatch(a: Args) {
     if (ids.has(id)) return fail(`dispatch: task id "${id}" repeats`)
     ids.add(id)
     if (!str(t.title).trim() || !str(t.prompt).trim()) return fail(`dispatch: task "${id}" needs a title and a prompt`)
-    if (typeof t.model !== 'string' || !conf.conf.workers.includes(t.model)) return fail(`dispatch: task "${id}" model must be one of ${conf.conf.workers.join(', ')} (the configured worker models; see ${tool('config')})`)
+    if (typeof t.model !== 'string' || !node.models.includes(t.model)) return fail(`dispatch: task "${id}" model must be one of ${node.models.join(', ')} (the models of the node "${node.id}"; see ${tool('config')})`)
     const commit = str(t.commit).trim()
     if (!commit) return fail(`dispatch: task "${id}" needs a commit title`)
     if (shippedCommits() && (!COMMIT_TITLE.test(commit) || /^\w+\(/.test(commit) || commit.length > 72)) {
       return fail(`dispatch: task "${id}" commit title "${commit}" must be "<type>: <description>" with an allowed type, no scope, at most 72 characters (the ${SHIPPED_COMMITS} skill)`)
     }
     if (t.merge !== undefined && t.merge !== 'squash' && t.merge !== 'merge') return fail(`dispatch: task "${id}" merge must be "squash" or "merge"`)
-    if (t.resume === true && !rows0.some(r => r.kind === 'worker' && r.taskId === id)) return fail(`dispatch: task "${id}" has no earlier worker to resume`)
+    if (t.resume === true && !rows0.some(r => isLanding(r) && r.taskId === id)) return fail(`dispatch: task "${id}" has no earlier worker to resume`)
   }
 
   const iteration = run.iteration
-  const hadWork = rows0.some(r => isAgentRow(r) && r.iteration === iteration)
   const unfinished = rows0.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r))
   if (unfinished.length > 0) return fail(`dispatch: ${unfinished.length} agent(s) still running; wait for the wake-up prompt or cancel them first`)
-  run = { ...run, iteration: hadWork ? iteration + 1 : iteration, status: 'active' }
+  run = { ...run, iteration: hadWork(rows0, iteration) ? iteration + 1 : iteration, status: 'active' }
   const startedAt = await io.now()
   const info = { n: run.iteration, title: iterationTitle, overview: overview || undefined, startedAt }
-  run = { ...run, phase: 'implement', iterations: [...run.iterations.filter(i => i.n !== info.n), info] }
+  run = { ...run, iterations: [...run.iterations.filter(i => i.n !== info.n), info] }
+  if (place) run = { ...run, stage: place.stage.id, activeStages: [place.stage.id], ...((PHASES as readonly string[]).includes(place.stage.id) ? { phase: place.stage.id as Phase } : {}) }
   const active = run
   await io.setRun(() => active)
   // workers branch from the run branch as origin has it, since their pull requests land there
@@ -469,7 +778,7 @@ async function dispatch(a: Args) {
       let mergeMethod: 'squash' | 'merge' = t.merge === 'merge' ? 'merge' : 'squash'
       let resumed: { pr?: { number: number; url: string; state: string } } | undefined
       if (t.resume === true) {
-        const prior = rows0.filter((r): r is WorkerRow => r.kind === 'worker' && r.taskId === taskId).sort((x, y) => y.at - x.at)[0]!
+        const prior = rows0.filter((r): r is WorkerRow => isLanding(r) && r.taskId === taskId).sort((x, y) => y.at - x.at)[0]!
         if (!(await io.exists(prior.worktree))) throw new Error(`the worktree of the earlier worker (${prior.worktree}) is gone; dispatch the task afresh`)
         branch = prior.branch
         path = prior.worktree
@@ -478,7 +787,7 @@ async function dispatch(a: Args) {
         resumed = { pr: pr ? { number: pr.number, url: pr.url, state: pr.state } : undefined }
       } else {
         let wanted = `${active.branch}--${slug(taskId)}`
-        if (rows0.some(r => r.kind === 'worker' && r.branch.startsWith(wanted))) wanted = `${wanted}-${active.iteration}`
+        if (rows0.some(r => isLanding(r) && r.branch.startsWith(wanted))) wanted = `${wanted}-${active.iteration}`
         ;({ branch, path } = await git.addBranchWorktree(io, active.root, wanted, base, true))
       }
       await git.mkdirp(io, `${path}/.context`)
@@ -509,7 +818,7 @@ async function dispatch(a: Args) {
       const now = await io.now()
       const row: WorkerRow = {
         kind: 'worker',
-        id: pendingId('worker', active.iteration, taskId),
+        id: pendingWorker(active.iteration, taskId),
         iteration: active.iteration,
         at: now,
         lastActivityAt: now,
@@ -522,6 +831,8 @@ async function dispatch(a: Args) {
         mergeMethod,
         status: 'pending',
         stats: freshStats(),
+        node: node.id,
+        contract: 'lands',
         ...(resumed ? { isResumed: true } : {}),
       }
       await io.setRows(list => [...list.filter(r => r.kind !== 'worker' || r.id !== row.id), row])
@@ -538,7 +849,7 @@ async function dispatch(a: Args) {
     ...(started.length > 0
       ? [
           'Now start the workers: call the Agent tool once per task, all in one message, with exactly these arguments (the run fills in the brief, model, worktree and background mode):',
-          ...started.map(s => `- Agent({ subagent_type: "${WORKER_AGENT}", description: "${s.title.replace(/"/g, "'")}", prompt: "dacapo worker ${s.taskId}" })`),
+          ...started.map(s => `- Agent({ subagent_type: "${agentType(node.id)}", description: "${s.title.replace(/"/g, "'")}", prompt: "dacapo worker ${s.taskId}" })`),
           `Then end your turn. Each worker opens a pull request against ${active.branch}, waits for its checks, merges it and only then finishes. A prompt wakes you when every worker has ended, or when one goes stale.`,
         ]
       : ['Nothing to start.']),
@@ -546,11 +857,14 @@ async function dispatch(a: Args) {
   return ok(text)
 }
 
-/** What the orchestrator calls once a round's work has landed and is synced, by level. */
-const afterLanding = (run: Run): string => (levelOf(run) === 'fast' ? tool('finish') : tool('qa'))
-/** The judges to run again after a reconciliation or repair, by level, as a phrase. */
-const judgeAgain = (run: Run): string =>
-  levelOf(run) === 'fast' ? '' : levelOf(run) === 'balanced' ? `run ${tool('qa')} once more since a conflict resolution can break things, and ` : `run ${tool('qa')} and then ${tool('review')} once more since a conflict resolution can break things, and `
+/** What the orchestrator calls once a round's work has landed and is synced: the move out of the lands node's stage. */
+async function afterLanding(run: Run, node?: string): Promise<string> {
+  const loop = await loopOf(run)
+  if (!loop) return finishWords(run)
+  const lands = node ? loop.nodes[node] : Object.values(loop.nodes).find(n => n.contract === 'lands')
+  const place = lands ? placeOf(loop, lands.id) : undefined
+  return place ? nextMove(loop, place.stage.id, run) : finishWords(run)
+}
 
 async function sync() {
   const run = await currentRun()
@@ -563,7 +877,7 @@ async function sync() {
   const landed: string[] = []
   const waiting: string[] = []
   const kept: string[] = []
-  const workers = rows.filter((r): r is WorkerRow => r.kind === 'worker' && isTerminal(r) && r.status !== 'merged').sort((a, b) => a.at - b.at)
+  const workers = rows.filter((r): r is WorkerRow => isLanding(r) && isTerminal(r) && r.status !== 'merged').sort((a, b) => a.at - b.at)
   for (const w of workers) {
     const mine = prsOf(fresh, w.branch)
     const merged = mine.find(p => p.state === 'merged')
@@ -581,83 +895,97 @@ async function sync() {
     }
   }
   const pulled = await git.pullFf(io, fresh.worktree, fresh.branch)
+  const next = landed.length > 0 && waiting.length === 0 ? `Next: ${await afterLanding(fresh, workers[0]?.node)}.` : ''
   const text = [
     `Synced ${fresh.branch}: ${landed.length} pull request(s) landed since the last sync.`,
     ...landed.map(m => `- ${m}`),
     pulled.kind === 'pulled' ? `${fresh.worktree} fast-forwarded by ${pulled.commits} commit(s).` : `${fresh.branch} at ${fresh.worktree} was not fast-forwarded: ${pulled.message}`,
     ...(waiting.length > 0 ? ['Finished without landing:', ...waiting.map(s => `- ${s}`)] : []),
     ...(kept.length > 0 ? ['Not landed:', ...kept.map(s => `- ${s}`)] : []),
-    landed.length > 0 && waiting.length === 0 ? `Next: call ${afterLanding(fresh)}.` : '',
+    next,
   ]
     .filter(Boolean)
     .join('\n')
   return ok(text)
 }
 
-const qaPrompt = (worktree: string) =>
-  `Read ${worktree}/.context/qa-brief.md and ${worktree}/.context/rubric.json, then test the deliverable as its user and write the report where the brief says. Your working directory is ${worktree}.`
-const collectorPrompt = (worktree: string) =>
-  `Read ${worktree}/.context/qa-brief.md (what was built, and the harness: how to run and use the product) and ${worktree}/.context/rubric.json (the items; your slice is below). Save screenshots and notes only under ${worktree}/.context/evidence/.`
-const reviewPrompt = (worktree: string) =>
-  `Read ${worktree}/.context/review-brief.md and ${worktree}/.context/rubric.json, then review the run's change as an engineer and write the report where the brief says. Your working directory is ${worktree}.`
+const judgePrompt = (row: QaRow) =>
+  `Read ${row.worktree}/.context/${judgeNode(row)}-brief.md and ${row.worktree}/.context/rubric.json, then judge as your role says and write the report where the brief says. Your working directory is ${row.worktree}.`
+const collectorPrompt = (row: QaRow) =>
+  `Read ${row.worktree}/.context/${judgeNode(row)}-brief.md (what was built, and the harness: how to run and use the product) and ${row.worktree}/.context/rubric.json (the items; your slice is below). Save screenshots and notes only under ${row.worktree}/.context/evidence/.`
 
 /**
- * Starts a judge of the integrated state in a fresh checkout of the run branch: QA, which uses the product as its
- * user and needs a harness, or the reviewer, which reads the run's diff and runs only at level deep.
+ * Starts a scores node on the integrated state in a fresh checkout of the run branch. A judge waits for every agent of
+ * an earlier step of the round, for the round's landed work to be synced, and for each judge of an earlier step to
+ * have reported on the round; judges whose stages share a step start alongside each other.
  */
-async function startJudge(role: Role, a: Args) {
-  const name = role
+async function judge(a: Args) {
   const run = await currentRun()
-  if (!run) return fail(`${name}: no active run`)
-  if (!run.worktree) return fail(`${name}: nothing was dispatched yet; call ${tool('start')} first`)
-  const level = levelOf(run)
-  if (role === 'qa' && level === 'fast') return fail(`qa: the run is at level fast, which has no QA; call ${tool('finish')} once the work has landed`)
-  if (role === 'review' && level !== 'deep') return fail(`review: the run is at level ${level}; an engineering review runs at level deep only`)
-  const rubric = validateRubric(a.rubric, role === 'qa' ? QA_CATEGORIES : REVIEW_CATEGORIES)
-  if (!rubric.ok) return fail(`${name}: ${rubric.problem}`)
+  if (!run) return fail('judge: no active run')
+  if (!run.worktree) return fail(`judge: nothing was dispatched yet; call ${tool('start')} first`)
+  const loop = await loopOf(run)
+  if (!loop || !run.loop) return fail(`judge: the run's loop could not be read; call ${tool('config')} to see why`)
+  const judges = judgesOf(loop)
+  const nodeId = str(a.node).trim()
+  const node = loop.nodes[nodeId]
+  if (!node || node.contract !== 'scores') {
+    return fail(`judge: "${nodeId}" is not a scores node of the loop "${run.loop.name}"; its judges: ${judges.map(n => n.id).join(', ') || 'none, so nothing is judged'}`)
+  }
+  const place = placeOf(loop, node.id)
+  if (!place) return fail(`judge: "${node.id}" works in no stage of the loop; a judge runs in its stage`)
+  const categories = node.categories ?? []
+  const rubric = validateRubric(a.rubric, categories as RubricItem['category'][])
+  if (!rubric.ok) return fail(`judge: ${rubric.problem}`)
+  const helper = collectsOf(loop, node.id)
+  const cap = helper ? collectorCap(node) : 0
+  const product = usesProduct(node)
   const harness = str(a.harness).trim()
-  if (role === 'qa' && !harness) return fail('qa: "harness" must say how to run and use the deliverable')
-  const allowed = role === 'qa' ? conf.conf.qa : conf.conf.review
-  const model = str(a.model).trim() || allowed[0]!
-  if (!allowed.includes(model)) return fail(`${name}: "model" must be one of ${allowed.join(', ')} (the configured ${name} models; see ${tool('config')})`)
+  if (!harness && ((node.collectors ?? 0) > 0 || product)) return fail(`judge: "harness" must say how to run and use the deliverable: "${node.id}" uses the product`)
+  const model = str(a.model).trim() || node.models[0]!
+  if (!node.models.includes(model)) return fail(`judge: "model" must be one of ${node.models.join(', ')} (the models of the node "${node.id}"; see ${tool('config')})`)
   const iteration = run.iteration
   const rows = await io.getRows()
-  const parallel = level === 'deep' && run.judges === 'parallel'
-  // with judges in parallel, QA and the reviewer do not wait for each other; workers still end first
-  const unfinished = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r) && !(parallel && r.kind === 'qa'))
-  if (unfinished.length > 0) return fail(`${name}: ${unfinished.length} agent(s) still running; wait or cancel them first`)
-  const unsynced = rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.status === 'finished')
-  if (unsynced.length > 0) return fail(`${name}: ${unsynced.length} finished worker(s) not yet synced; call ${tool('sync')} first`)
-  // the reviewer reads the state QA tests: QA goes first in every round, or alongside when the judges run in parallel
-  const qaRows = rows.filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) === 'qa' && r.iteration === iteration && r.status !== 'cancelled')
-  const qaDone = qaRows.some(r => r.status === 'finished')
-  if (role === 'review' && !qaDone && !(parallel && qaRows.length > 0)) {
-    return fail(`review: QA has not ${parallel ? 'started' : 'reported'} on round ${iteration} yet; call ${tool('qa')} first, the reviewer reads the state QA tests`)
+  const stepOfRow = (r: WorkerRow | QaRow): number | undefined => {
+    const id = r.kind === 'qa' ? judgeNode(r) : r.node
+    const p = id ? placeOf(loop, id) : undefined
+    return p?.step
+  }
+  const running = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && !isTerminal(r))
+  const busy = running.filter(r => r.kind === 'qa' && judgeNode(r) === node.id)
+  if (busy.length > 0) return fail(`judge: ${roundName(busy[0] as QaRow)} of "${node.id}" is still running; wait for its wake-up or cancel it first`)
+  const earlier = running.filter(r => (stepOfRow(r) ?? -1) < place.step)
+  if (earlier.length > 0) return fail(`judge: ${earlier.length} agent(s) of an earlier step still running; wait or cancel them first`)
+  const unsynced = rows.filter((r): r is WorkerRow => isLanding(r) && r.status === 'finished')
+  if (unsynced.length > 0) return fail(`judge: ${unsynced.length} finished worker(s) not yet synced; call ${tool('sync')} first`)
+  // the judges run in step order: each reads the state the judges before it reported on
+  for (const before of judges.filter(n => (placeOf(loop, n.id)?.step ?? 0) < place.step)) {
+    const reported = rows.some(r => r.kind === 'qa' && judgeNode(r) === before.id && r.iteration === iteration && r.status === 'finished')
+    if (!reported) return fail(`judge: "${before.id}" has not reported on round ${iteration} yet; the judges run in step order, so call ${tool('judge')} with node "${before.id}" first`)
   }
   // rounds count across the whole run, per judge, since the timeline does not group by round
-  const round = rows.filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) === role).length + 1
-  const worktree = `${run.root}/.workspaces/${role}/${iteration}-${round}`
-  const reportPath = `${worktree}/.context/${role}-report.json`
-  const key = `${role}-${iteration}-${round}`
+  const round = rows.filter((r): r is QaRow => r.kind === 'qa' && judgeNode(r) === node.id).length + 1
+  const worktree = `${run.root}/.workspaces/${node.id}/${iteration}-${round}`
+  const reportPath = `${worktree}/.context/${node.id}-report.json`
+  const key = `${node.id}-${iteration}-${round}`
   try {
     await git.addDetachedWorktree(io, run.root, worktree, run.branch)
     await git.mkdirp(io, `${worktree}/.context`)
     await io.write(`${worktree}/.context/rubric.json`, JSON.stringify(rubric.rubric, null, 2))
-    const brief =
-      role === 'qa'
-        ? qaBrief({ task: run.task, harness, brief: str(a.brief), reportPath, worktree, collectors: conf.conf['qa-collectors'] })
-        : reviewBrief({ task: run.task, base: run.baseBranch, brief: str(a.brief), reportPath, worktree })
-    await io.write(`${worktree}/.context/${role}-brief.md`, brief)
+    const brief = product
+      ? qaBrief({ node: node.id, task: run.task, harness, brief: str(a.brief), reportPath, worktree, collector: helper ? agentType(helper.id) : undefined, collectors: cap })
+      : reviewBrief({ node: node.id, task: run.task, base: run.baseBranch, brief: [harness ? `How to run it, if you need to: ${harness}` : '', str(a.brief)].filter(Boolean).join('\n\n'), reportPath, worktree })
+    await io.write(`${worktree}/.context/${node.id}-brief.md`, brief)
     await io.write(`${run.runDir}/${key}-rubric.json`, JSON.stringify(rubric.rubric, null, 2))
     await io.write(`${run.runDir}/${key}-brief.md`, brief)
   } catch (error) {
-    return fail(`${name}: ${String(error)}`)
+    return fail(`judge: ${String(error)}`)
   }
   const now = await io.now()
   const row: QaRow = {
     kind: 'qa',
-    role,
-    id: pendingId(role, iteration, `${round}`),
+    role: product ? 'qa' : 'review',
+    node: node.id,
+    id: pendingJudge(node.id, iteration, round),
     iteration,
     round,
     attempt: 1,
@@ -670,18 +998,75 @@ async function startJudge(role: Role, a: Args) {
     stats: freshStats(),
   }
   rubrics.set(key, rubric.rubric)
-  await setPhase(role)
+  const sameStep = loop.steps[place.step]!.stages.map(st => st.id)
+  const activeStages = [...new Set([...(run.activeStages ?? []).filter(s => sameStep.includes(s)), place.stage.id])]
+  await markStage(place.stage.id, activeStages)
   await io.setRows(list => [...list, row])
   void io.openPane()
+  // judges of the same step that have not started on this round may start alongside this one
+  const alongside = judges.filter(n => n.id !== node.id && placeOf(loop, n.id)?.step === place.step && !rows.some(r => r.kind === 'qa' && judgeNode(r) === n.id && r.iteration === iteration && r.status !== 'cancelled'))
   return ok(
     [
-      `${roundName(row)} prepared at ${worktree} (a checkout of ${run.branch}).`,
+      `${roundName(row)} of "${node.id}" prepared at ${worktree} (a checkout of ${run.branch}).`,
       'Now start it: call the Agent tool with exactly these arguments (the run fills in the brief, model, worktree and background mode):',
-      `- Agent({ subagent_type: "${role === 'qa' ? QA_AGENT : REVIEW_AGENT}", description: "${roundName(row)}", prompt: "dacapo ${role} ${iteration}-${round}" })`,
-      parallel && role === 'qa'
-        ? `The judges run in parallel: call ${tool('review')} now as well, then start both agents in one message and end your turn; a prompt wakes you with each verdict.`
+      `- Agent({ subagent_type: "${agentType(node.id)}", description: "${roundName(row)}", prompt: "dacapo judge ${node.id} ${iteration}-${round}" })`,
+      alongside.length > 0
+        ? `Its stage shares a step with ${alongside.map(n => `"${n.id}"`).join(', ')}: call ${tool('judge')} for ${alongside.length === 1 ? 'it' : 'them'} now as well, then make every Agent call in one message and end your turn; a prompt wakes you with each verdict.`
         : 'Then end your turn; a prompt wakes you with the verdict and overview.',
-      ...(role === 'qa' && conf.conf['qa-collectors'] > 0 ? [`QA may start up to ${conf.conf['qa-collectors']} ${COLLECTOR_AGENT} agents on slices of the rubric; its brief says so.`] : []),
+      ...(helper && cap > 0 ? [`"${node.id}" may start up to ${cap} ${agentType(helper.id)} agents on slices of the rubric; its brief says so.`] : []),
+    ].join('\n'),
+  )
+}
+
+/**
+ * Prepares a node with contract none (on call, or in a stage) for one question. The Agent call the reply lists runs in
+ * the foreground in the run's worktree (the repository before `start` set one up), and its result is the answer.
+ */
+async function ask(a: Args) {
+  const run = await currentRun()
+  if (!run) return fail('ask: no active run')
+  const loop = await loopOf(run)
+  if (!loop || !run.loop) return fail(`ask: the run has no loop yet; call ${tool('start')} first`)
+  const askable = Object.values(loop.nodes).filter(n => n.contract === 'none' && n.type !== 'entry' && n.type !== 'exit')
+  const nodeId = str(a.node).trim()
+  const node = loop.nodes[nodeId]
+  if (!node || node.contract !== 'none' || node.type === 'entry' || node.type === 'exit') {
+    return fail(`ask: "${nodeId}" is not a node of the loop "${run.loop.name}" that answers questions (contract none, not the entry or the exit); those nodes: ${askable.map(n => n.id).join(', ') || 'none'}`)
+  }
+  const prompt = str(a.prompt).trim()
+  if (!prompt) return fail('ask: "prompt" must hold the question or the task')
+  const model = str(a.model).trim() || node.models[0] || ''
+  if (str(a.model).trim() && node.models.length > 0 && !node.models.includes(model)) return fail(`ask: "model" must be one of ${node.models.join(', ')} (the models of the node "${node.id}")`)
+  const rows = await io.getRows()
+  const n = rows.filter(r => r.kind === 'worker' && isAsk(r) && r.node === node.id).length + 1
+  const cwd = run.worktree || run.root
+  await io.write(`${run.runDir}/ask-${node.id}-${n}.md`, prompt)
+  const now = await io.now()
+  const row: WorkerRow = {
+    kind: 'worker',
+    id: pendingAsk(node.id, n),
+    iteration: run.iteration,
+    at: now,
+    lastActivityAt: now,
+    taskId: `${node.id}-${n}`,
+    title: prompt.split('\n')[0]!.slice(0, 80),
+    branch: '',
+    worktree: cwd,
+    model,
+    commit: '',
+    mergeMethod: 'squash',
+    status: 'pending',
+    stats: freshStats(),
+    node: node.id,
+    contract: 'none',
+  }
+  await io.setRows(list => [...list, row])
+  return ok(
+    [
+      `"${node.id}" is ready for question ${n}; it works in ${cwd}${run.worktree ? '' : ' (the repository: the run has no worktree before start)'}.`,
+      'Ask it: call the Agent tool with exactly these arguments (the run fills in your prompt, the model and the working directory):',
+      `- Agent({ subagent_type: "${agentType(node.id)}", description: "${node.id}: ${row.title.replace(/"/g, "'").slice(0, 40)}", prompt: "dacapo ask ${node.id} ${n}" })`,
+      'It runs in the foreground: the Agent result is its answer.',
     ].join('\n'),
   )
 }
@@ -705,7 +1090,7 @@ async function cancel(a: Args) {
   const now = await io.now()
   await patchRow(agentId, r => ({ ...r, status: 'cancelled', endedAt: now, note: str(a.reason) || 'cancelled by the orchestrator' }))
   const closed: string[] = []
-  if (row.kind === 'worker' && run) {
+  if (isLanding(row) && run) {
     for (const pr of prsOf(run, row.branch).filter(p => p.state === 'open' || p.state === 'draft')) {
       const done = await gh.closePr(io, run.worktree, pr.number)
       closed.push(done.ok ? `pull request #${pr.number} closed` : `pull request #${pr.number} not closed: ${(done.err || done.out).split('\n')[0] ?? ''}`)
@@ -727,7 +1112,7 @@ async function finish(a: Args) {
     return ok(`Run ${run.id} aborted; ${run.branch || 'no branch'} keeps what landed. Worktrees under .workspaces/ and open pull requests are kept for inspection.`)
   }
   if (!run.worktree) return fail('finish: nothing was ever dispatched; call finish with abort=true to close the run')
-  const unsynced = rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.status === 'finished')
+  const unsynced = rows.filter((r): r is WorkerRow => isLanding(r) && r.status === 'finished')
   if (unsynced.length > 0) return fail(`finish: ${unsynced.length} finished worker(s) not yet synced; call ${tool('sync')} first`)
   const title = str(a.title).trim()
   if (!title) return fail('finish: "title" is required: the merge commit title')
@@ -755,7 +1140,9 @@ async function finish(a: Args) {
   }
   const now = await io.now()
   const attempt = (fresh.final?.attempt ?? 0) + 1
-  await io.setRun(cur => (cur ? { ...cur, status: 'merging', phase: 'merge', final: { number, url, title, openedAt: now, attempt } } : cur))
+  const loop = await loopOf(fresh)
+  const merge = (loop && exitStage(loop)) || 'merge'
+  await io.setRun(cur => (cur ? { ...cur, status: 'merging', phase: 'merge', stage: merge, activeStages: [], final: { number, url, title, openedAt: now, attempt } } : cur))
   return ok(
     [
       `Final pull request #${number} ${existing ? 'updated' : 'opened'}: ${url} (${fresh.branch} into ${fresh.baseBranch}). ${pushed}`,
@@ -763,7 +1150,6 @@ async function finish(a: Args) {
     ].join('\n'),
   )
 }
-
 // ---------- the final pull request, watched by the ticker ----------
 
 /** Final pull requests the ticker already tried to merge, by number and attempt, so a refusal is reported once. */
@@ -778,7 +1164,7 @@ async function completeMerge(run: Run, pr: Pr, how: string) {
   if (remote) notes.push(remote)
   notes.push((await git.refreshBase(io, run.root, run.baseBranch)).note)
   const rows = await io.getRows()
-  for (const w of rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.status !== 'merged')) notes.push(...(await git.removeWorktree(io, run.root, w.worktree, w.branch)))
+  for (const w of rows.filter((r): r is WorkerRow => isLanding(r) && r.status !== 'merged')) notes.push(...(await git.removeWorktree(io, run.root, w.worktree, w.branch)))
   for (const q of rows.filter((r): r is QaRow => r.kind === 'qa')) notes.push(...(await git.removeWorktree(io, run.root, q.worktree)))
   // one last listing, so every pull request shows its final state
   const latest = await io.getRun()
@@ -789,7 +1175,7 @@ async function completeMerge(run: Run, pr: Pr, how: string) {
     [
       `Merged into ${run.baseBranch}: pull request #${pr.number} "${pr.title}" (${pr.url}, ${how}).`,
       ...notes.filter(Boolean).map(n => `- ${n}`),
-      `Run ${run.id} finished; reports and briefs are under ${run.runDir}. Report to the user in a few lines: what shipped, the level and the last verdicts, anything left out, and the decisions and recommendations to review.`,
+      `Run ${run.id} finished; reports and briefs are under ${run.runDir}. Report to the user in a few lines: what shipped, the loop and the last verdicts, anything left out, and the decisions and recommendations to review.`,
     ].join('\n'),
   )
 }
@@ -799,6 +1185,7 @@ async function watchFinal(run: Run) {
   const final = run.final
   const pr = run.prs.find(p => p.number === final.number)
   if (!pr) return
+  const again = judgeAgain(await loopOf(run))
   const key = (what: string) => `final-${what}-${pr.number}-${final.attempt}`
   if (pr.state === 'merged') return completeMerge(run, pr, 'merged by hand')
   if (pr.state === 'closed') {
@@ -807,13 +1194,13 @@ async function watchFinal(run: Run) {
   if (pr.mergeable === 'conflicting') {
     return wake(
       key('conflict'),
-      `The final pull request #${pr.number} conflicts with ${run.baseBranch}. Dispatch one worker with merge: "merge" whose task is to merge origin/${run.baseBranch} into its branch and resolve the conflicts (commit title "chore: merge ${run.baseBranch} into ${run.branch}"), then ${tool('sync')}, ${judgeAgain(run)}call ${tool('finish')} again.`,
+      `The final pull request #${pr.number} conflicts with ${run.baseBranch}. Dispatch one worker with merge: "merge" whose task is to merge origin/${run.baseBranch} into its branch and resolve the conflicts (commit title "chore: merge ${run.baseBranch} into ${run.branch}"), then ${tool('sync')}, ${again}call ${tool('finish')} again.`,
     )
   }
   if (pr.checks === 'failing') {
     return wake(
       key('checks'),
-      `The final pull request #${pr.number} has failing checks (${pr.url}). Dispatch a worker to fix them (resume the task at fault, or a repair task), then ${tool('sync')}, ${judgeAgain(run)}call ${tool('finish')} again.`,
+      `The final pull request #${pr.number} has failing checks (${pr.url}). Dispatch a worker to fix them (resume the task at fault, or a repair task), then ${tool('sync')}, ${again}call ${tool('finish')} again.`,
     )
   }
   if (pr.checks === 'pending' || pr.mergeable === 'unknown') return
@@ -844,13 +1231,16 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   const run = await io.getRun()
   if (!run) return
   const role = roleOf(row)
+  const node = judgeNode(row)
   const key = judgeKey(row)
   const name = roundName(row)
-  // QA ended; a collector it left running would outlive the round
+  const again = `${tool('judge')} with node "${node}"`
+  // the judge ended; a collector it left running would outlive the round
   await stopCollectors(row, now)
+  await settleStages(row.id)
   if (agentFailure) {
     await patchQa(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: agentFailure, collect: undefined }))
-    await wake(key, `${name} failed before writing a report (${agentFailure}). Call ${tool('status')}, then ${tool(role)} again or ${tool('finish')} as you see fit.`)
+    await wake(key, `${name} failed before writing a report (${agentFailure}). Call ${tool('status')}, then ${again} again or ${tool('finish')} as you see fit.`)
     return
   }
   let text: string | null = null
@@ -864,18 +1254,18 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
     rubric = await rubricFor(run, row)
   } catch (error) {
     await patchQa(row.id, r => ({ ...r, status: 'failed', endedAt: now, note: `rubric unreadable: ${String(error)}`, collect: undefined }))
-    await wake(key, `${name} ended but its rubric could not be read (${String(error)}). Call ${tool(role)} again.`)
+    await wake(key, `${name} ended but its rubric could not be read (${String(error)}). Call ${again} again.`)
     return
   }
   const checked = text === null ? { ok: false as const, problems: [`no report at ${row.reportPath}`] } : validateReport(text, rubric)
   if (!checked.ok) {
     const note = `report invalid: ${checked.problems.join('; ')}`
     await patchQa(row.id, r => ({ ...r, status: 'invalid', endedAt: now, note, collect: undefined }))
-    await wake(key, `${name} ended without a valid report (${note}). The worktree ${row.worktree} is kept. Call ${tool(role)} again (a new round) with a clearer ${role === 'qa' ? 'harness' : 'brief'}, or decide without it.`)
+    await wake(key, `${name} ended without a valid report (${note}). The worktree ${row.worktree} is kept. Call ${again} again (a new round) with a clearer ${role === 'qa' ? 'harness' : 'brief'}, or decide without it.`)
     return
   }
   const stamped = JSON.stringify(
-    { iteration: row.iteration, round: row.round, collectedAt: new Date(now).toISOString(), summary: checked.summary, items: checked.items, overview: checked.overview },
+    { iteration: row.iteration, round: row.round, node, collectedAt: new Date(now).toISOString(), summary: checked.summary, items: checked.items, overview: checked.overview },
     null,
     2,
   )
@@ -884,47 +1274,67 @@ async function collectQa(row: QaRow, now: number, agentFailure: string | null) {
   rubrics.delete(key)
   const s = checked.summary
   const weak = checked.items.filter(i => i.score !== 'strong').map(i => `- ${i.score}: ${i.title}${i.note ? ` — ${i.note}` : ''}`)
-  const toFinish = `call ${tool('finish')} with the final pull request's title and body (to the ${conf.conf['prs-skill']} skill) to open it from ${run.branch} into ${run.baseBranch}`
-  // with judges in parallel, the other judge of the round may be running or already in; a QA verdict of fix stops a running review
-  const others = (await io.getRows()).filter((r): r is QaRow => r.kind === 'qa' && roleOf(r) !== role && r.iteration === row.iteration && r.status !== 'cancelled')
+  const loop = await loopOf(run)
+  const place = loop ? placeOf(loop, node) : undefined
+  // the other judges of the same step and round: running alongside, or already in
+  const sameStep = (r: QaRow) => (loop && place ? placeOf(loop, judgeNode(r))?.step === place.step : roleOf(r) !== role)
+  const others = (await io.getRows()).filter((r): r is QaRow => r.kind === 'qa' && judgeNode(r) !== node && r.iteration === row.iteration && r.status !== 'cancelled' && sameStep(r))
   const other = others[others.length - 1]
   const preempted: string[] = []
+  // a fix verdict from a judge that uses the product stops a judge of the change running beside it
   if (role === 'qa' && s.verdict === 'fix') {
-    for (const r of others.filter(isLive)) {
+    for (const r of others.filter(x => isLive(x) && roleOf(x) === 'review')) {
       void io.stop(r.id).catch(() => undefined)
-      await patchQa(r.id, x => ({ ...x, status: 'cancelled', endedAt: now, note: 'stopped: a QA verdict of fix preempts the review; it runs again after the fixes', collect: undefined }))
-      preempted.push(`${roundName(r)} was stopped: QA's fix verdict preempts it. Run ${tool('review')} again once the fixes have landed and QA passes.`)
+      await patchQa(r.id, x => ({ ...x, status: 'cancelled', endedAt: now, note: `stopped: the fix verdict of "${node}" preempts it; it runs again after the fixes`, collect: undefined }))
+      preempted.push(`${roundName(r)} of "${judgeNode(r)}" was stopped: the fix verdict of "${node}" preempts it. Run ${tool('judge')} with node "${judgeNode(r)}" again once the fixes have landed and "${node}" passes.`)
     }
+    await settleStages(row.id)
   }
   const otherState = !other ? undefined : isLive(other) || other.status === 'pending' ? 'running' : other.summary ? other.summary.verdict : 'without a report'
-  const next =
+  const back = loop && place ? loop.transitions.find(t => t.from === place.stage.id && t.back) : undefined
+  const forward = loop && place ? nextMove(loop, place.stage.id, run) : finishWords(run)
+  const judges = loop ? judgesOf(loop).map(n => `"${n.id}"`).join(', then ') : `"${node}"`
+  const loopSays = back?.then ? ` The loop says: ${back.then.replace(/\.$/, '')}.` : ''
+  const fixes =
     role === 'qa'
-      ? s.verdict === 'fix'
-        ? `Next: plan the fixes and call ${tool('dispatch')} (a new round starts), then ${tool('sync')} and ${tool('qa')} again.`
-        : levelOf(run) === 'deep'
-          ? otherState === 'running'
-            ? `${roundName(other!)} is still running; its wake-up follows. Decide once both are in.`
-            : otherState && otherState !== 'without a report'
-              ? `${roundName(other!)} already reported ${otherState}; decide on both reports as the loop says.`
-              : `Next: call ${tool('review')} with the engineering rubric${s.verdict === 'pass' ? '' : ', or dispatch improvements first if the recommendations are worth another round'}.`
-          : `Next: ${toFinish}${s.verdict === 'pass' ? '' : ', or dispatch improvements first if the recommendations are worth another round'}.`
+      ? `plan the fixes and call ${tool('dispatch')} (a new round starts), then ${tool('sync')} and ${tool('judge')} again for ${judges}.${loopSays}`
+      : `the items below strong whose fix lies inside the run's own change become fix tasks: call ${tool('dispatch')} (a new round starts), then ${tool('sync')}, and ${tool('judge')} again for ${judges} (a fix can regress behaviour). An item whose fix would reach parts the run does not touch is not a task: it goes to the final report as a recommendation.`
+  const recommendations = s.verdict === 'pass' && otherState !== 'pass-with-recommendations' ? '' : `, or dispatch improvements first if the recommendations are worth another round${back?.then ? ` (the loop says: ${back.then.replace(/\.$/, '')})` : ''}`
+  // a fix verdict from the judge that uses the product decides the round; a judge of the change waits for one still running
+  const next =
+    s.verdict === 'fix' && role === 'qa'
+      ? `Next: ${fixes}`
       : otherState === 'running'
-        ? `${roundName(other!)} is still running; wait for its verdict before deciding, since a QA verdict of fix comes first.`
-        : s.verdict === 'pass'
-          ? `Next: ${toFinish}.`
-          : `Next: the items below strong whose fix lies inside the run's own change become fix tasks: call ${tool('dispatch')} (a new round starts), then ${tool('sync')}, ${tool('qa')} again (a fix can regress behaviour) and ${tool('review')} again. An item whose fix would reach parts the run does not touch is not a task: it goes to the final report as a recommendation.`
+        ? `${roundName(other!)} of "${judgeNode(other!)}" is still running; its wake-up follows. Decide once both are in${role === 'review' ? ', since a fix verdict from the judge that uses the product comes first' : ''}.`
+        : s.verdict === 'fix'
+          ? `Next: ${fixes}`
+          : otherState === 'fix'
+            ? `Next: ${roundName(other!)} of "${judgeNode(other!)}" asked for fixes this round: plan them with the items above and call ${tool('dispatch')} (a new round starts), then ${tool('sync')} and ${tool('judge')} again for ${judges}.${loopSays}`
+            : `Next: ${forward}${recommendations}.`
   await wake(
     key,
     [
-      `${name}: ${s.strong} strong, ${s.acceptable} acceptable, ${s.unacceptable} unacceptable → verdict: ${s.verdict}.`,
+      `${name} of "${node}": ${s.strong} strong, ${s.acceptable} acceptable, ${s.unacceptable} unacceptable → verdict: ${s.verdict}.`,
       ...(weak.length > 0 ? ['Items below strong:', ...weak] : []),
-      `Overview from ${role === 'qa' ? 'QA' : 'the reviewer'}:`,
+      `Overview from "${node}":`,
       checked.overview,
       ...preempted,
       next,
     ].join('\n'),
   )
   await git.removeWorktree(io, run.root, row.worktree)
+}
+
+/** Drops from the run's active stages every stage that no longer has a live judge, once a judge ended. */
+async function settleStages(endedId: string) {
+  const run = await io.getRun()
+  if (!run?.loop || !run.activeStages || run.activeStages.length < 2) return
+  const loop = await loopOf(run)
+  if (!loop) return
+  const rows = await io.getRows()
+  const live = rows.filter((r): r is QaRow => r.kind === 'qa' && r.id !== endedId && (isLive(r) || r.status === 'pending')).map(r => placeOf(loop, judgeNode(r))?.stage.id)
+  const kept = run.activeStages.filter(s => live.includes(s))
+  if (kept.length !== run.activeStages.length) await io.setRun(cur => (cur ? { ...cur, activeStages: kept } : cur))
 }
 
 const FAILURE_OPTIONS =
@@ -934,7 +1344,7 @@ async function maybeWakeForWorkers() {
   const run = await io.getRun()
   if (!run) return
   const rows = await io.getRows()
-  const workers = rows.filter((r): r is WorkerRow => r.kind === 'worker' && r.iteration === run.iteration)
+  const workers = rows.filter((r): r is WorkerRow => isLanding(r) && r.iteration === run.iteration)
   if (workers.length === 0 || workers.some(w => !isTerminal(w))) return
   const lines = workers.map(w => {
     const pr = latestPr(run, w.branch)
@@ -942,13 +1352,16 @@ async function maybeWakeForWorkers() {
   })
   const finished = workers.filter(w => w.status === 'finished').length
   const troubled = workers.some(w => w.status === 'failed' || w.status === 'timeout' || w.status === 'cancelled')
+  const key = `workers-${run.iteration}`
+  if (run.wakes.some(w => w.key === key)) return
+  const then = finished > 0 ? await afterLanding(run, workers[0]?.node) : ''
   await wake(
-    `workers-${run.iteration}`,
+    key,
     [
       `Round ${run.iteration}: all ${workers.length} worker(s) have ended (${finished} finished).`,
       ...lines,
       ...(troubled ? [FAILURE_OPTIONS] : []),
-      finished > 0 ? `Next: call ${tool('sync')} (it confirms what landed and prunes), then ${afterLanding(run)}.` : `No worker finished. Review with ${tool('status')} and decide.`,
+      finished > 0 ? `Next: call ${tool('sync')} (it confirms what landed and prunes), then ${then}.` : `No worker finished. Review with ${tool('status')} and decide.`,
     ].join('\n'),
   )
 }
@@ -959,7 +1372,7 @@ async function maybeWakeForWorkers() {
  * next completion wakes the orchestrator afresh.
  */
 async function revive(row: WorkerRow | QaRow, now: number) {
-  const key = row.kind === 'worker' ? `workers-${row.iteration}` : judgeKey(row)
+  const key = isAsk(row) ? '' : row.kind === 'worker' ? `workers-${row.iteration}` : judgeKey(row)
   await io.setRun(cur => (cur ? { ...cur, wakes: cur.wakes.filter(w => w.key !== key) } : cur))
   await patchRow(row.id, r =>
     r.kind === 'worker'
@@ -1007,7 +1420,7 @@ async function tick() {
   await io.setUi(ui => ({ ...ui, tick: now }))
   for (const row of live) {
     const idle = now - row.lastActivityAt
-    const who = row.kind === 'worker' ? `Worker ${row.taskId}` : roundName(row)
+    const who = isAsk(row) ? `"${row.node}", asked` : row.kind === 'worker' ? `Worker ${row.taskId}` : roundName(row)
     if (idle >= TIMEOUT_MS) {
       await patchRow(row.id, r => ({ ...r, status: 'timeout', endedAt: now, note: `no activity for ${elapsed(row.lastActivityAt, now)}; stopped` }))
       void io.stop(row.id).catch(() => undefined)
@@ -1033,7 +1446,7 @@ async function tick() {
     }
   }
   // the pull requests of the run, and the final pull request once it is open
-  const hasBranches = run.worktree && (rows.some(r => r.kind === 'worker') || run.final)
+  const hasBranches = run.worktree && (rows.some(isLanding) || run.final)
   if (run.gh?.ok && hasBranches && !polling && now - (run.prsAt ?? 0) >= POLL_MS) {
     polling = true
     try {
@@ -1064,6 +1477,202 @@ const actions: Actions = {
   hideBand: () => void io.setUi(ui => ({ ...ui, isBandHidden: true })),
 }
 
+/** Foreground Agent calls waiting for their agent's id, by prompt: the spawn hook hands it over as the agent starts. */
+const spawning = new Map<string, (agentId: string) => Promise<unknown>>()
+
+/** The text of a tool result: a string, or the text blocks of a content list. */
+function textOf(result: unknown): string {
+  if (typeof result === 'string') return result
+  const blocks = Array.isArray(result) ? result : result && typeof result === 'object' && Array.isArray((result as { content?: unknown }).content) ? (result as { content: unknown[] }).content : []
+  return blocks.map(b => (b && typeof b === 'object' && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : '')).join('\n')
+}
+
+// ---------- the tools' schemas ----------
+
+const RUBRIC_ITEMS = (title: string, category: string) => ({
+  type: 'array',
+  minItems: 1,
+  items: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'kebab-case id' },
+      title: { type: 'string', description: title },
+      category: { type: 'string', description: category },
+    },
+    required: ['id', 'title', 'category'],
+  },
+})
+
+/** The dispatch tool; a loop with one lands node gives the task's model an enum of that node's models. */
+function dispatchSpec(loop: Loop | null) {
+  const landers = loop ? Object.values(loop.nodes).filter(n => n.contract === 'lands') : []
+  const only = landers.length === 1 ? landers[0]! : undefined
+  return {
+    name: 'dispatch',
+    description:
+      'Prepares one worker subagent per task of a lands node of the loop, each in its own git worktree and branch off the run branch, and returns the Agent calls that start them. Each worker lands its work through a pull request into the run branch before it finishes. A dispatch after a judge starts the next round; a task with resume: true continues an earlier worker on its branch and pull request.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node: { type: 'string', description: 'The lands node that works the tasks; leave it out when the loop has one lands node (see config).' },
+        title: { type: 'string', description: 'Optional: a few words naming this round of work, kept in the run log.' },
+        overview: { type: 'string', description: 'Optional: one short paragraph on what this round builds and why, kept in the run log.' },
+        tasks: {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Short kebab-case id, unique in this dispatch.' },
+              title: { type: 'string', description: 'A few words naming the task.' },
+              prompt: { type: 'string', description: 'The full brief: what to build, where, constraints, acceptance. For a resumed task: what to fix or finish.' },
+              model: only
+                ? { type: 'string', enum: [...only.models], description: `One of the models of the node "${only.id}": the first for complex or cross-cutting work, the last for contained work.` }
+                : { type: 'string', description: "One of the models of the lands node (config lists them): the first for complex or cross-cutting work, the last for contained work." },
+              commit: { type: 'string', description: 'Conventional Commit title of the squash commit and the pull request, e.g. "feat: add login endpoint". No scope in parentheses.' },
+              build: { type: 'string', description: 'Command that must pass before the worker marks its pull request ready.' },
+              test: { type: 'string', description: 'Test command the worker runs, if any.' },
+              merge: { type: 'string', enum: ['squash', 'merge'], description: 'How the worker merges its pull request; default squash. Use merge only for a branch that merges the base branch into the run branch.' },
+              resume: { type: 'boolean', description: 'true continues the latest earlier worker of this task id on its branch and pull request instead of starting afresh.' },
+              context: {
+                type: 'array',
+                description: 'Extra files placed under .context/ in the worktree.',
+                items: {
+                  type: 'object',
+                  properties: { name: { type: 'string' }, text: { type: 'string' } },
+                  required: ['name', 'text'],
+                },
+              },
+            },
+            required: ['id', 'title', 'prompt', 'model', 'commit'],
+          },
+        },
+      },
+      required: ['tasks'],
+    },
+  }
+}
+
+const TOOL_SPECS = [
+  {
+    name: 'config',
+    description:
+      'The configuration in force, each value with the file it came from, and the loop a run walks: its name, level and folder, its steps with stage ids and summaries, every node with type, contract, models, skills and categories, its transitions and handovers, and your role as its entry node under "Your role". Agents never read the conf or loop files themselves.',
+    isDeferred: false,
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'start',
+    description:
+      'Begins (or confirms) the dacapo run for the task handed over on a loop: checks the loop and registers its agents, checks that gh is installed and logged in, pulls the base branch, cuts the run branch from it in its own worktree, pushes it, and opens the timeline pane. Call once, after the task is clear.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'The task in one line: the heading of the run.' },
+        overview: { type: 'string', description: 'One short paragraph on the whole task: deliverable, who it is for, what done looks like. Shown under the heading.' },
+        branch: { type: 'string', description: 'The run branch, named after the change (kebab-case, e.g. "add-login"); default a slug of the task. Every worker pull request targets it.' },
+        baseBranch: { type: 'string', description: 'The branch the run is cut from and merged into; default the configured base-branch.' },
+        loop: { type: 'string', description: 'The loop the run walks, by name; default the one the /dacapo:core prompt named with --loop, else the configured loop. Fixed once the run is set up.' },
+      },
+      required: ['task', 'overview'],
+    },
+  },
+  {
+    name: 'stage',
+    description: 'Marks the stage of the loop the run is in, for a stage you work through alone (clarify and research in the shipped loops). start, dispatch, judge and finish mark the stages they enter themselves.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: { stage: { type: 'string', description: 'A stage id of the run\'s loop (config lists them).' } },
+      required: ['stage'],
+    },
+  },
+  {
+    name: 'judge',
+    description:
+      'Starts a scores node of the loop (QA, a reviewer) on a fresh worktree of the run branch. It scores every rubric item strong/acceptable/unacceptable and writes a report the run collects; a judge that hands slices to a collects node may split the rubric among those collectors, so the harness must say what the product can share between testers. Judges run in step order; two whose stages share a step run side by side. Returns at once; the run wakes you with the overview and verdict.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node: { type: 'string', description: 'The scores node to run (config lists the judges of the loop).' },
+        rubric: RUBRIC_ITEMS('What is checked: a user-visible outcome for a judge that uses the product, a property of the code for one that reads the change.', "One of the node's categories (config lists them)."),
+        harness: {
+          type: 'string',
+          description: 'How to start, reach and use the deliverable: install and run commands, URLs or binaries, accounts or fixtures, expected flows. Markdown. Required for a judge that uses the product or runs collectors.',
+        },
+        brief: { type: 'string', description: 'Optional: what was built this round and what changed since the last one; for a judge of the change, the conventions and references the briefs pointed at and what to look at first.' },
+        model: { type: 'string', description: "One of the node's models; default its first (config lists them)." },
+      },
+      required: ['node', 'rubric'],
+    },
+  },
+  {
+    name: 'ask',
+    description:
+      'Prepares a node of the loop with contract none (on call, or in a stage) for one question or task, and returns the Agent call that asks it. The agent runs in the foreground in the run worktree with your prompt as its first turn, and the Agent result is its answer.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node: { type: 'string', description: 'The node to ask (config lists the nodes and where they work).' },
+        prompt: { type: 'string', description: 'The question or task, whole: the node sees nothing else of the run.' },
+        model: { type: 'string', description: "One of the node's models; default its first." },
+      },
+      required: ['node', 'prompt'],
+    },
+  },
+  {
+    name: 'sync',
+    description:
+      'After the workers ended: lists their pull requests through gh, marks the ones that merged, prunes their worktrees and branches, and fast-forwards the run branch worktree to origin. Reports a worker that finished without landing.',
+    isDeferred: false,
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'status',
+    description: 'The timeline as text: the loop and its current stages, every worker, judge and asked node with status, pull request and elapsed time, and the run state.',
+    isDeferred: false,
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'cancel',
+    description: 'Stops a running worker, judge or asked node by agent id, marks its row cancelled and closes its open pull request. Its worktree is kept for inspection until the run ends.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: { agentId: { type: 'string' }, reason: { type: 'string' } },
+      required: ['agentId'],
+    },
+  },
+]
+
+const finishSpec = () => ({
+  name: 'finish',
+  description: `Opens the final pull request from the run branch into the base branch with the given title and body, written to the configured pull request rules skill (${conf.conf['prs-skill']}). The run then watches its checks, merges it with a merge commit when green, prunes the worktrees and wakes you; failing checks or conflicts wake you instead.`,
+  isDeferred: false,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: `The merge commit title, to the ${conf.conf['commits-skill']} skill, e.g. "feat: add login to the CLI".` },
+      body: { type: 'string', description: `The pull request body, to the ${conf.conf['prs-skill']} skill.` },
+      abort: { type: 'boolean', description: 'true ends the run without a final pull request.' },
+    },
+  },
+})
+
+/** Whether `path` is strictly inside one of `roots`: the only places the loop file system may remove. */
+const isRemovable = (path: string, bases: readonly (string | null)[]) => bases.some(b => !!b && path.startsWith('/') && normalize(path, '/') !== normalize(b, '/') && isUnder(path, b, '/'))
+
+/** The element table a drawer gets: the terminal's without `Svg`, so the bar and the icons draw as glyphs there. */
+function elementsFor(surface: string, resolved: Els): Els {
+  if (surface !== 'terminal') return resolved
+  const { Box, Text, Button, Link } = resolved
+  return { Box, Text, Button, Link }
+}
+
 // ---------- the module ----------
 
 export const register: Register = (on, options) => {
@@ -1091,209 +1700,50 @@ export const register: Register = (on, options) => {
     }
 
     const cwd = await io.cwd()
-    await readConf((await git.repoRoot(io, cwd)) ?? cwd)
+    const repo = await git.repoRoot(io, cwd)
+    await readConf(repo ?? cwd)
+    // where loops live: the plugin's, the user's (DACAPO_HOME or ~/.claude/dacapo) and this repository's, kept out of git
+    const env = { home: (await io.home().catch(() => undefined)) ?? '', dacapoHome: (await $.env.get('DACAPO_HOME').catch(() => undefined)) || null }
+    loopRoots = roots({ ...env, pluginRoot: $.plugin.root, repoRoot: repo })
+    loopDrafts = draftsRoot(env)
+    loopFs = {
+      read: path => io.read(path),
+      write: (path, text) => io.write(path, text),
+      exists: path => io.exists(path),
+      list: async dir => (await $.fs.list(dir).catch(() => [])).map(entry => entry.name),
+      stat: async path => {
+        const s = await $.fs.stat(path).catch(() => null)
+        return s ? { mtime: s.mtimeMs } : null
+      },
+      remove: async path => {
+        if (!isRemovable(path, [loopRoots.user, loopRoots.project, loopDrafts])) throw new Error(`dacapo removes only inside a loops or drafts folder, not ${path}`)
+        const out = await io.run(['rm', '-rf', path])
+        if (out.exitCode !== 0) throw new Error(`rm -rf ${path} failed: ${out.stderr.trim()}`)
+      },
+    }
+    if (repo) await git.ensureExclude(io, repo, ['.claude/dacapo/']).catch(() => undefined)
+    registerAgent = spec => $.agent.register(spec)
+    registerDispatch = async loop => {
+      dispatchFor = loop?.name ?? null
+      return $.tool.register(dispatchSpec(loop))
+    }
+
+    // the active loop: the one the loop conf key names; a loop that fails to load leaves the tools working, and config and start say why
+    const resolved = await resolveLoop(conf.conf.loop)
+    active = resolved.ok ? { ref: resolved.ref, loop: resolved.loop } : null
+    activeProblem = resolved.ok ? '' : resolved.problem
+    if (active) {
+      const registered = await ensureAgents(active.ref.name, active.loop).catch(error => ({ problem: String(error), added: [] }))
+      if (registered.problem) activeProblem = registered.problem
+    }
+    dispatchFor = active?.ref.name ?? null
 
     await Promise.all([
-      $.tool.register({
-        name: 'start',
-        description:
-          'Begins (or confirms) the dacapo run for the task handed over: checks that gh is installed and logged in, pulls the base branch, cuts the run branch from it in its own worktree, pushes it, and opens the timeline pane. Call once, after the task is clear.',
-        isDeferred: false,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            task: { type: 'string', description: 'The task in one line: the heading of the run.' },
-            overview: { type: 'string', description: 'One short paragraph on the whole task: deliverable, who it is for, what done looks like. Shown under the heading.' },
-            branch: { type: 'string', description: 'The run branch, named after the change (kebab-case, e.g. "add-login"); default a slug of the task. Every worker pull request targets it.' },
-            baseBranch: { type: 'string', description: 'The branch the run is cut from and merged into; default the configured base-branch.' },
-            level: { type: 'string', enum: ['fast', 'balanced', 'deep'], description: 'How far the run is judged before it merges: fast (no QA), balanced (QA as the end user), deep (QA, then an engineering review of the run\'s change). Default from the configuration. Fixed for the run.' },
-            judges: { type: 'string', enum: ['sequential', 'parallel'], description: 'At deep: whether QA and the review run one after the other or side by side. Default from the configuration. Fixed for the run.' },
-            root: { type: 'string', description: 'Absolute path inside the repository to run in; default the session working directory.' },
-          },
-          required: ['task'],
-        },
-      }),
-      $.tool.register({
-        name: 'dispatch',
-        description:
-          'Prepares one worker subagent per task, each in its own git worktree and branch off the run branch, and returns the Agent calls that start them. Each worker lands its work through a pull request into the run branch before it finishes. A dispatch after QA starts the next round; a task with resume: true continues an earlier worker on its branch and pull request.',
-        isDeferred: false,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            title: { type: 'string', description: 'Optional: a few words naming this round of work, kept in the run log.' },
-            overview: { type: 'string', description: 'Optional: one short paragraph on what this round builds and why, kept in the run log.' },
-            tasks: {
-              type: 'array',
-              minItems: 1,
-              items: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string', description: 'Short kebab-case id, unique in this dispatch.' },
-                  title: { type: 'string', description: 'A few words naming the task.' },
-                  prompt: { type: 'string', description: 'The full brief: what to build, where, constraints, acceptance. For a resumed task: what to fix or finish.' },
-                  model: { type: 'string', enum: conf.conf.workers, description: 'One of the configured worker models: the first for complex or cross-cutting work, the last for contained work.' },
-                  commit: { type: 'string', description: 'Conventional Commit title of the squash commit and the pull request, e.g. "feat: add login endpoint". No scope in parentheses.' },
-                  build: { type: 'string', description: 'Command that must pass before the worker marks its pull request ready.' },
-                  test: { type: 'string', description: 'Test command the worker runs, if any.' },
-                  merge: { type: 'string', enum: ['squash', 'merge'], description: 'How the worker merges its pull request; default squash. Use merge only for a branch that merges the base branch into the run branch.' },
-                  resume: { type: 'boolean', description: 'true continues the latest earlier worker of this task id on its branch and pull request instead of starting afresh.' },
-                  context: {
-                    type: 'array',
-                    description: 'Extra files placed under .context/ in the worktree.',
-                    items: {
-                      type: 'object',
-                      properties: { name: { type: 'string' }, text: { type: 'string' } },
-                      required: ['name', 'text'],
-                    },
-                  },
-                },
-                required: ['id', 'title', 'prompt', 'model', 'commit'],
-              },
-            },
-          },
-          required: ['tasks'],
-        },
-      }),
-      $.tool.register({
-        name: 'sync',
-        description:
-          'After the workers ended: lists their pull requests through gh, marks the ones that merged, prunes their worktrees and branches, and fast-forwards the run branch worktree to origin. Reports a worker that finished without landing.',
-        isDeferred: false,
-        inputSchema: { type: 'object', properties: {} },
-      }),
-      $.tool.register({
-        name: 'qa',
-        description:
-          'Starts the QA subagent in a fresh worktree of the run branch. It uses the deliverable as an end user, scores every rubric item strong/acceptable/unacceptable and writes a report the run collects. It may split the rubric among dacapo:qa-collector subagents (as many at once as qa-collectors allows), bound like itself, so the harness must say what the product can share between testers. Returns at once; the run wakes you with the overview and verdict.',
-        isDeferred: false,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            rubric: {
-              type: 'array',
-              minItems: 1,
-              items: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string', description: 'kebab-case id' },
-                  title: { type: 'string', description: 'What is checked, as a user-visible outcome.' },
-                  category: { type: 'string', enum: ['core', 'ui-ux'] },
-                },
-                required: ['id', 'title', 'category'],
-              },
-            },
-            harness: {
-              type: 'string',
-              description: 'How to start, reach and use the deliverable: install and run commands, URLs or binaries, accounts or fixtures, expected flows. Markdown.',
-            },
-            brief: { type: 'string', description: 'Optional: what was built this round and what changed since the last one.' },
-            model: { type: 'string', enum: conf.conf.qa, description: 'One of the configured QA models; default the first.' },
-          },
-          required: ['rubric', 'harness'],
-        },
-      }),
-      $.tool.register({
-        name: 'review',
-        description:
-          'At level deep, after QA passes: starts the reviewer subagent in a fresh worktree of the run branch. It reads the run\'s change against the base branch as an engineer, scores every engineering rubric item strong/acceptable/unacceptable and writes a report the run collects. Returns at once; the run wakes you with the overview and verdict.',
-        isDeferred: false,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            rubric: {
-              type: 'array',
-              minItems: 1,
-              items: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string', description: 'kebab-case id' },
-                  title: { type: 'string', description: 'What is checked, as a property of the code a reader can balanced in the diff.' },
-                  category: { type: 'string', enum: ['quality', 'consistency', 'cleanup'] },
-                },
-                required: ['id', 'title', 'category'],
-              },
-            },
-            brief: { type: 'string', description: 'Optional: what the run built, the conventions and references the briefs pointed at, and what to look at first.' },
-            model: { type: 'string', enum: conf.conf.review, description: 'One of the configured review models; default the first.' },
-          },
-          required: ['rubric'],
-        },
-      }),
-      $.tool.register({
-        name: 'config',
-        description: 'The configuration in force: the default level, whether judges run in parallel, the models workers, QA and the reviewer may be given, the skills commits and pull requests follow, the base branch, and how many evidence collectors QA may run at once, each with the file it came from. Agents never read the conf files themselves.',
-        isDeferred: false,
-        inputSchema: { type: 'object', properties: {} },
-      }),
-      $.tool.register({
-        name: 'phase',
-        description: 'Marks where the orchestrator is: clarify, research, plan, implement, qa, review or merge. start, dispatch, qa, review and finish set the later phases themselves; call this for clarify and research.',
-        isDeferred: false,
-        inputSchema: {
-          type: 'object',
-          properties: { phase: { type: 'string', enum: ['clarify', 'research', 'plan', 'implement', 'qa', 'review', 'merge'] } },
-          required: ['phase'],
-        },
-      }),
-      $.tool.register({
-        name: 'status',
-        description: 'The timeline as text: every worker, QA and review row with status, pull request and elapsed time, and the run state.',
-        isDeferred: false,
-        inputSchema: { type: 'object', properties: {} },
-      }),
-      $.tool.register({
-        name: 'cancel',
-        description: 'Stops a running worker, QA or reviewer subagent by agent id, marks its row cancelled and closes its open pull request. Its worktree is kept for inspection until the run ends.',
-        isDeferred: false,
-        inputSchema: {
-          type: 'object',
-          properties: { agentId: { type: 'string' }, reason: { type: 'string' } },
-          required: ['agentId'],
-        },
-      }),
-      $.tool.register({
-        name: 'finish',
-        description:
-          `Opens the final pull request from the run branch into the base branch with the given title and body, written to the configured pull request rules skill (${conf.conf['prs-skill']}). The run then watches its checks, merges it with a merge commit when green, prunes the worktrees and wakes you; failing checks or conflicts wake you instead.`,
-        isDeferred: false,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            title: { type: 'string', description: `The merge commit title, to the ${conf.conf['commits-skill']} skill, e.g. "feat: add login to the CLI".` },
-            body: { type: 'string', description: `The pull request body, to the ${conf.conf['prs-skill']} skill.` },
-            abort: { type: 'boolean', description: 'true ends the run without a final pull request.' },
-          },
-        },
-      }),
-      $.agent.register({
-        name: 'worker',
-        description: 'dacapo worker: implements one planned task inside its own worktree and lands it through a pull request. Spawned by the dacapo tools only.',
-        prompt: WORKER_SYSTEM,
-        disallowedTools: ['Agent', 'EnterWorktree', 'ExitWorktree'],
-      }),
-      $.agent.register({
-        name: 'qa',
-        description: 'dacapo QA: uses the deliverable as the end user and scores a rubric. Spawned by the dacapo tools only.',
-        prompt: QA_SYSTEM,
-        disallowedTools: ['Edit', 'NotebookEdit', 'EnterWorktree', 'ExitWorktree'],
-        omitClaudeMd: true,
-      }),
-      $.agent.register({
-        name: 'qa-collector',
-        description: 'dacapo QA collector: uses the deliverable as the end user on a slice of the rubric and brings the evidence back to QA. Spawned by the dacapo QA subagent only.',
-        prompt: COLLECTOR_SYSTEM,
-        disallowedTools: ['Agent', 'Edit', 'NotebookEdit', 'EnterWorktree', 'ExitWorktree'],
-        omitClaudeMd: true,
-      }),
-      $.agent.register({
-        name: 'reviewer',
-        description: 'dacapo reviewer: reads the run\'s change as an engineer and scores an engineering rubric. Spawned by the dacapo tools only.',
-        prompt: REVIEW_SYSTEM,
-        disallowedTools: ['Agent', 'Edit', 'NotebookEdit', 'EnterWorktree', 'ExitWorktree'],
-      }),
+      ...TOOL_SPECS.map(spec => $.tool.register(spec)),
+      $.tool.register(dispatchSpec(active?.loop ?? null)),
+      $.tool.register(finishSpec()),
       $.command.register({ name: 'dacapo-pane', description: 'Opens the dacapo timeline pane.' }),
-      $.command.register({ name: 'dacapo-config', description: 'Shows the dacapo configuration in force and the files it was read from.' }),
+      $.command.register({ name: 'dacapo-config', description: 'Shows the dacapo configuration in force, the files it was read from, and the loop a run walks.' }),
     ])
 
     $.clock.every(TICK_MS, () => void tick())
@@ -1306,27 +1756,34 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const a = e as unknown as Args
     if (e.agentId !== undefined) {
-      // an agent of the run starting another: only QA may, and only an evidence collector bound like itself
+      // an agent of the run starting another: only a judge may, and only the collector its loop hands slices to
       const found = await rowFor(e.agentId)
       if (!found) return next(e)
       const { row, collector } = found
-      if (collector) return { deny: 'dacapo QA collector: collectors never start agents; bring what you found back to QA in your final message.' }
-      if (row.kind !== 'qa' || roleOf(row) !== 'qa') return { deny: `dacapo: ${row.kind === 'worker' ? 'a worker' : 'the reviewer'} never starts agents.` }
-      if (str(a.subagent_type) !== COLLECTOR_AGENT) {
-        return { deny: `dacapo QA: the only agent you may start is ${COLLECTOR_AGENT}: it collects evidence on a slice of the rubric, never opens source and never scores.` }
+      if (collector) return { deny: 'dacapo collector: collectors never start agents; bring what you found back to your judge in your final message.' }
+      if (row.kind !== 'qa') return { deny: `dacapo: ${isAsk(row) ? `"${row.node}", asked,` : 'a worker'} never starts agents.` }
+      const run = await io.getRun()
+      const loop = run ? await loopOf(run) : null
+      const judgeOf = row.node && loop ? loop.nodes[row.node] : undefined
+      const helper = judgeOf && loop ? collectsOf(loop, judgeOf.id) : row.node ? undefined : roleOf(row) === 'qa' ? ({ id: 'qa-collector', models: conf.conf.qa } as unknown as LoopNode) : undefined
+      const who = `dacapo ${judgeName(row)}`
+      if (!helper) return { deny: `${who}: you start no agents in this loop; collect the evidence yourself.` }
+      const helperType = row.node ? agentType(helper.id) : LEGACY_AGENT.collector
+      if (str(a.subagent_type) !== helperType) {
+        return { deny: `${who}: the only agent you may start is ${helperType}: it collects evidence on a slice of the rubric, never opens source and never scores.` }
       }
-      const cap = conf.conf['qa-collectors']
-      if (cap <= 0) return { deny: 'dacapo QA: collectors are off (qa-collectors = 0); collect the evidence yourself.' }
+      const cap = judgeOf ? collectorCap(judgeOf) : conf.conf['qa-collectors']
+      if (cap <= 0) return { deny: `${who}: collectors are off for this judge (its cap is 0); collect the evidence yourself.` }
       const live = liveCollectors(row).length
-      if (live >= cap) return { deny: `dacapo QA: ${cap} collector${cap === 1 ? '' : 's'} may run at once (qa-collectors) and ${live} ${live === 1 ? 'is' : 'are'} running; wait for one to report before starting another.` }
+      if (live >= cap) return { deny: `${who}: ${cap} collector${cap === 1 ? '' : 's'} may run at once and ${live} ${live === 1 ? 'is' : 'are'} running; wait for one to report before starting another.` }
       const slice = str(a.prompt).trim()
-      if (!slice) return { deny: 'dacapo QA: the prompt must tell the collector its rubric ids, its instance and what is shared.' }
-      const allowed = conf.conf.qa
+      if (!slice) return { deny: `${who}: the prompt must tell the collector its rubric ids, its instance and what is shared.` }
+      const allowed = helper.models.length > 0 ? helper.models : conf.conf.qa
       const model = allowed.includes(str(a.model)) ? str(a.model) : allowed[allowed.length - 1]!
-      const prompt = `[dacapo worktree: ${row.worktree}]\n\n${collectorPrompt(row.worktree)}\n\n## Your slice, from QA\n\n${slice}\n\nStart now. Your working directory is the worktree above; write only under its .context/evidence folder.`
-      // in the foreground: the Agent call blocks, so QA keeps its turn while a batch runs (several calls in one message still run at once);
-      // a QA turn that ended to wait on a background collector would end the round without a report
-      const ran = await next({ ...e, prompt, subagent_type: COLLECTOR_AGENT, model, run_in_background: false })
+      const prompt = `[dacapo worktree: ${row.worktree}]\n\n${collectorPrompt(row)}\n\n## Your slice, from ${judgeName(row)}\n\n${slice}\n\nStart now. Your working directory is the worktree above; write only under its .context/evidence folder.`
+      // in the foreground: the Agent call blocks, so the judge keeps its turn while a batch runs (several calls in one message still run at once);
+      // a judge's turn that ended to wait on a background collector would end the round without a report
+      const ran = await next({ ...e, prompt, subagent_type: helperType, model, run_in_background: false })
       const got = 'result' in ran && ran.result && typeof ran.result === 'object' ? (ran.result as { agentId?: unknown }).agentId : undefined
       if (typeof got === 'string') {
         const now = await io.now()
@@ -1334,37 +1791,72 @@ export const register: Register = (on, options) => {
       }
       return ran
     }
-    const ask = ASK_LINE.exec(str(a.prompt))
-    if (!ask) return next(e)
+    const call = CALL_LINE.exec(str(a.prompt))
+    if (!call) return next(e)
     const run = await currentRun()
-    if (!run) return { deny: 'dacapo: no active run; call mcp__dacapo__start first' }
+    if (!run) return { deny: `dacapo: no active run; call ${tool('start')} first` }
     const rows = await io.getRows()
-    const kind = ask[1] as 'worker' | Role
-    const key = ask[2]!
-    // a worker is asked for by task id, a judge by `<round>-<judge round>`; the pending row's key is the task id or the round
-    const wanted = kind === 'worker' ? pendingId('worker', run.iteration, key) : pendingId(kind, Number(key.split('-')[0]), key.split('-')[1] ?? '')
-    const row = rows.find((r): r is WorkerRow | QaRow => r.kind === (kind === 'worker' ? 'worker' : 'qa') && r.id === wanted)
+    const wanted = call[1] ? pendingWorker(run.iteration, call[1]) : call[2] ? pendingJudge(call[2], Number(call[3]), Number(call[4])) : pendingAsk(call[5]!, Number(call[6]))
+    const row = rows.find((r): r is WorkerRow | QaRow => isAgentRow(r) && r.id === wanted)
     if (!row) {
-      const expected = rows.filter((r): r is WorkerRow | QaRow => isAgentRow(r) && r.status === 'pending').map(r => (r.kind === 'worker' ? `worker ${r.taskId}` : `${roleOf(r)} ${r.iteration}-${r.round}`))
-      return { deny: `dacapo: nothing pending for "${ask[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(kind === 'worker' ? 'dispatch' : kind)} first.` }
+      const expected = rows
+        .filter((r): r is WorkerRow | QaRow => isAgentRow(r) && r.status === 'pending')
+        .map(r => (r.kind === 'qa' ? `judge ${judgeNode(r)} ${r.iteration}-${r.round}` : isAsk(r) ? `ask ${r.node} ${r.taskId.split('-').pop()}` : `worker ${r.taskId}`))
+      const by = call[1] ? 'dispatch' : call[2] ? 'judge' : 'ask'
+      return { deny: `dacapo: nothing pending for "${call[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(by)} first.` }
     }
-    const brief = row.kind === 'worker' ? await io.read(`${row.worktree}/.context/brief.md`) : roleOf(row) === 'review' ? reviewPrompt(row.worktree) : qaPrompt(row.worktree)
-    const prompt = `[dacapo worktree: ${row.worktree}]\n\n${brief}\n\nStart now. Your working directory is the worktree above; every path you touch is under it.`
+    let prompt: string
+    let subagent: string
+    let background = true
+    if (row.kind === 'qa') {
+      prompt = `[dacapo worktree: ${row.worktree}]\n\n${judgePrompt(row)}\n\nStart now. Your working directory is the worktree above; every path you touch is under it.`
+      subagent = row.node ? agentType(row.node) : roleOf(row) === 'review' ? LEGACY_AGENT.review : LEGACY_AGENT.qa
+    } else if (isAsk(row)) {
+      // an asked node answers in the foreground: the Agent result is its answer, in the run worktree (the repository before start)
+      const n = row.taskId.split('-').pop()
+      const asked = await io.read(`${run.runDir}/ask-${row.node}-${n}.md`).catch(() => '')
+      prompt = `[dacapo worktree: ${row.worktree}]\n\n${asked}`
+      subagent = agentType(row.node!)
+      background = false
+    } else {
+      const brief = await io.read(`${row.worktree}/.context/brief.md`)
+      prompt = `[dacapo worktree: ${row.worktree}]\n\n${brief}\n\nStart now. Your working directory is the worktree above; every path you touch is under it.`
+      subagent = row.node ? agentType(row.node) : LEGACY_AGENT.worker
+    }
+    const now0 = await io.now()
+    if (!background) {
+      await patchRow(row.id, r => ({ ...r, status: 'running', at: now0, lastActivityAt: now0 }))
+      // the spawn hook learns the agent's id as it starts, so the guards and the timeline follow it while the call blocks
+      spawning.set(prompt, id => io.setRows(list => list.map(r => (isAgentRow(r) && r.id === row.id ? { ...r, id } : r))))
+    }
     const ran = await next({
       ...e,
       prompt,
-      description: row.kind === 'worker' ? row.title : roundName(row),
-      subagent_type: row.kind === 'worker' ? WORKER_AGENT : roleOf(row) === 'review' ? REVIEW_AGENT : QA_AGENT,
-      model: row.model,
-      run_in_background: true,
+      description: row.kind === 'worker' ? (isAsk(row) ? str(a.description) || `${row.node}: ${row.title}` : row.title) : roundName(row),
+      subagent_type: subagent,
+      ...(row.model ? { model: row.model } : {}),
+      run_in_background: background,
     })
     const got = 'result' in ran && ran.result && typeof ran.result === 'object' ? (ran.result as { agentId?: unknown }).agentId : undefined
     const agentId = typeof got === 'string' ? got : undefined
     const now = await io.now()
-    if (agentId) {
+    const refused = 'deny' in ran && ran.deny ? String(ran.deny) : 'isError' in ran && ran.isError ? String(ran.result ?? 'the Agent tool reported an error') : ''
+    if (!background) {
+      // the foreground call has ended: the answer is its result, whatever id the agent ran under
+      spawning.delete(prompt)
+      const answer = refused || ('result' in ran ? textOf(ran.result) : '')
+      const ids = [row.id, ...(agentId ? [agentId] : [])]
+      await io.setRows(list =>
+        list.map(r =>
+          r.kind === 'worker' && ids.includes(r.id) && !isTerminal(r)
+            ? { ...r, id: agentId ?? r.id, status: refused ? 'failed' : 'finished', endedAt: now, note: answer.replace(/\s+/g, ' ').trim().slice(0, 400) || undefined }
+            : r,
+        ),
+      )
+    } else if (agentId) {
       await io.setRows(list => list.map(r => (isAgentRow(r) && r.id === row.id ? { ...r, id: agentId, status: 'running', at: now, lastActivityAt: now } : r)))
     } else {
-      const note = 'deny' in ran && ran.deny ? String(ran.deny) : 'isError' in ran && ran.isError ? String(ran.result ?? 'the Agent tool reported an error') : 'the Agent tool answered without an agent id'
+      const note = refused || 'the Agent tool answered without an agent id'
       await patchRow(row.id, r => ({ ...r, note: `not started: ${note.slice(0, 300)}` }))
     }
     return ran
@@ -1373,13 +1865,21 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => {
     const line = WORKTREE_LINE.exec(e.prompt)
     if (!line || e.isTeammate) return next(e)
-    return next({ ...e, cwd: line[1]! })
+    const out = await next({ ...e, cwd: line[1]! })
+    const started = spawning.get(e.prompt)
+    if (started && out.agentId) {
+      spawning.delete(e.prompt)
+      await started(out.agentId)
+    }
+    return out
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'dacapo-config' }, async () => {
     const cwd = await io.cwd()
-    const loaded = await readConf((await git.repoRoot(io, cwd)) ?? cwd)
-    return { text: `dacapo configuration\n${describeConf(loaded)}\nEdit ~/.claude/dacapo.conf for every repository, or .dacapo.conf at this repository's root; see dacapo.conf in the plugin for the keys. commits-skill and prs-skill name the skills commits and pull requests follow; point them at your own to use your conventions. base-branch names the branch runs are cut from and merged into.` }
+    await readConf((await git.repoRoot(io, cwd)) ?? cwd)
+    return {
+      text: `dacapo configuration\n${await configText()}\n\nEdit ~/.claude/dacapo.conf for every repository, or .dacapo.conf at this repository's root; see dacapo.conf in the plugin for the keys. loop names the loop a run walks; commits-skill and prs-skill name the skills commits and pull requests follow; base-branch names the branch runs are cut from and merged into.`,
+    }
   })
 
   on('command.run', { command: 'dacapo-pane' }, async $ => {
@@ -1400,14 +1900,20 @@ export const register: Register = (on, options) => {
     // only what the person typed is a row: not a subagent's hand-back, a notification or another session's message
     const isTyped = ['composer', 'bridge', 'sdk', 'channel'].includes(e.origin.kind) && !/^\s*<agent-message\b/.test(text)
     if (!isTyped) return next(e)
-    const starts = /^\s*\/dacapo:core(?:\s+--(fast|balanced|deep)\b)?(\s|$)/.exec(text)
+    const starts = /^\s*\/dacapo:core(?:\s+--loop(?:\s+|=)(\S+))?(\s|$)/.exec(text)
     let run = await currentRun()
     if (starts) {
       // the run has no heading yet: the prompt is the person's words, the title and overview come from `start` once the task is clear;
-      // a level flag right after the command (`--deep`) sets the level now, so the pane shows it while the task is clarified
+      // a --loop flag right after the command names the loop now, so the pane shows its stages while the task is clarified
       const cwd = await io.cwd()
       await readConf((await git.repoRoot(io, cwd)) ?? cwd)
-      run = await openRun('', conf.conf['base-branch'], undefined, (starts[1] as Level | undefined) ?? conf.conf.level)
+      const name = starts[1] ?? conf.conf.loop
+      const resolved = await resolveLoop(name)
+      const registered = resolved.ok ? await ensureAgents(name, resolved.loop).catch(error => ({ problem: String(error), added: [] })) : { problem: resolved.problem, added: [] }
+      asked = registered.problem ? name : null
+      if (resolved.ok && !registered.problem && dispatchFor !== name) await registerDispatch(resolved.loop).catch(() => undefined)
+      run = await openRun('', conf.conf['base-branch'], resolved.ok && !registered.problem ? resolved : undefined)
+      if (registered.problem) io.toast(`dacapo: the loop "${name}" cannot run: ${registered.problem.split('\n')[0]}`)
       void $.ui.open({ id: PANE, title: 'Da capo' })
     }
     if (run) {
@@ -1421,25 +1927,18 @@ export const register: Register = (on, options) => {
   // ----- the tools -----
 
   on('tool.call', { tool: 'mcp__dacapo__start' }, ($, e) => start(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__stage' }, ($, e) => markStageTool(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__dispatch' }, ($, e) => dispatch(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__sync' }, () => sync()).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__qa' }, ($, e) => startJudge('qa', e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__review' }, ($, e) => startJudge('review', e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__judge' }, ($, e) => judge(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__ask' }, ($, e) => ask(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__cancel' }, ($, e) => cancel(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__phase' }, async ($, e) => {
-    const phase = str((e as unknown as Args).phase) as Phase
-    if (!PHASES.includes(phase)) return fail(`phase: one of ${PHASES.join(', ')}`)
-    if (!(await currentRun())) return fail('phase: no active run')
-    await setPhase(phase)
-    return ok(`Phase: ${phase}.`)
-  }).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__config' }, async () => ok(describeConf(conf))).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__config' }, async () => ok(await configText())).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__status' }, async () => {
     const snap = await snapshot()
     return ok(statusText(snap))
   }).catch(crashed)
-
   // ----- guards: the orchestrator does not edit, merge or open pull requests; workers stay in their worktree; QA never reads source; the reviewer writes only its report -----
 
   on('tool.call', async ($, e, next) => {
@@ -1466,6 +1965,14 @@ export const register: Register = (on, options) => {
     const { row, collector } = found
     // a collector acting after its round ended must not revive the round
     if (!collector || !isTerminal(row)) await touch(row.id)
+    if (isAsk(row)) {
+      // an asked node works in the run's worktree, which only workers change: it writes under .context alone
+      const target = str(a.file_path) || str(a.notebook_path)
+      if ((e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') && target && !isUnder(target, `${row.worktree}/.context`, row.worktree)) {
+        return { deny: `dacapo ${row.node}: you answer, you do not change the run; write only under ${row.worktree}/.context` }
+      }
+      return next(e)
+    }
     if (row.kind === 'worker') {
       const target = str(a.file_path) || str(a.notebook_path)
       if ((e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') && target && !isUnder(target, row.worktree, row.worktree)) {
@@ -1478,12 +1985,12 @@ export const register: Register = (on, options) => {
       // the reviewer reads anything and writes one file
       if (e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') {
         const target = str(a.file_path) || str(a.notebook_path)
-        if (normalize(target, row.worktree) !== row.reportPath) return { deny: `dacapo reviewer: you never change the code; the only file you write is ${row.reportPath}` }
+        if (normalize(target, row.worktree) !== row.reportPath) return { deny: `dacapo ${judgeNode(row)}: you never change the code; the only file you write is ${row.reportPath}` }
       }
       return next(e)
     }
-    // QA and its collectors alike: the product, never the source; QA writes its report, a collector its evidence
-    const who = collector ? 'dacapo QA collector' : 'dacapo QA'
+    // a judge that uses the product and its collectors alike: the product, never the source; the judge writes its report, a collector its evidence
+    const who = collector ? 'dacapo QA collector' : `dacapo ${judgeName(row)}`
     const evidenceDir = `${contextDir}/evidence`
     if (e.tool === 'Read' || e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') {
       const target = str(a.file_path) || str(a.notebook_path)
@@ -1491,7 +1998,7 @@ export const register: Register = (on, options) => {
         return { deny: `${who}: you judge the deliverable as its user and never open source. Only ${contextDir} is readable or writable.` }
       }
       if (e.tool === 'Write' || e.tool === 'Edit' || e.tool === 'NotebookEdit') {
-        if (collector && !isUnder(target, evidenceDir, row.worktree)) return { deny: `${who}: write only under ${evidenceDir}; QA writes the report.` }
+        if (collector && !isUnder(target, evidenceDir, row.worktree)) return { deny: `${who}: write only under ${evidenceDir}; your judge writes the report.` }
         if (!collector && normalize(target, row.worktree) !== row.reportPath) return { deny: `${who}: the only file you write is ${row.reportPath}` }
       }
     }
@@ -1610,7 +2117,7 @@ export const register: Register = (on, options) => {
   // ----- drawing -----
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const els = $.ui.resolve(e) as unknown as Els
+    const els = elementsFor(e.surface, $.ui.resolve(e) as unknown as Els)
     const [run, rows, ui] = await Promise.all([read($, runAtom), read($, rowsAtom), read($, uiAtom)])
     return drawPane(els, { run, rows, ui }, actions, e.props.bodyColumns, { prices })
   })
@@ -1618,7 +2125,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const [run, rows, ui] = await Promise.all([read($, runAtom), read($, rowsAtom), read($, uiAtom)])
-    const els = $.ui.resolve(e) as unknown as Els
+    const els = elementsFor(e.surface, $.ui.resolve(e) as unknown as Els)
     const tree = drawBand(els, { run, rows, ui }, actions, e.props.bodyColumns, e.props.maxRows, { prices })
     return tree ?? next(e)
   })

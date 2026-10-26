@@ -184,6 +184,13 @@ export type WorkerRow = {
   restarts?: number
   /** True when the row reuses the branch and worktree of an earlier worker of the same task. */
   isResumed?: boolean
+  /** The loop node the agent runs as (`worker`, or an on-call node asked with `ask`); absent on rows saved before loops. */
+  node?: string
+  /**
+   * What the host holds the row to: `lands` for a worker that lands through a pull request (absent means `lands`),
+   * `none` for a node asked with `ask`, whose answer is its Agent result and which has no branch of its own.
+   */
+  contract?: 'lands' | 'none'
 }
 
 /**
@@ -206,7 +213,10 @@ export type Collector = {
 
 export type QaRow = {
   kind: 'qa'
+  /** `qa` for a judge that uses the product (categories core or ui-ux), `review` for one that reads the change. */
   role?: 'qa' | 'review'
+  /** The loop's scores node the judge runs as; absent on rows saved before loops, which `role` names. */
+  node?: string
   /** The QA or reviewer subagent's agent id. */
   id: string
   iteration: number

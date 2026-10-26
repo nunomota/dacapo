@@ -1,16 +1,12 @@
-import type { Level } from '../types'
-
 /** The values a run is configured with; see `dacapo.conf` at the plugin's root for what each means. */
 export type Conf = {
-  /** The level of a run whose prompt carries no level flag. */
-  level: Level
-  /** Whether QA and the engineering review run one after the other or side by side at level deep. */
-  judges: 'sequential' | 'parallel'
-  /** The models a worker may be given, strongest first; the first is the default. */
+  /** The loop a run walks when neither its prompt nor `start` names one. */
+  loop: string
+  /** Models a worker node may list, strongest first; with `qa` and `review`, the models any node of a loop may name. */
   workers: string[]
-  /** The models QA may be given, strongest first; the first is the default. */
+  /** Models a QA node may list, strongest first. */
   qa: string[]
-  /** The models the reviewer may be given, strongest first; the first is the default. */
+  /** Models a reviewer node may list, strongest first. */
   review: string[]
   /** The skill workers load for how to commit: titles, staging, what never to run. */
   'commits-skill': string
@@ -18,12 +14,14 @@ export type Conf = {
   'prs-skill': string
   /** The branch a run is cut from and merged into when `start` names none. */
   'base-branch': string
-  /** How many evidence collectors QA may run at once; 0 means QA collects every piece of evidence itself. */
+  /** How many evidence collectors a judge may run at once when its node sets no `collectors`; 0 means it collects every piece of evidence itself. */
   'qa-collectors': number
 }
 
 export type ConfKey = keyof Conf
-export const CONF_KEYS: readonly ConfKey[] = ['level', 'judges', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill', 'base-branch', 'qa-collectors']
+export const CONF_KEYS: readonly ConfKey[] = ['loop', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill', 'base-branch', 'qa-collectors']
+/** Keys a conf file may still carry from before loops; each is named as removed, never applied. */
+const REMOVED_KEYS = ['level', 'judges']
 
 /** The skills the plugin ships; while one is the configured skill, the mod checks the rules it states (commit titles, attribution lines) itself. */
 export const SHIPPED_COMMITS = 'dacapo:rules-commits'
@@ -31,8 +29,7 @@ export const SHIPPED_PRS = 'dacapo:rules-prs'
 
 /** What the plugin runs with when no file says otherwise: the same values `dacapo.conf` ships with. */
 export const DEFAULT_CONF: Conf = {
-  level: 'balanced',
-  judges: 'sequential',
+  loop: 'core',
   workers: ['opus', 'sonnet'],
   qa: ['opus', 'sonnet'],
   review: ['opus', 'sonnet'],
@@ -42,8 +39,8 @@ export const DEFAULT_CONF: Conf = {
   'qa-collectors': 3,
 }
 
-const LEVELS = ['fast', 'balanced', 'deep']
-const JUDGES = ['sequential', 'parallel']
+/** A loop name, as hooks/loops.ts takes an id. */
+const LOOP_NAME = /^[a-z0-9][a-z0-9-]*$/
 const MODEL = /^[a-z][a-z0-9.-]*$/
 /** A git branch name as dacapo accepts it, for the base branch and the run branch alike. */
 export const BRANCH_NAME = /^[a-z0-9][a-z0-9._/-]*$/
@@ -70,6 +67,10 @@ export function parseConf(text: string): Parsed {
       return
     }
     const key = m[1] as ConfKey
+    if (REMOVED_KEYS.includes(key)) {
+      problems.push(`line ${i + 1}: "${key}" was removed in 0.22; depth is a loop now (loop = core-fast | core | core-deep)`)
+      return
+    }
     if (!CONF_KEYS.includes(key)) {
       problems.push(`line ${i + 1}: unknown key "${key}" (one of ${CONF_KEYS.join(', ')})`)
       return
@@ -87,8 +88,7 @@ export function parseConf(text: string): Parsed {
 
 function check(key: ConfKey, list: string[]): string | null {
   if (list.length === 0) return `"${key}" has no value`
-  if (key === 'level') return list.length === 1 && LEVELS.includes(list[0]!) ? null : `"level" must be one of ${LEVELS.join(', ')}`
-  if (key === 'judges') return list.length === 1 && JUDGES.includes(list[0]!) ? null : `"judges" must be one of ${JUDGES.join(', ')}`
+  if (key === 'loop') return list.length === 1 && LOOP_NAME.test(list[0]!) ? null : '"loop" must be one loop name, like core or core-deep'
   if (SKILL_KEYS.includes(key)) return list.length === 1 && SKILL.test(list[0]!) ? null : `"${key}" must be one skill name, like ${DEFAULT_CONF[key]} or my-rules`
   if (key === 'base-branch') return list.length === 1 && BRANCH_NAME.test(list[0]!) ? null : `"base-branch" must be one git branch name, like main or develop`
   if (key === 'qa-collectors') return list.length === 1 && COUNT.test(list[0]!) && Number(list[0]) <= MAX_COLLECTORS ? null : `"qa-collectors" must be a whole number from 0 to ${MAX_COLLECTORS}`
@@ -123,9 +123,7 @@ export function loadConf(layers: readonly Layer[]): Loaded {
     for (const key of CONF_KEYS) {
       const v = parsed.values[key]
       if (!v) continue
-      if (key === 'level') conf.level = v[0] as Level
-      else if (key === 'judges') conf.judges = v[0] as Conf['judges']
-      else if (key === 'commits-skill' || key === 'prs-skill' || key === 'base-branch') conf[key] = v[0]!
+      if (key === 'loop' || key === 'commits-skill' || key === 'prs-skill' || key === 'base-branch') conf[key] = v[0]!
       else if (key === 'qa-collectors') conf[key] = Number(v[0])
       else conf[key] = v
       origin[key] = layer.path
