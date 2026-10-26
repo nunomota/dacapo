@@ -1,4 +1,4 @@
-import type { Contract, DraftInfo, Handover, Loop, LoopLevel, LoopNode, LoopRef, Stage, Step, Transition } from '../types/loops'
+import type { Contract, DraftInfo, Handover, Loop, LoopLevel, LoopNode, LoopRef, Problem, Stage, Step, Transition } from '../types/loops'
 import { fromD2, toD2 } from './loopd2'
 import { blankLoop, countsOf, discardDraft, draftKey, graphOf, hashLoop, ID, readLoop, stageIndex, validateLoop, withDefaultTransitions, writeLoop, type LoopFs, type Roots } from './loops'
 
@@ -54,6 +54,13 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const words = (text: string) => text.trim().split(/\s+/).filter(Boolean).length
 const sameSet = (a: string[], b: string[]) => a.length === b.length && new Set(a).size === new Set([...a, ...b]).size
 const list = (items: string[]) => (items.length ? items.join(', ') : 'none')
+/** Names in prose: `a`, `a and b`, `a, b and c`; `or` for a choice. */
+const series = (items: string[], conj: 'and' | 'or' = 'and') => (items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} ${conj} ${items.at(-1)}`)
+/** A transition as a change line names it: `qa → review`, `merge ⇢ implement`, `implement → qa ∥ review`. */
+const arrow = (t: { from: string; to: string[]; back?: boolean }) => `${t.from} ${t.back ? '⇢' : '→'} ${t.to.join(' ∥ ')}`
+/** An id to suggest for a name that is not one: `Docs Only` becomes `docs-only`. */
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+const stageIdsOf = (loop: Loop) => loop.steps.flatMap(s => s.stages.map(st => st.id))
 
 /** A refusal of one op: thrown inside `applyOps`, caught at the op that raised it. */
 class Refusal extends Error {}
@@ -249,50 +256,67 @@ function stripDefaults(loop: Loop): Transition[] {
 
 /** The edits, over a working copy the ops change in place. */
 class Draft {
+  /** What the op being applied rewired beyond itself, said after its change line. */
+  rewired: string[] = []
+
   constructor(public loop: Loop) {}
 
   stage(id: string): { step: Step; stage: Stage } {
     for (const step of this.loop.steps) for (const stage of step.stages) if (stage.id === id) return { step, stage }
-    if (this.loop.nodes[id]) refuse(`"${id}" is a node, not a stage`)
-    return refuse(`there is no stage "${id}"`)
+    if (this.loop.nodes[id]) refuse(`"${id}" is a node, not a stage; ${this.nameStage()}`)
+    return refuse(`there is no stage "${id}"; ${this.nameStage()}`)
   }
 
   node(id: string): LoopNode {
     const n = this.loop.nodes[id]
     if (n) return n
-    if (stageIndex(this.loop).has(id)) refuse(`"${id}" is a stage, not a node`)
-    return refuse(`there is no node "${id}"`)
+    if (stageIndex(this.loop).has(id)) refuse(`"${id}" is a stage, not a node; ${this.nameNode()}`)
+    return refuse(`there is no node "${id}"; ${this.nameNode()}`)
+  }
+
+  /** The end of a refusal that names no stage: the stages to name instead. */
+  nameStage(): string {
+    const ids = stageIdsOf(this.loop)
+    return ids.length > 0 ? `name one of ${series(ids, 'or')}` : 'the loop has no stage yet, so add one with stage.add'
+  }
+
+  /** The end of a refusal that names no node: the nodes to name instead. */
+  nameNode(): string {
+    return `name one of ${series(Object.keys(this.loop.nodes), 'or')}`
   }
 
   /** A node that sits in a stage, on call or as a helper: not the entry or the exit. */
   placeable(id: string, verb: string): LoopNode {
     const n = this.node(id)
     const end = id === this.loop.exit || n.type === 'exit' ? 'exit' : id === this.loop.entry || n.type === 'entry' ? 'entry' : null
-    if (end) refuse(`"${id}" is the ${end}; the entry and the exit cannot be ${verb}`)
+    if (end && verb === 'moved') refuse(`"${id}" is the ${end}; the entry and the exit stay where they are`)
+    if (end) refuse(`"${id}" is the ${end}; a loop keeps its entry and exit, so rename it or rewrite its role instead`)
     return n
   }
 
   newStageId(id: string) {
     checkId(id, 'stage')
-    if (id === ENTRY || id === EXIT) refuse(`"${id}" is the word transitions use for the ${id} node; a stage needs another id`)
-    if (stageIndex(this.loop).has(id)) refuse(`there is already a stage "${id}"`)
+    if (id === ENTRY || id === EXIT) refuse(`"${id}" is the word transitions use for the ${id} node; pick another id for the stage`)
+    if (stageIndex(this.loop).has(id)) refuse(`there is already a stage "${id}"; pick another id or rename the existing one`)
   }
 
   newNodeId(id: string) {
     checkId(id, 'node')
-    if (this.loop.nodes[id]) refuse(`there is already a node "${id}"`)
+    if (this.loop.nodes[id]) refuse(`there is already a node "${id}"; pick another id or rename the existing one`)
   }
 
   /** Refuses an `after` outside the steps; -1 is before the first. */
   after(after: number) {
     const n = this.loop.steps.length
-    if (after < -1 || after >= n) refuse(`after is ${after}, but the steps run from 0 to ${n - 1}; -1 puts the stage first`)
+    if (after >= -1 && after < n) return
+    if (n === 0) refuse(`after is ${after}, but the loop has no step yet; give -1 or leave after out`)
+    refuse(`after is ${after}, but the steps run from 0 to ${n - 1}; give a step in that range, or -1 to put the stage first`)
   }
 
   /** The step of the stage named by `alongside`. */
   alongside(id: string, self?: string): Step {
-    if (id === self) refuse(`stage "${self}" cannot go alongside itself`)
-    if (!stageIndex(this.loop).has(id)) refuse(`alongside names "${id}", which is not a stage`)
+    if (id === self) refuse(`stage "${self}" cannot go alongside itself; name another stage to share a step with`)
+    if (!stageIndex(this.loop).has(id)) refuse(`alongside names "${id}", which is not a stage; ${this.nameStage()}`)
     return this.stage(id).step
   }
 
@@ -319,6 +343,80 @@ class Draft {
     return stage
   }
 
+  /**
+   * Moves a stage into the step of another and rewires what the move breaks. Transitions between it and the stages
+   * of its new step go: one step cannot lead to itself. Forward transitions into the stage alone lose it, or, when its
+   * old step is left empty, lead to the step that came after. Forward transitions into exactly its new step's stages
+   * take it in. Its own forward transitions that no longer point forward go.
+   */
+  moveAlongside(id: string, step: Step) {
+    const loop = this.loop
+    const { step: from, stage } = this.stage(id)
+    const others = step.stages.map(s => s.id)
+    const dropped: Transition[] = []
+    const led = new Set<Transition>()
+    loop.transitions = loop.transitions.filter(t => {
+      const between = (t.from === id && t.to.some(s => others.includes(s))) || (others.includes(t.from) && t.to.includes(id))
+      if (between) dropped.push(t)
+      return !between
+    })
+    const at = loop.steps.indexOf(from)
+    const next = loop.steps[at + 1]?.stages.map(s => s.id) ?? [EXIT]
+    from.stages.splice(from.stages.indexOf(stage), 1)
+    const emptied = from.stages.length === 0
+    if (emptied) loop.steps.splice(at, 1)
+    for (const t of loop.transitions) {
+      if (t.back || !t.to.includes(id)) continue
+      if (t.to.length > 1) t.to = t.to.filter(s => s !== id)
+      else if (emptied) t.to = [...next]
+      else continue
+      led.add(t)
+    }
+    for (const t of loop.transitions) {
+      if (t.back || !sameSet(t.to, others)) continue
+      t.to.push(id)
+      led.add(t)
+    }
+    step.stages.push(stage)
+    const index = stageIndex(loop)
+    const here = loop.steps.indexOf(step)
+    loop.transitions = loop.transitions.filter(t => {
+      const stays = t.back || t.from !== id || t.to.every(s => s === EXIT || (index.get(s)?.step ?? -1) > here)
+      if (!stays) dropped.push(t)
+      return stays
+    })
+    this.say(dropped, led)
+  }
+
+  /**
+   * Takes a stage out of a shared step into a step of its own right after, the inverse of moving it alongside:
+   * transitions into the shared step let it go, and the stages left behind lead to it where they led to the step after.
+   */
+  split(id: string) {
+    const loop = this.loop
+    const { step, stage } = this.stage(id)
+    if (step.stages.length === 1) refuse(`stage ${id} is alone in its step; split takes a stage out of a shared step, so use stage.move to move it`)
+    const at = loop.steps.indexOf(step)
+    const next = loop.steps[at + 1]?.stages.map(s => s.id) ?? [EXIT]
+    step.stages.splice(step.stages.indexOf(stage), 1)
+    const left = step.stages.map(s => s.id)
+    const led = new Set<Transition>()
+    for (const t of loop.transitions) {
+      if (t.to.length > 1 && t.to.includes(id)) t.to = t.to.filter(s => s !== id)
+      else if (!t.back && left.includes(t.from) && sameSet(t.to, next)) t.to = [id]
+      else continue
+      led.add(t)
+    }
+    this.insert(at + 1).stages.push(stage)
+    this.say([], led)
+  }
+
+  /** Says what an op rewired: the transitions it dropped, then where each changed one now leads. */
+  say(dropped: Transition[], led: Set<Transition>) {
+    if (dropped.length > 0) this.rewired.push(`dropped the transition${dropped.length > 1 ? 's' : ''} ${series(dropped.map(arrow))}`)
+    for (const t of this.loop.transitions) if (led.has(t)) this.rewired.push(`${t.from} now leads ${t.back ? 'back ' : ''}to ${t.to.join(' ∥ ')}`)
+  }
+
   /** Takes a node out of its place. An on-call node's helpers stay on call, as on-call nodes of their own. */
   unplace(id: string) {
     for (const s of this.loop.steps) for (const st of s.stages) st.nodes = st.nodes.filter(n => n !== id)
@@ -333,19 +431,21 @@ class Draft {
   /** Puts a node in a stage, on call or as a helper of an on-call node; exactly one of the three. */
   place(id: string, o: { stage?: string; onCall?: true; helperOf?: string }, verb: string) {
     const given = (['stage', 'onCall', 'helperOf'] as const).filter(k => o[k] !== undefined)
-    if (given.length === 0) refuse(`${verb} needs one placement: stage, onCall or helperOf`)
-    if (given.length > 1) refuse(`${verb} takes one placement, not ${given.join(' and ')}`)
+    if (given.length === 0) refuse(`${verb} needs a placement; give one of stage, onCall: true or helperOf`)
+    if (given.length > 1) refuse(`${verb} takes one placement, not ${given.join(' and ')}; keep one of them`)
     const n = this.loop.nodes[id]!
     if (o.stage !== undefined) {
       const { stage } = this.stage(o.stage)
       const lands = stage.nodes.filter(x => x !== id && this.loop.nodes[x]?.contract === 'lands')
-      if (n.contract === 'lands' && lands.length > 0) refuse(`stage ${o.stage} already holds a lands node (${lands.join(', ')}); a stage holds at most one`)
+      if (n.contract === 'lands' && lands.length > 0) {
+        refuse(`stage ${o.stage} already holds a lands node (${lands.join(', ')}); a stage holds at most one, so put ${id} in another stage or on call`)
+      }
       this.unplace(id)
       stage.nodes.push(id)
     } else if (o.helperOf !== undefined) {
-      if (o.helperOf === id) refuse(`"${id}" cannot be a helper of itself`)
+      if (o.helperOf === id) refuse(`"${id}" cannot be a helper of itself; name an on-call node as helperOf`)
       this.node(o.helperOf)
-      if (!this.loop.onCall[o.helperOf]) refuse(`"${o.helperOf}" is not on call; a helper hangs off an on-call node`)
+      if (!this.loop.onCall[o.helperOf]) refuse(`"${o.helperOf}" is not on call; a helper hangs off an on-call node, so move ${o.helperOf} on call first`)
       this.unplace(id)
       this.loop.onCall[o.helperOf]!.push(id)
     } else if (!this.loop.onCall[id]) {
@@ -358,18 +458,26 @@ class Draft {
   end(id: string) {
     if (id === ENTRY || id === EXIT) return
     if (stageIndex(this.loop).has(id)) return
-    if (this.loop.nodes[id]) refuse(`"${id}" is a node, not a stage; a transition joins stages, entry and exit`)
-    refuse(`there is no stage "${id}"; a transition joins stages, entry and exit`)
+    const JOINS = 'a transition joins stages, entry and exit'
+    if (id === this.loop.entry) refuse(`"${id}" is the entry node; ${JOINS}, so say entry`)
+    if (id === this.loop.exit) refuse(`"${id}" is the exit node; ${JOINS}, so say exit`)
+    if (this.loop.nodes[id]) {
+      const home = this.loop.steps.flatMap(s => s.stages).find(st => st.nodes.includes(id))
+      refuse(`"${id}" is a node, not a stage; ${JOINS}, so ${home ? `name its stage ${home.id}` : this.nameStage()}`)
+    }
+    refuse(`there is no stage "${id}"; ${JOINS}, so ${this.nameStage()}`)
   }
 }
 
 function checkId(id: string, kind: string) {
-  if (!ID.test(id)) refuse(`"${id}" is not a ${kind} id: lowercase letters, digits and inner hyphens`)
+  if (ID.test(id)) return
+  const like = slug(id)
+  refuse(`"${id}" is not a ${kind} id; use lowercase letters, digits and inner hyphens${like ? `, like ${like}` : ''}`)
 }
 
 function checkSummary(summary: string) {
   const w = words(summary)
-  if (w < 1 || w > 5) refuse(`the summary "${summary}" has ${w} words; a summary has 1 to 5 words`)
+  if (w < 1 || w > 5) refuse(`the summary "${summary}" has ${w} words; write a summary of 1 to 5 words`)
 }
 
 /** Applies one op to the working copy; a problem is thrown as a Refusal. Returns the opaque blocks when they change. */
@@ -402,7 +510,7 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
       if (op.after !== undefined && op.alongside !== undefined) refuse('give after or alongside, not both')
       if (op.alongside !== undefined) {
         const step = d.alongside(op.alongside, op.id)
-        if (step !== from) d.join(d.leave(op.id), step)
+        if (step !== from) d.moveAlongside(op.id, step)
         return
       }
       if (op.after !== undefined) d.after(op.after)
@@ -415,15 +523,12 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
       return
     }
     case 'stage.split': {
-      const { step } = d.stage(op.id)
-      if (step.stages.length === 1) refuse(`stage ${op.id} is alone in its step; split takes a stage out of a shared step`)
-      const stage = d.leave(op.id)
-      d.insert(loop.steps.indexOf(step) + 1).stages.push(stage)
+      d.split(op.id)
       return
     }
     case 'stage.rename': {
       const { stage } = d.stage(op.id)
-      if (op.to === op.id) refuse(`stage ${op.id} is already called ${op.to}`)
+      if (op.to === op.id) refuse(`stage ${op.id} is already called ${op.to}; give a new id in to`)
       d.newStageId(op.to)
       stage.id = op.to
       const rename = (s: string) => (s === op.id ? op.to : s)
@@ -491,13 +596,13 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
     }
     case 'node.role': {
       const n = d.node(op.id)
-      if (!op.text.trim()) refuse(`the role of ${op.id} would be empty; node.role takes the whole role`)
+      if (!op.text.trim()) refuse(`the role of ${op.id} would be empty; give node.role the whole role text`)
       n.role = op.text
       return
     }
     case 'node.rename': {
       const n = d.node(op.id)
-      if (op.to === op.id) refuse(`node ${op.id} is already called ${op.to}`)
+      if (op.to === op.id) refuse(`node ${op.id} is already called ${op.to}; give a new id in to`)
       d.newNodeId(op.to)
       const rename = (s: string) => (s === op.id ? op.to : s)
       loop.nodes = Object.fromEntries(Object.entries(loop.nodes).map(([id, x]) => (id === op.id ? [op.to, { ...n, id: op.to }] : [id, x])))
@@ -513,7 +618,7 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
     }
     case 'transition.set': {
       for (const id of [op.from, ...op.to]) d.end(id)
-      if (op.to.length === 0) refuse('the transition goes nowhere; to lists the stages it leads to')
+      if (op.to.length === 0) refuse('the transition goes nowhere; list in to the stages it leads to')
       const t: Transition = { from: op.from, to: [...op.to], back: op.back || undefined, label: op.label, when: op.when, then: op.then }
       const i = loop.transitions.findIndex(x => x.from === op.from && sameSet(x.to, op.to))
       if (i >= 0) loop.transitions[i] = t
@@ -523,7 +628,14 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
     case 'transition.remove': {
       for (const id of [op.from, ...op.to]) d.end(id)
       const i = loop.transitions.findIndex(x => x.from === op.from && sameSet(x.to, op.to))
-      if (i < 0) refuse(`there is no transition from ${op.from} to ${op.to.join(' and ')}`)
+      if (i < 0) {
+        const out = loop.transitions.filter(x => x.from === op.from)
+        refuse(
+          `there is no transition from ${op.from} to ${series(op.to)}; ${
+            out.length > 0 ? `name one of ${series(out.map(arrow), 'or')}` : `${op.from} leads on only by default, so set another with transition.set`
+          }`,
+        )
+      }
       loop.transitions.splice(i, 1)
       return
     }
@@ -540,7 +652,10 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
       d.node(op.from)
       d.node(op.to)
       const i = loop.handovers.findIndex(x => x.from === op.from && x.to === op.to)
-      if (i < 0) refuse(`there is no handover from ${op.from} to ${op.to}`)
+      if (i < 0) {
+        const out = loop.handovers.filter(x => x.from === op.from)
+        refuse(`there is no handover from ${op.from} to ${op.to}; ${out.length > 0 ? `name one of ${series(out.map(x => `${x.from} → ${x.to}`), 'or')}` : `${op.from} hands nothing over, so there is nothing to remove`}`)
+      }
       loop.handovers.splice(i, 1)
       return
     }
@@ -555,7 +670,7 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
       return
     }
     case 'import-d2': {
-      if (ctx.d2 === undefined) refuse('there is no loop.d2 to import')
+      if (ctx.d2 === undefined) refuse('there is no loop.d2 to import; save the loop once to write one, then edit it')
       const out = fromD2(ctx.d2!, loop)
       if (out.problems.length > 0) throw new Refusal(out.problems.map(p => p.message).join('\n'))
       d.loop = copyLoop(out.loop)
@@ -565,17 +680,109 @@ function apply(d: Draft, op: Op, ctx: { d2?: string }): string[] | undefined {
   return refuse(`"${(op as { op: unknown }).op}" is not an op`)
 }
 
-/** Applies the ops in order to a copy of the loop. The first op that cannot apply stops everything: nothing is returned but the problem. After the last op the whole loop must validate, else the batch is refused with the problems. */
+/** What to do about a problem of the loop that names this key of a node: the op that sets it. */
+const NODE_FIX: Record<string, string> = {
+  models: 'set its models with node.set',
+  skills: 'set its skills with node.set',
+  summary: 'set its summary with node.set',
+  contract: 'set its contract with node.set',
+  tools: 'set its denied tools with node.set',
+  collectors: 'set its collectors with node.set',
+}
+
+/** A problem `validateLoop` found, said the way a refusal is: what is wrong, then what to do, in one sentence. */
+function explain(loop: Loop, p: Problem): string {
+  const at = /^(transitions|handovers)\[(\d+)\]$/.exec(p.path)
+  const t = at?.[1] === 'transitions' ? loop.transitions[Number(at[2])] : undefined
+  if (t) {
+    const the = `the ${t.back ? 'back ' : ''}transition from ${t.from} to ${series(t.to)}`
+    const index = stageIndex(loop)
+    const stepOf = (s: string) => (s === ENTRY ? -1 : s === EXIT ? loop.steps.length : (index.get(s)?.step ?? -1))
+    if (p.message.startsWith('to of a forward transition')) {
+      const target = stepOf(t.to.find(s => s !== EXIT) ?? EXIT)
+      const all = loop.steps[target]?.stages.map(s => s.id) ?? [EXIT]
+      const which = target === stepOf(t.from) + 1 ? 'the next step' : `step ${target + 1}`
+      const replace = `transition.remove from ${t.from} to [${t.to.join(', ')}] and transition.set from ${t.from} to [${all.join(', ')}]`
+      return `the transition from ${t.from} must lead to every stage of ${which}: ${series(all)}; replace it with ${replace}`
+    }
+    if (p.message.startsWith('a transition to an earlier step')) return `${the} leads to an earlier step or its own; set it again with back: true, or point it at a later step`
+    if (p.message.startsWith('a back transition')) return `${the} does not lead to one earlier step; point it at a stage of an earlier step, or set it again without back`
+    return `${the}: ${p.message}`
+  }
+  const h = at?.[1] === 'handovers' ? loop.handovers[Number(at[2])] : undefined
+  if (h) return `the handover from ${h.from} to ${h.to}: ${p.message}`
+
+  const node = /^nodes\.([^.]+)(?:\.(.+))?$/.exec(p.path)
+  if (node) {
+    const [, id, key] = node as unknown as [string, string, string | undefined]
+    const n = loop.nodes[id]
+    // tests/dacapo.test.ts pins this one as validateLoop has it; it already says what the node needs.
+    if (key === 'categories' && n?.contract === 'scores') return `${p.path}: ${p.message}`
+    if (n && (key === 'categories' || key === 'collectors') && /for scores nodes only/.test(p.message)) {
+      return `node ${id} does not score, so it takes no ${key}; set its contract to ${n.contract} again with node.set to drop them, or set it to scores`
+    }
+    if (n && key === 'models' && /needs at least one model/.test(p.message)) {
+      return `node ${id} ${n.contract === 'lands' ? 'lands work' : 'scores'} but has no model; give it at least one with node.set models`
+    }
+    if (key === 'contract' && n?.contract === 'collects') return `node ${id} collects evidence but no scores node hands over to it; add a handover.set from its judge to ${id}`
+    if (key === undefined && /in no stage and not on call/.test(p.message)) return `node ${id} is in no stage and not on call; place it with node.move`
+    const times = /is placed (\d+) times/.exec(p.message)
+    if (key === undefined && times) return `node ${id} is placed ${times[1]} times; put it in one place with node.move`
+    return `node ${id}: ${p.message}${key && NODE_FIX[key] ? `; ${NODE_FIX[key]}` : ''}`
+  }
+
+  const stage = /^steps\[(\d+)\]\.stages\[(\d+)\]/.exec(p.path)
+  if (stage) {
+    const id = loop.steps[Number(stage[1])]?.stages[Number(stage[2])]?.id ?? '?'
+    if (/is not reachable from entry/.test(p.message)) return `stage ${id} is not reachable from entry; lead a transition into it with transition.set`
+    return `stage ${id}: ${p.message}`
+  }
+  if (p.path === 'exit' && /not reachable/.test(p.message)) return 'exit is not reachable from entry; lead a transition from the last step to exit with transition.set'
+  if (p.path === 'description') return `${p.message}, with loop.describe`
+  return `${p.path}: ${p.message}`
+}
+
+/** The problems of a loop as refusals say them, over the loop with its default transitions. */
+function problemsOf(loop: Loop): string[] {
+  const full = { ...withDefaultTransitions(loop), nodes: loop.nodes }
+  return validateLoop(full).map(p => explain(full, p))
+}
+
+/**
+ * A note for each old id a batch renamed or removed that the role bodies or the description still say, as a whole
+ * word in any case: the prose an id change leaves behind. Nothing when the id names a stage or a node again.
+ */
+function staleNotes(loop: Loop, old: string[]): string[] {
+  const notes: string[] = []
+  for (const id of [...new Set(old)]) {
+    if (loop.nodes[id] || stageIndex(loop).has(id)) continue
+    const escaped = id.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')
+    const word = new RegExp(`(?<![a-z0-9-])${escaped}(?![a-z0-9-])`, 'i')
+    const roles = Object.keys(loop.nodes).filter(n => word.test(loop.nodes[n]!.role))
+    const description = word.test(loop.description)
+    if (roles.length === 0 && !description) continue
+    const parts = [...(roles.length > 0 ? [`the role${roles.length > 1 ? 's' : ''} of ${series(roles)}`] : []), ...(description ? ['the description'] : [])]
+    const many = parts.length > 1 || roles.length > 1
+    const ops = [...(roles.length > 0 ? ['node.role'] : []), ...(description ? ['loop.describe'] : [])]
+    notes.push(`${series(parts)} still ${many ? 'say' : 'says'} "${id}"; rewrite ${many ? 'them' : 'it'} with ${series(ops, 'or')}`)
+  }
+  return notes
+}
+
+/** Applies the ops in order to a copy of the loop. The first op that cannot apply stops everything: nothing is returned but the problem. After the last op the whole loop must validate, else the batch is refused with the problems. A change line says what its op rewired; notes on prose an id change left stale follow the change lines. */
 export function applyOps(
   loop: Loop,
   ops: Op[],
   ctx: { d2?: string; opaque?: string[] },
 ): { ok: true; loop: Loop; changes: string[]; opaque: string[] } | { ok: false; index: number; op: string; problems: string[] } {
-  if (ops.length === 0) return { ok: false, index: 0, op: 'batch', problems: ['the batch holds no ops'] }
+  if (ops.length === 0) return { ok: false, index: 0, op: 'batch', problems: ['the batch holds no ops; send at least one'] }
   const d = new Draft(copyLoop(loop))
   let opaque = [...(ctx.opaque ?? [])]
+  const changes: string[] = []
+  const old: string[] = []
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i]!
+    d.rewired = []
     try {
       const next = apply(d, op, ctx)
       if (next) opaque = next
@@ -583,17 +790,22 @@ export function applyOps(
       const problems = e instanceof Refusal ? e.message.split('\n') : [`the op failed: ${errorText(e)}`]
       return { ok: false, index: i, op: String((op as { op?: unknown })?.op), problems }
     }
+    changes.push([describeOp(op), ...d.rewired].join('; '))
+    if (op.op === 'node.rename' || op.op === 'stage.rename' || op.op === 'stage.remove') old.push(op.id)
   }
   d.loop.transitions = stripDefaults(d.loop)
-  const problems = validateLoop({ ...withDefaultTransitions(d.loop), nodes: d.loop.nodes })
-  if (problems.length > 0) return { ok: false, index: ops.length, op: 'batch', problems: problems.map(p => `${p.path}: ${p.message}`) }
-  return { ok: true, loop: d.loop, changes: ops.map(describeOp), opaque }
+  const problems = problemsOf(d.loop)
+  if (problems.length > 0) return { ok: false, index: ops.length, op: 'batch', problems }
+  return { ok: true, loop: d.loop, changes: [...changes, ...staleNotes(d.loop, old)], opaque }
 }
 
 // On disk
 
 const draftJson = (info: DraftInfo) => `${JSON.stringify({ base: info.base, since: info.since, changes: info.changes }, null, 2)}\n`
-const READ_ONLY = "the plugin's loops are read-only; copy it with loop.new from"
+/** The refusal of a change to a plugin loop: copy it first. */
+const readOnly = (name: string) => `the plugin's loops are read-only; copy ${name} with loop.new and from, then change the copy`
+/** The end of a refusal that names no loop. */
+const CHECK_LIBRARY = 'check the name and level in the library'
 
 /** Copies a folder, file by file; a name that cannot be read as a file is taken as a folder. */
 async function copyTree(fs: LoopFs, from: string, to: string): Promise<void> {
@@ -613,7 +825,7 @@ async function copyTree(fs: LoopFs, from: string, to: string): Promise<void> {
 /** The folder of a loop at a level, or a problem when the level has no root. */
 function loopDir(roots: Roots, level: LoopLevel, name: string): string {
   const root = roots[level]
-  if (!root) return refuse(level === 'project' ? 'there is no repository here, so there is no project level' : `there is no ${level} level here`)
+  if (!root) return refuse(level === 'project' ? 'there is no repository here, so there is no project level; use the user level' : `there is no ${level} level here; use the user level`)
   return join(root, name)
 }
 
@@ -654,7 +866,7 @@ export async function loopNew(
   try {
     checkId(a.name, 'loop')
     const dir = loopDir(roots, a.level, a.name)
-    if (await hasLoop(fs, dir)) refuse(`a loop named ${a.name} already exists at the ${a.level} level`)
+    if (await hasLoop(fs, dir)) refuse(`a loop named ${a.name} already exists at the ${a.level} level; pick another name or open that loop`)
     const draftDir = join(draftsRoot, draftKey({ level: a.level, name: a.name, repoRoot }))
     if (await hasDraft(fs, draftDir)) refuse(`a draft of ${a.name} at the ${a.level} level is already open; continue it or discard it`)
     let loop = blankLoop(a.name)
@@ -662,7 +874,7 @@ export async function loopNew(
     let d2: string | null = null
     if (a.from) {
       const source = loopDir(roots, a.from.level, a.from.name)
-      if (!(await hasLoop(fs, source))) refuse(`there is no loop ${a.from.name} at the ${a.from.level} level`)
+      if (!(await hasLoop(fs, source))) refuse(`there is no loop ${a.from.name} at the ${a.from.level} level; ${CHECK_LIBRARY}`)
       loop = { ...(await readLoop(fs, source)).loop, name: a.name }
       change = `new from ${a.from.name} (${a.from.level})`
       if (await fs.exists(join(source, 'loop.d2'))) d2 = await fs.read(join(source, 'loop.d2'))
@@ -683,16 +895,16 @@ export async function loopNew(
  */
 export async function loopRename(fs: LoopFs, roots: Roots, draftsRoot: string, repoRoot: string | null, a: { name: string; level: LoopLevel; to: string }): Promise<string | null> {
   return guarded(async () => {
-    if (a.level === 'plugin') refuse(READ_ONLY)
+    if (a.level === 'plugin') refuse(readOnly(a.name))
     checkId(a.to, 'loop')
-    if (a.to === a.name) refuse(`the loop is already called ${a.to}`)
+    if (a.to === a.name) refuse(`the loop is already called ${a.to}; give a new name in to`)
     const from = loopDir(roots, a.level, a.name)
     const to = loopDir(roots, a.level, a.to)
-    if (!(await hasLoop(fs, from))) refuse(`there is no loop ${a.name} at the ${a.level} level`)
-    if (await fs.exists(to)) refuse(`a loop named ${a.to} already exists at the ${a.level} level`)
+    if (!(await hasLoop(fs, from))) refuse(`there is no loop ${a.name} at the ${a.level} level; ${CHECK_LIBRARY}`)
+    if (await fs.exists(to)) refuse(`a loop named ${a.to} already exists at the ${a.level} level; pick another name, or rename or delete that one first`)
     const fromDraft = join(draftsRoot, draftKey({ level: a.level, name: a.name, repoRoot }))
     const toDraft = join(draftsRoot, draftKey({ level: a.level, name: a.to, repoRoot }))
-    if (await fs.exists(toDraft)) refuse(`a draft named ${a.to} at the ${a.level} level is already open`)
+    if (await fs.exists(toDraft)) refuse(`a draft named ${a.to} at the ${a.level} level is already open; save or discard it first`)
 
     const old = (await readLoop(fs, from)).loop
     const loop = { ...old, name: a.to }
@@ -717,15 +929,15 @@ export async function loopRename(fs: LoopFs, roots: Roots, draftsRoot: string, r
 /** Moves a loop between the user and project levels, with its draft. Refused for a plugin loop or when the target is taken. */
 export async function loopMove(fs: LoopFs, roots: Roots, draftsRoot: string, repoRoot: string | null, a: { name: string; from: LoopLevel; to: 'user' | 'project' }): Promise<string | null> {
   return guarded(async () => {
-    if (a.from === 'plugin') refuse(READ_ONLY)
-    if (a.from === a.to) refuse(`the loop is already at the ${a.to} level`)
+    if (a.from === 'plugin') refuse(readOnly(a.name))
+    if (a.from === a.to) refuse(`the loop is already at the ${a.to} level; name the other level to move it`)
     const from = loopDir(roots, a.from, a.name)
     const to = loopDir(roots, a.to, a.name)
-    if (!(await hasLoop(fs, from))) refuse(`there is no loop ${a.name} at the ${a.from} level`)
-    if (await fs.exists(to)) refuse(`a loop named ${a.name} already exists at the ${a.to} level`)
+    if (!(await hasLoop(fs, from))) refuse(`there is no loop ${a.name} at the ${a.from} level; ${CHECK_LIBRARY}`)
+    if (await fs.exists(to)) refuse(`a loop named ${a.name} already exists at the ${a.to} level; rename or delete one of them first`)
     const fromDraft = join(draftsRoot, draftKey({ level: a.from, name: a.name, repoRoot }))
     const toDraft = join(draftsRoot, draftKey({ level: a.to, name: a.name, repoRoot }))
-    if (await fs.exists(toDraft)) refuse(`a draft of ${a.name} at the ${a.to} level is already open`)
+    if (await fs.exists(toDraft)) refuse(`a draft of ${a.name} at the ${a.to} level is already open; save or discard it first`)
     await copyTree(fs, from, to)
     await fs.remove(from)
     if (await fs.exists(fromDraft)) {
@@ -738,11 +950,11 @@ export async function loopMove(fs: LoopFs, roots: Roots, draftsRoot: string, rep
 /** Deletes a loop's folder and its draft. Refused for a plugin loop. */
 export async function loopDelete(fs: LoopFs, roots: Roots, draftsRoot: string, repoRoot: string | null, a: { name: string; level: LoopLevel }): Promise<string | null> {
   return guarded(async () => {
-    if (a.level === 'plugin') refuse("the plugin's loops are read-only and cannot be deleted")
+    if (a.level === 'plugin') refuse("the plugin's loops are read-only and cannot be deleted; to stop using one, make another loop the default with loop.default")
     const dir = loopDir(roots, a.level, a.name)
     const draft = join(draftsRoot, draftKey({ level: a.level, name: a.name, repoRoot }))
     const [folder, drafted] = await Promise.all([fs.exists(dir), fs.exists(draft)])
-    if (!folder && !drafted) refuse(`there is no loop ${a.name} at the ${a.level} level`)
+    if (!folder && !drafted) refuse(`there is no loop ${a.name} at the ${a.level} level; ${CHECK_LIBRARY}`)
     if (folder) await fs.remove(dir)
     if (drafted) await fs.remove(draft)
   })
@@ -771,8 +983,8 @@ export async function setDefaultLoop(fs: LoopFs, confPath: string, name: string)
 export async function saveDraft(fs: LoopFs, a: { ref: LoopRef; loop: Loop; info: DraftInfo; opaque: string[]; force?: boolean }): Promise<string | null> {
   return guarded(async () => {
     if (a.ref.level === 'plugin') refuse("the plugin's loops are read-only; copy it to user or project first")
-    const problems = validateLoop({ ...withDefaultTransitions(a.loop), nodes: a.loop.nodes })
-    if (problems.length > 0) refuse(`the draft does not validate: ${problems.map(p => `${p.path}: ${p.message}`).join('; ')}`)
+    const problems = problemsOf(a.loop)
+    if (problems.length > 0) refuse(`the draft does not validate: ${problems.join(' · ')}`)
     const saved = (await hasLoop(fs, a.ref.dir)) ? hashLoop((await readLoop(fs, a.ref.dir)).loop) : null
     if (saved !== a.info.base && !a.force) {
       refuse(
