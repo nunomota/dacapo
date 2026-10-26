@@ -425,10 +425,13 @@ function loopText(r: { ref: LoopRef; loop: Loop }): string[] {
   ]
 }
 
-/** The configuration in force and the loop a run would walk now, for the config tool and the command. */
-async function configText(): Promise<string> {
+/**
+ * The configuration in force and a loop, for the config tool and the command. The command shows the conf's loop, the
+ * one a run walks without `--loop`; the tool, with `withRun`, adds the loop a live run walks when `--loop` picked another.
+ */
+async function configText(withRun: boolean): Promise<string> {
   await readConf(loopRepo ?? (await io.cwd()))
-  const run = await currentRun()
+  const run = withRun ? await currentRun() : null
   const name = run?.loop?.name ?? conf.conf.loop
   const r = await resolveLoop(name)
   const head = [describeConf(conf, { loops: await loopNames(), runLoop: run?.loop?.name }), '']
@@ -2468,7 +2471,7 @@ const LOOP_TOOL_SPECS = [
   {
     name: 'loops',
     description:
-      "The loop viewer. list: every loop at the plugin, user and project levels, one line each (level, description, counts, folder, default, draft, hidden by a higher level) and the roots; the pane opens on the library. open: one loop as text (its draft when one exists, DRAFT and its last changes, its notices, the canvas, one line per node) and the pane shows it. focus: points the viewer at a stage, a node or an edge and returns what the focus panel shows: a node's whole role (the entry's included), a transition's label, When and Then, a handover's spec. fold: folds or unfolds the on-call section. focus and fold act on the open loop, or on the loop name and level give, which they open first.",
+      "The loop viewer. list: every loop, in sections Project, User and Plugin as the pane shows them, a row per loop with its markers ([default] on the loop runs resolve to, [draft: N changes], [read-only], [hides <level>], [hidden by <level>]), counts, description and folder (or draft, not saved yet), then the drafts folder; the pane opens on the library. open: one loop as text (its draft when one exists, the other levels with its name, DRAFT and its last changes, its notices, the canvas, one line per node) and the pane shows it; a name alone resolves project over user over plugin, a draft alone counting at its level. focus: points the viewer at a stage, a node or an edge and returns what the focus panel shows: a node's whole role (the entry's included), a transition's label, When and Then, a handover's spec. fold: folds or unfolds the on-call section. focus and fold act on the open loop, or on the loop name and level give, which they open first.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
@@ -2487,7 +2490,7 @@ const LOOP_TOOL_SPECS = [
   {
     name: 'loop_edit',
     description:
-      "Applies operations in order to the open loop's draft, or to the draft of the loop name and level give (opened first), and opens the draft when none exists. The first failing op stops the batch: nothing is written and the reply names the op and the rule it broke. loop.new, loop.move, loop.delete and loop.default change folders and go in a batch of their own. The reply lists what changed and the draft's change count; the viewer focuses the first changed element.",
+      "Applies operations in order to the open loop's draft, or to the draft of the loop name and level give (opened first), and opens the draft when none exists. The first failing op stops the batch: nothing is written and the reply names the op or ops and the rule each broke. loop.new, loop.move, loop.delete and loop.default change folders and go in a batch of their own; loop.default and loop.delete act on the open loop when they name none. loop.move and loop.delete act only with confirm: true, sent in a turn after the user agreed; without it they do nothing and say what they would do. The reply lists what changed, one line per op, and the draft's change count; the viewer focuses the first changed element.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
@@ -2687,7 +2690,7 @@ export const register: Register = (on, options) => {
       $.tool.register(dispatchSpec(active?.loop ?? null)),
       $.tool.register(finishSpec()),
       $.command.register({ name: 'dacapo-pane', description: 'Opens the dacapo timeline pane.' }),
-      $.command.register({ name: 'dacapo-config', description: 'Shows the dacapo configuration in force, the files it was read from, and the loop a run walks.' }),
+      $.command.register({ name: 'dacapo-config', description: "Shows the dacapo configuration in force, the files it was read from, and the conf's loop: the one a run walks without --loop." }),
       ...LOOP_TOOL_SPECS.map(spec => $.tool.register(spec)),
       $.command.register({ name: 'dacapo-loops', description: 'Opens the dacapo loop viewer: the library of loops, or the loop last open.' }),
     ])
@@ -2835,7 +2838,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'dacapo-config' }, async () => {
-    const text = await configText()
+    const text = await configText(false)
     return {
       text: `Configuration in force:\n${text}\n\nSee dacapo.conf in the plugin for the keys. loop names the loop a run walks; commits-skill and prs-skill name the skills commits and pull requests follow; base-branch names the branch runs are cut from and merged into.`,
     }
@@ -2913,7 +2916,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__dacapo__ask' }, ($, e) => ask(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__cancel' }, ($, e) => cancel(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
-  on('tool.call', { tool: 'mcp__dacapo__config' }, async () => ok(await configText())).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__config' }, async () => ok(await configText(true))).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__status' }, async () => {
     const snap = await snapshot()
     return ok(statusText(snap))
