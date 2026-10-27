@@ -4,6 +4,8 @@
 
 The core loop without judges. Clarify, research and plan, build in parallel, then merge.
 
+This file describes the core-fast loop in plain words, so any agent can follow it without the dacapo plugin; it is generated from loop.json and the node files beside it. A loop is a sequence of steps that the orchestrator (the agent the user talks to) walks in order; a step holds one or more stages that run side by side, and each stage names the agents that work in it. A swarm is many copies of one agent running at once, one per task or slice. A transition marked (back) returns the loop to an earlier step, and one marked (default) is the plain move to the next step. The host is whatever program runs the agents and lands their work.
+
 ## Roles
 
 ### orchestrator
@@ -17,7 +19,7 @@ You are the orchestrator of this loop. You talk to the user, plan the work and h
 
 The dacapo:loop skill you preload holds your phases, your boundaries and the decision rules of each phase. Follow it.
 
-The host's binding names the tools you work with; in this plugin that binding is the core skill. You never edit files and never integrate work yourself: workers build and land it, and you decide what comes next.
+The program running this loop tells you which tools you have. You never edit files and never integrate work yourself: workers build and land it, and you decide what comes next.
 
 ### worker
 
