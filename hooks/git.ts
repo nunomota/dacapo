@@ -19,7 +19,7 @@ export async function repoRoot(io: Io, cwd: string): Promise<string | null> {
 }
 
 export async function branchExists(io: Io, root: string, branch: string): Promise<boolean> {
-  return (await git(io, root, ['rev-parse', '--balanced', '--quiet', `refs/heads/${branch}`])).ok
+  return (await git(io, root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).ok
 }
 
 export async function remoteBranchExists(io: Io, root: string, branch: string): Promise<boolean> {
@@ -27,8 +27,11 @@ export async function remoteBranchExists(io: Io, root: string, branch: string): 
   return r.ok && r.out.length > 0
 }
 
-/** Lines `.workspaces/` and `.context/` in the repository's `.git/info/exclude`, added once. */
-export async function ensureExclude(io: Io, root: string): Promise<void> {
+/** What dacapo keeps out of git: worktrees, briefs, the repository's conf, and its project loops under `.claude/dacapo/`. */
+export const EXCLUDED: readonly string[] = ['.workspaces/', '.context/', '.dacapo.conf', '.claude/dacapo/']
+
+/** Lines `wanted` (every one of `EXCLUDED` unless named) in the repository's `.git/info/exclude`, each added once. */
+export async function ensureExclude(io: Io, root: string, wanted: readonly string[] = EXCLUDED): Promise<void> {
   const common = await git(io, root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
   if (!common.ok) return
   const dir = `${common.out}/info`
@@ -36,11 +39,11 @@ export async function ensureExclude(io: Io, root: string): Promise<void> {
   const file = `${dir}/exclude`
   const had = (await io.exists(file)) ? await io.read(file) : ''
   const lines = had.split('\n')
-  const wanted = ['.workspaces/', '.context/', '.dacapo.conf']
   const missing = wanted.filter(w => !lines.some(l => l.trim() === w || l.trim() === w.replace(/\/$/, '')))
   if (missing.length === 0) return
   const sep = had.length === 0 || had.endsWith('\n') ? '' : '\n'
-  await io.write(file, `${had}${sep}# dacapo\n${missing.join('\n')}\n`)
+  const heading = lines.some(l => l.trim() === '# dacapo') ? '' : '# dacapo\n'
+  await io.write(file, `${had}${sep}${heading}${missing.join('\n')}\n`)
 }
 
 export type Worktree = { path: string; branch: string | null; head: string }

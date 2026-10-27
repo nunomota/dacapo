@@ -1,0 +1,56 @@
+direction: down
+
+classes: {
+  entry: {}
+  agent: {}
+  swarm: { style.multiple: true }
+  exit: {}
+  stage: {}
+  transition: { style.stroke-dash: 4 }
+  back: { style.stroke-dash: 4 }
+  handover: {}
+}
+
+orchestrator: { class: entry; tooltip: talks to you }
+
+step1: {
+  label: step 1
+  clarify: { class: stage; tooltip: until nothing is open }
+}
+
+step2: {
+  label: step 2
+  research: { class: stage; tooltip: stack, commands, hazards }
+}
+
+step3: {
+  label: step 3
+  plan: { class: stage; tooltip: tasks, rubric, harness }
+}
+
+step4: {
+  label: step 4
+  implement: {
+    class: stage
+    tooltip: build in parallel
+    worker: { class: swarm; tooltip: builds one task }
+  }
+}
+
+step5: {
+  label: step 5
+  merge: { class: stage; tooltip: integrate the run }
+}
+
+done: { class: exit; tooltip: the run ends }
+
+orchestrator -> step1: handed over { class: transition }
+step1 -> step2: nothing open { class: transition }
+step2 -> step3: findings noted { class: transition }
+step3 -> step4: plan shown { class: transition }
+step4 -> step5: all landed { class: transition }
+step5 -> step4: reconcile { class: back }
+step5 -> done: integrated { class: transition }
+
+orchestrator -> step4.implement.worker: brief { class: handover }
+step4.implement.worker -> orchestrator: report { class: handover }

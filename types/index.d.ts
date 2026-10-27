@@ -64,6 +64,16 @@ export type Run = {
   /** Absolute path of the run log folder, `.workspaces/.dacapo/<id>`. */
   runDir: string
   phase: Phase
+  /**
+   * The loop the run walks, as it was read at start: its name, where it was found, and its steps in order, each
+   * holding one stage or several that run side by side. Absent on a run saved before loops, which walks the
+   * phases of its `level`.
+   */
+  loop?: { name: string; level: 'plugin' | 'user' | 'project'; steps: { stages: { id: string; summary: string }[] }[] }
+  /** The current stage's id when `loop` is set; `phase` stands in for it on a run without a loop. */
+  stage?: string
+  /** The stages of the current step that have a live agent, when that step runs several side by side; empty or absent otherwise. */
+  activeStages?: string[]
   iterations: IterationInfo[]
   /** The orchestrator's own model steps during the run. */
   orchestrator: Usage & { steps: number; modelId?: string }
@@ -174,6 +184,13 @@ export type WorkerRow = {
   restarts?: number
   /** True when the row reuses the branch and worktree of an earlier worker of the same task. */
   isResumed?: boolean
+  /** The loop node the agent runs as (`worker`, or an on-call node asked with `ask`); absent on rows saved before loops. */
+  node?: string
+  /**
+   * What the host holds the row to: `lands` for a worker that lands through a pull request (absent means `lands`),
+   * `none` for a node asked with `ask`, whose answer is its Agent result and which has no branch of its own.
+   */
+  contract?: 'lands' | 'none'
 }
 
 /**
@@ -196,7 +213,10 @@ export type Collector = {
 
 export type QaRow = {
   kind: 'qa'
+  /** `qa` for a judge that uses the product (categories core or ui-ux), `review` for one that reads the change. */
   role?: 'qa' | 'review'
+  /** The loop's scores node the judge runs as; absent on rows saved before loops, which `role` names. */
+  node?: string
   /** The QA or reviewer subagent's agent id. */
   id: string
   iteration: number
@@ -237,8 +257,65 @@ export type Ui = {
   isBandHidden: boolean
 }
 
+// The loop viewer's state, as types/loops.d.ts has it (ViewerState and the loop types under it). A contract cannot
+// import, so the shape is repeated here: keep the two in step.
+
+export type ViewerLevel = 'plugin' | 'user' | 'project'
+export type ViewerNode = {
+  id: string
+  type: 'entry' | 'agent' | 'swarm' | 'exit'
+  summary: string
+  contract: 'lands' | 'scores' | 'collects' | 'none'
+  models: string[]
+  skills: string[]
+  tools: { deny: string[] }
+  categories?: string[]
+  collectors?: number
+  role: string
+}
+export type ViewerLoop = {
+  name: string
+  description: string
+  entry: string
+  exit: string
+  steps: Array<{ stages: Array<{ id: string; summary: string; nodes: string[] }> }>
+  onCall: Record<string, string[]>
+  transitions: Array<{ from: string; to: string[]; back?: boolean; label: string; when?: string; then?: string }>
+  handovers: Array<{ from: string; to: string; label: string; spec: string }>
+  nodes: Record<string, ViewerNode>
+}
+export type ViewerDraft = { dir: string; base: string | null; since: number; changes: string[] }
+export type ViewerRef = {
+  name: string
+  level: ViewerLevel
+  dir: string
+  description: string
+  shadowedBy?: ViewerLevel
+  draft?: ViewerDraft
+  counts: { stages: number; steps: number; nodes: number; edges: number }
+}
+
+/** What the loop viewer draws: the library, the loop open with its draft, the view, a notice. */
+export type Viewer = {
+  screen: 'library' | 'loop'
+  library: ViewerRef[]
+  defaultLoop: string
+  open?: {
+    ref: ViewerRef
+    loop: ViewerLoop
+    draft?: ViewerDraft
+    d2Newer: boolean
+    problems: Array<{ path: string; message: string }>
+    files: string[]
+    opaque?: string[]
+  }
+  view: { folded: boolean; focus?: { kind: 'stage' | 'node' | 'transition' | 'handover'; id: string }; tab: 'canvas' | 'files' }
+  notice?: string
+  shapes?: Record<string, string[][]>
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    'dacapo': { run: Run | null; rows: Row[]; ui: Ui }
+    'dacapo': { run: Run | null; rows: Row[]; ui: Ui; viewer: Viewer }
   }
 }

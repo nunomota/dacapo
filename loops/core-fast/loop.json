@@ -1,0 +1,127 @@
+{
+  "name": "core-fast",
+  "description": "The core loop without judges. Clarify, research and plan, build in parallel, then merge.",
+  "entry": "orchestrator",
+  "exit": "done",
+  "steps": [
+    {
+      "stages": [
+        {
+          "id": "clarify",
+          "summary": "until nothing is open",
+          "nodes": []
+        }
+      ]
+    },
+    {
+      "stages": [
+        {
+          "id": "research",
+          "summary": "stack, commands, hazards",
+          "nodes": []
+        }
+      ]
+    },
+    {
+      "stages": [
+        {
+          "id": "plan",
+          "summary": "tasks, rubric, harness",
+          "nodes": []
+        }
+      ]
+    },
+    {
+      "stages": [
+        {
+          "id": "implement",
+          "summary": "build in parallel",
+          "nodes": [
+            "worker"
+          ]
+        }
+      ]
+    },
+    {
+      "stages": [
+        {
+          "id": "merge",
+          "summary": "integrate the run",
+          "nodes": []
+        }
+      ]
+    }
+  ],
+  "onCall": {},
+  "transitions": [
+    {
+      "from": "entry",
+      "to": [
+        "clarify"
+      ],
+      "label": "handed over"
+    },
+    {
+      "from": "clarify",
+      "to": [
+        "research"
+      ],
+      "label": "nothing open",
+      "when": "nothing material is open"
+    },
+    {
+      "from": "research",
+      "to": [
+        "plan"
+      ],
+      "label": "findings noted"
+    },
+    {
+      "from": "plan",
+      "to": [
+        "implement"
+      ],
+      "label": "plan shown",
+      "when": "the plan was shown and the user had a moment to object"
+    },
+    {
+      "from": "implement",
+      "to": [
+        "merge"
+      ],
+      "label": "all landed",
+      "when": "every task of the round has landed"
+    },
+    {
+      "from": "merge",
+      "to": [
+        "implement"
+      ],
+      "back": true,
+      "label": "reconcile",
+      "when": "the base moved or the final checks fail",
+      "then": "one worker merges the base into the run and resolves conflicts, or fixes the checks"
+    },
+    {
+      "from": "merge",
+      "to": [
+        "exit"
+      ],
+      "label": "integrated"
+    }
+  ],
+  "handovers": [
+    {
+      "from": "orchestrator",
+      "to": "worker",
+      "label": "brief",
+      "spec": "the task, its contracts, build and test commands, the landing title, extra context files"
+    },
+    {
+      "from": "worker",
+      "to": "orchestrator",
+      "label": "report",
+      "spec": "done, done with limitations or failed, with what was done, where it landed, build and tests, open issues; the host says whether it landed"
+    }
+  ]
+}
