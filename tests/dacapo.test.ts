@@ -1159,7 +1159,7 @@ describe('the active loop', () => {
     expect(resultOf(opened)).toMatch(/loop core \(plugin\), stage clarify/)
     const unknown = await $.tool.call({ tool: 'mcp__dacapo__stage', stage: 'review' } as never)
     expect(isRefused(unknown)).toBe(true)
-    expect(resultOf(unknown)).toMatch(/"review" is not a stage of the loop "core"; its stages: clarify, research, plan, implement, qa, merge/)
+    expect(resultOf(unknown)).toBe('Refused: "review" is not a stage of the loop "core"; name one of its stages: clarify, research, plan, implement, qa, merge.')
     const research = await $.tool.call({ tool: 'mcp__dacapo__stage', stage: 'research' } as never)
     expect(resultOf(research)).toBe('Stage: research.')
     const started = await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
@@ -1387,7 +1387,9 @@ describe('marking stages by hand', () => {
     expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__stage', stage: ['review', 'qa'] } as never))).toBe('Stages: review ∥ qa.')
     const two = await $.tool.call({ tool: 'mcp__dacapo__stage', stage: 'qa, merge' } as never)
     expect(isRefused(two)).toBe(true)
-    expect(resultOf(two)).toBe('stage: qa, merge are not in one step; several stages are marked together only when they run side by side')
+    expect(resultOf(two)).toBe('Refused: qa and merge are not in one step of core-wide; name one stage, or the stages of one step (qa, or merge).')
+    const three = await $.tool.call({ tool: 'mcp__dacapo__stage', stage: 'qa, merge, review' } as never)
+    expect(resultOf(three)).toBe('Refused: qa, merge and review are not in one step of core-wide; name one stage, or the stages of one step (qa and review, or merge).')
   })
 })
 
@@ -1477,6 +1479,7 @@ describe('the loop viewer and the architect', () => {
         '- added stage security alongside qa; security → merge: all pass, the label of qa → merge',
         '- added agent security (scores) in stage security',
         '- rewrote the role of security',
+        'Note: the description may be out of date; say how the loop should be described.',
         'The draft holds 3 changes. The draft is not saved: press Save in the pane or say "save".',
         'This is a plugin loop, so save is refused: to keep changes like these, copy it first: say "new loop <name> at user level from core", then make them in the copy.',
         'The viewer shows stage security.',
@@ -1512,11 +1515,23 @@ describe('the loop viewer and the architect', () => {
     const before = new Map(files)
     const bad = await call($, 'loop_edit', { ops: [{ op: 'stage.add', id: 'lint', summary: 'runs the linter' }, { op: 'stage.add', id: 'x' }] })
     expect(isRefused(bad)).toBe(true)
-    expect(resultOf(bad)).toBe('Refused op 1 (stage.add):\n- stage.add needs summary; give it as a string\nNothing was written.')
-    const wrongKey = await call($, 'loop_edit', { ops: [{ op: 'node.set', node: 'worker', models: ['opus'] }] })
+    expect(resultOf(bad)).toBe('Refused op 1 (stage.add):\n- the stage needs a summary of two to four words\nNothing was written.')
+    // every malformed op of a batch is named, each in words, before any applies
+    const wrongKey = await call($, 'loop_edit', { ops: [{ op: 'stage.add', id: 'x' }, { op: 'node.set', node: 'worker', models: ['opus'] }] })
     expect(resultOf(wrongKey)).toBe(
-      'Refused op 0 (node.set):\n- node.set takes id and the fields to change (contract, summary, models, skills, tools, categories or collectors); "node" is not one of them\nNothing was written.',
+      [
+        'Refused op 0 (stage.add) and op 1 (node.set):',
+        '- the stage needs a summary of two to four words',
+        '- it changes a node\'s models, skills, tools, contract, summary, categories or collectors; "node" is not something it changes (did you mean id?)',
+        'Nothing was written.',
+      ].join('\n'),
     )
+    // a batch that changes nothing says so, refuses nothing and opens no draft
+    const same = await call($, 'loop_edit', { name: 'core-fast', ops: [{ op: 'node.set', id: 'worker', models: ['opus', 'sonnet'] }] })
+    expect(isRefused(same)).toBe(false)
+    expect(resultOf(same)).toBe('Nothing changed: the loop already has that.')
+    expect([...files.keys()].some(f => f.includes('plugin--core-fast'))).toBe(false)
+    await call($, 'loops', { action: 'open', name: 'core' })
     // two ops each bring a problem in: both are named, one bullet per problem
     const two = await call($, 'loop_edit', {
       ops: [
@@ -1528,13 +1543,13 @@ describe('the loop viewer and the architect', () => {
     expect(resultOf(two)).toBe(
       [
         'Refused op 0 (stage.add) and op 2 (node.add):',
-        '- stage docs is not reachable from entry; lead a transition into it with transition.set',
-        '- node judge scores but has no categories; give it the rubric categories it accepts with node.set categories',
+        '- stage docs is not reachable from entry; lead a transition into it from the stage before',
+        '- node judge scores but has no categories; give it the rubric categories it accepts',
         'Nothing was written.',
       ].join('\n'),
     )
     const broken = await call($, 'loop_edit', { ops: [{ op: 'node.add', id: 'judge', type: 'agent', contract: 'scores', summary: 'judges', stage: 'qa', models: ['opus'] }] })
-    expect(resultOf(broken)).toBe('Refused op 0 (node.add):\n- node judge scores but has no categories; give it the rubric categories it accepts with node.set categories\nNothing was written.')
+    expect(resultOf(broken)).toBe('Refused op 0 (node.add):\n- node judge scores but has no categories; give it the rubric categories it accepts\nNothing was written.')
     const mixed = await call($, 'loop_edit', { ops: [{ op: 'loop.new', name: 'x', level: 'user' }, { op: 'loop.describe', description: 'x' }] })
     expect(resultOf(mixed)).toMatch(/go in a batch of their own/)
     expect(files).toEqual(before)
@@ -1661,7 +1676,7 @@ describe('the loop viewer and the architect', () => {
     const none = await call($, 'loop_edit', { ops: [{ op: 'loop.describe', description: 'x' }] })
     expect(isRefused(none)).toBe(true)
     expect(resultOf(none)).toBe(
-      'No loop is open. The loops: core (plugin), core-deep (plugin), core-fast (plugin). Name one with "name" (and "level" when the name lives at more than one), open one with loops, action open, or start one with loop.new. Nothing was written.',
+      'No loop is open. The loops: core (plugin), core-deep (plugin), core-fast (plugin). Name one with "name" (and "level" when the name lives at more than one), open one with loops, action open, or start a new loop. Nothing was written.',
     )
     await call($, 'loops', { action: 'open', name: 'core-fast' })
     const mine = `viewer.last:${fnv1a('/home/u/other\n/repo')}`
@@ -1808,5 +1823,22 @@ describe('the loop viewer and the architect', () => {
     expect(files.get('/repo/.dacapo.conf')).toBe('loop = ours\n')
     expect(files.get(`${HOME}/dacapo.conf`)).toBe('base-branch = develop\n')
     expect(resultOf(await call($, 'config'))).toMatch(/^loop = ours  \(\/repo\/\.dacapo\.conf\)$/m)
+  })
+
+  test('the home folder, DACAPO_HOME and the plugin root are resolved as git resolves the repository, so one reply spells each folder one way', async ($, on) => {
+    const files = new Map<string, string>()
+    files.set('/private/var/dh/dacapo.conf', 'base-branch = develop\n')
+    repoHarness(on, files, { HOME: '/var/u', DACAPO_HOME: '/var/dh' })
+    storeOf(on)
+    // /var is a link to /private/var, as on macOS
+    on('fs.stat', (_, e) => {
+      if (!e.path.startsWith('/var/') && e.path !== '/var') throw new Error(`ENOENT: ${e.path}`)
+      return { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false, ...(e.resolve ? { realPath: `/private${e.path}` } : {}) } }
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    const config = resultOf(await call($, 'config'))
+    expect(config).toMatch(/^base-branch = develop  \(\/private\/var\/dh\/dacapo\.conf\)$/m)
+    expect(config).not.toMatch(/(^|[\s(])\/var\//m)
+    expect(config).not.toContain('/hooks/..')
   })
 })
