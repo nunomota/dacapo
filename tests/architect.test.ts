@@ -48,7 +48,7 @@ const REPO = '/repo'
 /** Applies ops that must succeed; returns the result. */
 function ok(loop: Loop, ops: Op[], ctx: { d2?: string; opaque?: string[] } = {}) {
   const out = applyOps(loop, ops, ctx)
-  if (!out.ok) throw new Error(`refused at ${out.index} (${out.op}): ${out.problems.join(' | ')}`)
+  if (!out.ok) throw new Error('unchanged' in out ? 'unchanged' : `refused at ${out.index} (${out.op}): ${out.problems.join(' | ')}`)
   return out
 }
 
@@ -56,6 +56,7 @@ function ok(loop: Loop, ops: Op[], ctx: { d2?: string; opaque?: string[] } = {})
 function refused(loop: Loop, ops: Op[], ctx: { d2?: string; opaque?: string[] } = {}) {
   const out = applyOps(loop, ops, ctx)
   if (out.ok) throw new Error(`not refused: ${out.changes.join(' | ')}`)
+  if ('unchanged' in out) throw new Error('not refused: unchanged')
   expect(Object.keys(out).sort()).toEqual(['index', 'ok', 'op', 'problems'])
   return out
 }
@@ -297,8 +298,8 @@ describe('each op on core', () => {
     ])
     expect(out.changes).toEqual(['renamed node worker to builder', 'renamed node orchestrator to conductor'])
     expect(out.notes).toEqual([
-      'the role of builder still says "worker"; rewrite it with node.role',
-      'the roles of conductor and builder still say "orchestrator"; rewrite them with node.role',
+      'the role of builder still says "worker"; rewrite it',
+      'the roles of conductor and builder still say "orchestrator"; rewrite them',
     ])
     expect(out.loop.nodes.worker).toBeUndefined()
     expect(out.loop.nodes.builder!.id).toBe('builder')
@@ -399,12 +400,12 @@ describe('batches', () => {
   test('a batch invalid at its end is refused with the problems, named by the op that brought them in', async () => {
     const out = refused(await core(), [{ op: 'loop.describe', description: 'Mine.' }, judge])
     expect([out.index, out.op]).toEqual([1, 'node.add'])
-    expect(out.problems).toEqual(['node judge scores but has no categories; give it the rubric categories it accepts with node.set categories'])
+    expect(out.problems).toEqual(['node judge scores but has no categories; give it the rubric categories it accepts'])
   })
 
   test('problems brought in by two ops name both as culprits; one there before the first names none', async () => {
     const two = applyOps(await core(), [{ op: 'stage.add', id: 'docs', summary: 'write the docs', after: 3 }, judge], {})
-    if (two.ok) throw new Error('not refused')
+    if (two.ok || 'unchanged' in two) throw new Error('not refused')
     expect([two.index, two.op]).toEqual([2, 'batch'])
     expect(two.culprits).toEqual([
       { index: 0, op: 'stage.add' },
@@ -414,21 +415,20 @@ describe('batches', () => {
     const c = await core()
     delete c.nodes.qa!.categories
     const before = applyOps(c, [{ op: 'loop.describe', description: 'Mine.' }], {})
-    expect(before).toEqual({ ok: false, index: 1, op: 'batch', culprits: [], problems: ['node qa scores but has no categories; give it the rubric categories it accepts with node.set categories'] })
+    expect(before).toEqual({ ok: false, index: 1, op: 'batch', culprits: [], problems: ['node qa scores but has no categories; give it the rubric categories it accepts'] })
   })
 
-  test('a batch that changes nothing is refused', async () => {
+  test('a batch that changes nothing is unchanged, not refused', async () => {
     const c = await core()
-    expect(refused(c, [{ op: 'node.set', id: 'worker', models: [...c.nodes.worker!.models] }])).toEqual({ ok: false, index: 0, op: 'node.set', problems: ['nothing changed; the loop already has that'] })
-    const back = refused(c, [
+    const same = { ok: false, unchanged: true }
+    expect(applyOps(c, [{ op: 'node.set', id: 'worker', models: [...c.nodes.worker!.models] }], {})).toEqual(same)
+    const back = [
       { op: 'stage.rename', id: 'qa', to: 'judge' },
       { op: 'stage.rename', id: 'judge', to: 'qa' },
-    ])
-    expect([back.index, back.op, back.problems]).toEqual([1, 'stage.rename', ['nothing changed; the loop already has that']])
+    ] satisfies Op[]
+    expect(applyOps(c, back, {})).toEqual(same)
     const label = c.transitions.find(t => t.from === 'qa' && !t.back)!
-    expect(refused(c, [{ op: 'transition.set', from: 'qa', to: ['merge'], label: label.label, ...(label.when ? { when: label.when } : {}), ...(label.then ? { then: label.then } : {}) }]).problems).toEqual([
-      'nothing changed; the loop already has that',
-    ])
+    expect(applyOps(c, [{ op: 'transition.set', from: 'qa', to: ['merge'], label: label.label, ...(label.when ? { when: label.when } : {}), ...(label.then ? { then: label.then } : {}) }], {})).toEqual(same)
   })
 
   test('the first failing op stops the batch and is named', async () => {
@@ -457,7 +457,7 @@ describe('prose left stale', () => {
       { op: 'loop.describe', description: 'Workers build; the worker lands and the qa-collector-worker helps.' },
       { op: 'node.rename', id: 'worker', to: 'builder' },
     ])
-    expect(out.notes).toEqual(['the role of builder and the description still say "worker"; rewrite them with node.role or loop.describe'])
+    expect(out.notes).toEqual(['the role of builder and the description still say "worker"; rewrite them'])
   })
 
   test('a stage removed or renamed notes the prose that names it; an id still in use is not stale', async () => {
@@ -467,10 +467,42 @@ describe('prose left stale', () => {
     c.nodes.orchestrator!.role = 'After merge, say what landed.'
     const removed = ok(c, [{ op: 'stage.remove', id: 'merge' }])
     expect(removed.changes).toEqual(['removed stage merge'])
-    expect(removed.notes).toEqual(['the roles of orchestrator and qa and the description still say "merge"; rewrite them with node.role or loop.describe'])
+    expect(removed.notes).toEqual(['the roles of orchestrator and qa and the description still say "merge"; rewrite them', 'qa → done has no label now; give it one'])
     c.description = 'The default loop.'
-    expect(ok(c, [{ op: 'stage.rename', id: 'merge', to: 'land' }]).notes).toEqual(['the roles of orchestrator and qa still say "merge"; rewrite them with node.role'])
+    expect(ok(c, [{ op: 'stage.rename', id: 'merge', to: 'land' }]).notes).toEqual(['the roles of orchestrator and qa still say "merge"; rewrite them'])
     expect(ok(c, [{ op: 'stage.rename', id: 'qa', to: 'judge' }]).notes).toEqual([])
+  })
+
+  test('a collector moved away from its judge notes the collectors the judge still allows', async () => {
+    const deep = await coreDeep()
+    expect(ok(deep, [{ op: 'node.move', id: 'qa-collector', onCall: true }]).notes).toEqual([
+      'qa allows up to 3 collectors but no collector node hands evidence to it now; set its collectors to 0 or move qa-collector back',
+    ])
+    // with its collectors set to 0 in the same batch, nothing is stale
+    expect(ok(deep, [{ op: 'node.move', id: 'qa-collector', onCall: true }, { op: 'node.set', id: 'qa', collectors: 0 }]).notes).toEqual([])
+    // a judge on call keeps a collector that is its helper
+    expect(ok(deep, [{ op: 'node.move', id: 'qa', onCall: true }, { op: 'node.move', id: 'qa-collector', helperOf: 'qa' }]).notes).toEqual([])
+  })
+
+  test('a transition left without a label where the ones around it had labels is noted', async () => {
+    const c = await core()
+    c.description = 'The default loop.'
+    expect(ok(c, [{ op: 'stage.remove', id: 'research' }]).notes).toEqual(['clarify → plan has no label now; give it one'])
+    // a label set in the same batch leaves nothing to note
+    expect(ok(c, [{ op: 'stage.remove', id: 'research' }, { op: 'transition.set', from: 'clarify', to: ['plan'], label: 'nothing open' }]).notes).toEqual([])
+  })
+
+  test('a reorder notes a description that names the stage or the order', async () => {
+    const c = await core()
+    const stale = 'the description may be out of date; say how the loop should be described'
+    expect(ok(c, [{ op: 'stage.move', id: 'research', alongside: 'clarify' }]).notes).toContain(stale)
+    expect(ok(c, [{ op: 'stage.add', id: 'security', summary: 'checks for holes', alongside: 'qa' }]).notes).toEqual([stale])
+    // described again in the same batch, or a description that names neither, is not noted
+    expect(ok(c, [{ op: 'stage.move', id: 'research', alongside: 'clarify' }, { op: 'loop.describe', description: 'Mine.' }]).notes).not.toContain(stale)
+    c.description = 'The default loop.'
+    expect(ok(c, [{ op: 'stage.move', id: 'research', alongside: 'clarify' }]).notes).not.toContain(stale)
+    // a node edit is no reorder
+    expect(ok(await core(), [{ op: 'node.set', id: 'worker', models: ['opus'] }]).notes).toEqual([])
   })
 
   test('a role rewritten in the same batch is not noted', async () => {
@@ -504,8 +536,8 @@ describe('refusals', () => {
       [{ op: 'node.add', id: 'builder', type: 'swarm', contract: 'lands', summary: 'builds too', stage: 'implement', models: ['opus'] }],
       'stage implement already holds a lands node (worker); a stage holds at most one, so put builder in another stage or on call',
     ],
-    ['a missing placement', [{ op: 'node.add', id: 'scout', type: 'agent', contract: 'none', summary: 'answers' }], 'node.add needs a placement; give one of stage, onCall: true or helperOf'],
-    ['two placements', [{ op: 'node.move', id: 'worker', stage: 'qa', onCall: true }], 'node.move takes one placement, not stage and onCall; keep one of them'],
+    ['a missing placement', [{ op: 'node.add', id: 'scout', type: 'agent', contract: 'none', summary: 'answers' }], 'node scout needs a place; give one of stage, onCall: true or helperOf'],
+    ['two placements', [{ op: 'node.move', id: 'worker', stage: 'qa', onCall: true }], 'node worker goes in one place, not stage and onCall; keep one of them'],
     ['a helper of a node not on call', [{ op: 'node.move', id: 'qa-collector', helperOf: 'qa' }], '"qa" is not on call; a helper hangs off an on-call node, so move qa on call first'],
     ['removing the entry', [{ op: 'node.remove', id: 'orchestrator' }], '"orchestrator" is the entry; a loop keeps its entry and exit, so rename it or rewrite its role instead'],
     ['moving the exit', [{ op: 'node.move', id: 'done', onCall: true }], '"done" is the exit; the entry and the exit stay where they are, so add a node on call instead or rename the exit'],
@@ -521,11 +553,11 @@ describe('refusals', () => {
     ['a node id that is not an id', [{ op: 'node.rename', id: 'worker', to: 'big_worker' }], `"big_worker" is not a node id; ${ID_RULE}, like big-worker`],
     ['a stage called exit', [{ op: 'stage.rename', id: 'merge', to: 'exit' }], '"exit" is the word transitions use for the exit node; pick another id for the stage'],
     ['a rename to the same id', [{ op: 'stage.rename', id: 'qa', to: 'qa' }], 'stage qa is already called qa; give a new id in to'],
-    ['a split of a stage alone in its step', [{ op: 'stage.split', id: 'qa' }], 'stage qa is alone in its step; split takes a stage out of a shared step, so use stage.move to move it'],
+    ['a split of a stage alone in its step', [{ op: 'stage.split', id: 'qa' }], 'stage qa is alone in its step; a split takes a stage out of a shared step, so move it instead'],
     ['a transition that is not there', [{ op: 'transition.remove', from: 'qa', to: ['plan'] }], 'there is no transition from qa to plan; name one of qa → merge or qa ⇢ implement'],
     ['a handover that is not there', [{ op: 'handover.remove', from: 'qa', to: 'worker' }], 'there is no handover from qa to worker; name one of qa → orchestrator or qa → qa-collector'],
-    ['an empty role', [{ op: 'node.role', id: 'worker', text: '\n' }], 'the role of worker would be empty; give node.role the whole role text'],
-    ['node.set with nothing', [{ op: 'node.set', id: 'worker' }], 'node.set changes nothing; give at least one field'],
+    ['an empty role', [{ op: 'node.role', id: 'worker', text: '\n' }], 'the role of worker would be empty; give the whole role text'],
+    ['node.set with nothing', [{ op: 'node.set', id: 'worker' }], 'nothing to change was given; give at least one of contract, summary, models, skills, tools, categories or collectors'],
     ['a loop name that is not an id', [{ op: 'loop.rename', to: 'Docs Only' }], `"Docs Only" is not a loop id; ${ID_RULE}, like docs-only`],
     ['an empty description', [{ op: 'loop.describe', description: '' }], 'the description would be empty; say in a sentence what the loop is for'],
     ['import-d2 with no diagram', [{ op: 'import-d2' }], 'there is no loop.d2 to import; save the loop once to write one, then edit it'],
@@ -543,19 +575,19 @@ describe('refusals', () => {
       { op: 'stage.add', id: 'docs', summary: 'write the docs', after: 3 },
       { op: 'transition.remove', from: 'docs', to: ['qa'] },
     ])
-    expect(out.problems).toEqual(['there is no transition from docs to qa; docs leads on only by default, so set another with transition.set'])
+    expect(out.problems).toEqual(['there is no transition from docs to qa; docs leads on only by default, so there is none to remove; set a transition of its own instead'])
   })
 
   test("the loop's problems after the last op are said with their fix", async () => {
     const problems = async (ops: Op[]) => refused(await core(), ops).problems
-    expect(await problems([{ op: 'stage.add', id: 'docs', summary: 'write the docs', after: 3 }])).toEqual(['stage docs is not reachable from entry; lead a transition into it with transition.set'])
+    expect(await problems([{ op: 'stage.add', id: 'docs', summary: 'write the docs', after: 3 }])).toEqual(['stage docs is not reachable from entry; lead a transition into it from the stage before'])
     expect(
       await problems([
         { op: 'stage.add', id: 'security', summary: 'checks for holes', alongside: 'qa' },
         { op: 'transition.set', from: 'implement', to: ['qa'], label: 'qa only' },
       ]),
     ).toEqual([
-      'the transition from implement must lead to every stage of the next step: qa and security; remove the one from implement to qa with transition.remove, and set one from implement to qa and security with transition.set',
+      'the transition from implement must lead to every stage of the next step: qa and security; remove the one from implement to qa, and set one from implement to qa and security',
     ])
     expect(await problems([{ op: 'transition.set', from: 'qa', to: ['plan'], label: 'replan' }])).toEqual([
       'the transition from qa to plan leads to an earlier step or its own; set it again with back: true, or point it at a later step',
@@ -564,21 +596,21 @@ describe('refusals', () => {
       'the back transition from plan to qa does not lead to one earlier step; point it at a stage of an earlier step, or set it again without back',
     ])
     expect(await problems([{ op: 'node.add', id: 'judge', type: 'agent', contract: 'scores', summary: 'judges the merge', stage: 'merge', categories: ['core'] }])).toEqual([
-      'node judge scores but has no model; give it at least one with node.set models',
+      'node judge scores but has no model; give it at least one',
     ])
     expect(await problems([{ op: 'node.add', id: 'scout', type: 'agent', contract: 'none', summary: 'answers', onCall: true, categories: ['core'] }])).toEqual([
-      'node scout does not score, so it takes no categories; set its contract to none again with node.set to drop them, or set it to scores',
+      'node scout does not score, so it takes no categories; set its contract to none again to drop them, or set it to scores',
     ])
-    expect(await problems([{ op: 'node.set', id: 'worker', models: ['GPT'] }])).toEqual(['node worker: "GPT" is not a model name like opus or claude-sonnet-5; set its models with node.set'])
+    expect(await problems([{ op: 'node.set', id: 'worker', models: ['GPT'] }])).toEqual(['node worker: "GPT" is not a model name like opus or claude-sonnet-5; set its models'])
     expect(await problems([{ op: 'handover.remove', from: 'qa', to: 'qa-collector' }])).toEqual([
-      'node qa-collector collects evidence but no scores node hands over to it; add a handover to qa-collector from qa with handover.set, or remove qa-collector with node.remove',
+      'node qa-collector collects evidence but no scores node hands over to it; add a handover to qa-collector from qa, or remove qa-collector',
     ])
   })
 
   test('removing the only judge names a fix that does not point at it', async () => {
     const out = refused(await core(), [{ op: 'node.remove', id: 'qa' }])
     expect(out.problems).toEqual([
-      'node qa-collector collects evidence but no scores node hands over to it; no scores node is left to hand it slices, so remove qa-collector with node.remove, or give it another contract with node.set',
+      'node qa-collector collects evidence but no scores node hands over to it; no scores node is left to hand it slices, so remove qa-collector, or give it another contract',
     ])
     expect(out.problems[0]).not.toMatch(/from qa\b/)
   })
@@ -599,23 +631,27 @@ describe('parsing', () => {
 
   test('each malformed op says what is wrong', () => {
     const problem = (v: unknown) => ('problem' in parseOp(v) ? (parseOp(v) as { problem: string }).problem : null)
-    expect(problem('stage.add')).toBe('an op is one object that names itself in op, like stage.add, beside its fields; send each op so')
-    expect(problem({ id: 'x' })).toBe('the op does not name itself; give op, like stage.add')
-    expect(problem({ op: 'stage.grow' })).toStartWith('"stage.grow" is not an op; name one of stage.add, stage.remove,')
-    expect(problem({ op: 'stage.add', id: 'x', summary: 'y', alongSide: 'qa' })).toBe('stage.add takes id, summary, after and alongside; "alongSide" is not one of them')
+    expect(problem('stage.add')).toBe('each op is one object that names itself in op, beside its fields; send each op so')
+    expect(problem({ id: 'x' })).toBe('the op does not name itself; give op, the change it makes, as the design skill lists them')
+    expect(problem({ op: 'stage.grow' })).toBe('"stage.grow" is not a change the architect makes; name one the design skill lists')
+    expect(problem({ op: 'stage.add', id: 'x', summary: 'y', alongSide: 'qa' })).toBe('a new stage takes id, summary, and after or alongside; "alongSide" is not one of them (did you mean alongside?)')
     expect(problem({ op: 'node.set', node: 'worker', models: ['opus'] })).toBe(
-      'node.set takes id and the fields to change (contract, summary, models, skills, tools, categories or collectors); "node" is not one of them',
+      'it changes a node\'s models, skills, tools, contract, summary, categories or collectors; "node" is not something it changes (did you mean id?)',
     )
-    expect(problem({ op: 'stage.add', id: 'x' })).toBe('stage.add needs summary; give it as a string')
-    expect(problem({ op: 'stage.add', id: 'x', summary: 'y', after: 1.5 })).toBe('stage.add: after is not a whole number; give after as a whole number')
-    expect(problem({ op: 'node.add', id: 'x', type: 'robot', contract: 'none', summary: 'y' })).toBe('node.add: type is not agent or swarm; give type as agent or swarm')
-    expect(problem({ op: 'node.set', id: 'x', contract: 'judges' })).toBe('node.set: contract is not one of lands, scores, collects, none; give contract as one of lands, scores, collects, none')
-    expect(problem({ op: 'node.move', id: 'x', onCall: false })).toBe('node.move: onCall is not true; give onCall as true')
+    expect(problem({ op: 'node.set', id: 'worker', colour: 'red' })).toBe('it changes a node\'s models, skills, tools, contract, summary, categories or collectors; "colour" is not something it changes')
+    expect(problem({ op: 'stage.add', id: 'x' })).toBe('the stage needs a summary of two to four words')
+    expect(problem({ op: 'handover.set', from: 'a', to: 'b', spec: 'x' })).toBe('the handover needs a label of one or two words')
+    expect(problem({ op: 'transition.set', from: 'a', label: 'x' })).toBe('the transition needs the stages it leads to, as a list in to')
+    expect(problem({ op: 'loop.describe' })).toBe('the loop needs a description: a sentence on what it is for')
+    expect(problem({ op: 'stage.add', id: 'x', summary: 'y', after: 1.5 })).toBe('after is not a whole number; give after as a whole number')
+    expect(problem({ op: 'node.add', id: 'x', type: 'robot', contract: 'none', summary: 'y' })).toBe('type is not agent or swarm; give type as agent or swarm')
+    expect(problem({ op: 'node.set', id: 'x', contract: 'judges' })).toBe('contract is not one of lands, scores, collects, none; give contract as one of lands, scores, collects, none')
+    expect(problem({ op: 'node.move', id: 'x', onCall: false })).toBe('onCall is not true; give onCall as true')
     expect(problem({ op: 'node.set', id: 'x', tools: ['Edit'] })).toBe(
-      'node.set: tools is not the tools to deny: deny with a list of tool names, like Edit; give tools as the tools to deny: deny with a list of tool names, like Edit',
+      'tools is not the tools to deny: deny with a list of tool names, like Edit; give tools as the tools to deny: deny with a list of tool names, like Edit',
     )
-    expect(problem({ op: 'transition.set', from: 'a', to: 'b', label: 'x' })).toBe('transition.set: to is not a list of strings; give to as a list of strings')
-    expect(problem({ op: 'loop.new', name: 'x', level: 'user' })).toBe('loop.new changes loop folders, not the draft; send it in a batch of its own')
+    expect(problem({ op: 'transition.set', from: 'a', to: 'b', label: 'x' })).toBe('to is not a list of strings; give to as a list of strings')
+    expect(problem({ op: 'loop.new', name: 'x', level: 'user' })).toBe('it changes loop folders, not the draft; send it in a batch of its own')
     // no raw shapes: a person reads these through the architect
     for (const v of ['stage.add', { id: 'x' }, { op: 'node.set', id: 'x', tools: ['Edit'] }]) expect(problem(v)).not.toMatch(/[{}[\]]/)
   })
@@ -716,7 +752,7 @@ describe('loops on disk', () => {
     const { fs, files, loop, draft } = await savedWithDraft()
     const ref = { name: 'mine', level: 'user' as const, dir: userDir('mine'), description: '', counts: { stages: 0, steps: 0, nodes: 0, edges: 0 } }
     expect(await saveDraft(fs, { ref: { ...ref, level: 'plugin' }, loop, info: draft.info, opaque: [] })).toBe(`the plugin's loops are read-only; copy it first: say "new loop <name> at user level from mine", then change the copy`)
-    expect(await saveDraft(fs, { ref, loop: { ...loop, description: '' }, info: draft.info, opaque: [] })).toBe('the draft does not validate: the description is empty; say in a sentence what the loop is for, with loop.describe')
+    expect(await saveDraft(fs, { ref, loop: { ...loop, description: '' }, info: draft.info, opaque: [] })).toBe('the draft does not validate: the description is empty; say in a sentence what the loop is for')
 
     await writeLoop(fs, userDir('mine'), { ...loop, description: 'Changed elsewhere.' })
     const edited = { ...loop, description: 'Changed here.' }

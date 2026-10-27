@@ -300,7 +300,7 @@ describe('the spec', () => {
     for (const n of Object.values(core.nodes)) {
       const section = spec.slice(spec.indexOf(`### ${n.id}\n`), spec.indexOf(n.role.trim()))
       expect(section, n.id).toContain(`\n- Models: ${list(n.models)}\n- Skills: ${list(n.skills)}\n`)
-      if (n.contract === 'scores') expect(section, n.id).toContain(`\n- Categories: ${list(n.categories)}\n- Collectors: ${n.collectors ?? 0}\n`)
+      if (n.contract === 'scores') expect(section, n.id).toContain(`\n- Categories: ${list(n.categories)}\n${n.collectors !== undefined ? `- Collectors: ${n.collectors}\n` : ''}`)
       else expect(section, n.id).not.toContain('- Categories:')
       if (n.tools.deny.length) expect(section, n.id).toContain(`\n- Denied tools: ${n.tools.deny.join(', ')}\n`)
       else expect(section, n.id).not.toContain('- Denied tools:')
@@ -321,6 +321,25 @@ describe('the spec', () => {
     for (const h of core.handovers) expect(spec).toContain(`- ${h.from} → ${h.to}: ${h.label}. ${h.spec[0]!.toUpperCase()}${h.spec.slice(1)}.`)
     expect(spec).not.toContain('—')
     expect(spec).not.toContain('–')
+  })
+
+  test('LOOP.md opens with a paragraph for a reader without the plugin; Collectors only where the node sets it', async () => {
+    for (const name of ['core', 'core-deep', 'core-fast']) {
+      const loop = await shipped(name)
+      const spec = toSpec(loop)
+      expect(spec, name).toBe(SHIPPED_LOOP_FILES[`${name}/LOOP.md`]!)
+      const [, after] = spec.split(`${loop.description}\n\n`)
+      const paragraph = after!.split('\n')[0]!
+      expect(paragraph, name).toStartWith(`This file describes the ${name} loop in plain words`)
+      for (const word of ['the orchestrator (the agent the user talks to)', 'A swarm is many copies', 'A transition marked (back) returns the loop to an earlier step', 'The host is whatever program runs the agents']) {
+        expect(paragraph, name).toContain(word)
+      }
+      expect(spec, name).not.toContain('in this plugin that binding is the core skill')
+    }
+    const deep = toSpec(await shipped('core-deep'))
+    const reviewer = deep.slice(deep.indexOf('### reviewer\n'), deep.indexOf('### done\n'))
+    expect(reviewer).toContain('- Categories: quality, consistency, cleanup\n- Denied tools:')
+    expect(reviewer).not.toContain('Collectors')
   })
 
   test('parallel stages share an order line; default transitions are marked', () => {

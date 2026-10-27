@@ -53,14 +53,15 @@ let io: Io
 let prices: Record<string, Price> = parsePrices(undefined)
 /** The configuration in force: the shipped `dacapo.conf`, then the user's, then the repository's. */
 let conf: Loaded = loadConf([])
-const SHIPPED_CONF = `${import.meta.dir}/../dacapo.conf`
+/** The shipped conf: beside the hooks folder until the session starts, then at the plugin's root, resolved. */
+let shippedConf = `${import.meta.dir.replace(/\/hooks\/?$/, '')}/dacapo.conf`
 /** The user's conf file, set at session start: `$DACAPO_HOME/dacapo.conf` when DACAPO_HOME is set, else `~/.claude/dacapo.conf`. */
 let userConf: string | null = null
 
 /** Reads the conf files that exist, in the order they apply; agents never read them, the config tool and command tell. */
 async function readConf(root: string): Promise<Loaded> {
   const paths: Array<Pick<Layer, 'path' | 'role'>> = [
-    { path: SHIPPED_CONF, role: 'plugin' },
+    { path: shippedConf, role: 'plugin' },
     ...(userConf ? [{ path: userConf, role: 'user' as const }] : []),
     { path: `${root}/.dacapo.conf`, role: 'project' },
   ]
@@ -812,14 +813,20 @@ async function markStageTool(a: Args) {
   // one stage id, or the stages of one step side by side: "qa, review" or a list
   const wanted = (Array.isArray(a.stage) ? a.stage.map(v => str(v)) : str(a.stage).split(',')).map(v => v.trim()).filter(Boolean)
   const run = await currentRun()
-  if (!run) return fail('stage: no active run')
-  if (!run.loop) return fail(`stage: the run has no loop yet; call ${tool('start')} first`)
-  const ids = run.loop.steps.flatMap(s => s.stages.map(st => st.id))
-  if (wanted.length === 0) return fail(`stage: name the stage, or the stages of one step; the stages of "${run.loop.name}": ${ids.join(', ')}`)
+  if (!run) return fail(`Refused: no run is active; open one with /dacapo:core <task>.`)
+  if (!run.loop) return fail(`Refused: the run has no loop yet; call ${tool('start')} first.`)
+  const loop = run.loop
+  const ids = loop.steps.flatMap(s => s.stages.map(st => st.id))
+  if (wanted.length === 0) return fail(`Refused: no stage was named; name one stage of ${loop.name}, or the stages of one step (${ids.join(', ')}).`)
   const unknown = wanted.filter(id => !ids.includes(id))
-  if (unknown.length > 0) return fail(`stage: ${unknown.map(id => `"${id}"`).join(', ')} ${unknown.length === 1 ? 'is not a stage' : 'are not stages'} of the loop "${run.loop.name}"; its stages: ${ids.join(', ')}`)
-  const stepOf = (id: string) => run.loop!.steps.findIndex(s => s.stages.some(st => st.id === id))
-  if (new Set(wanted.map(stepOf)).size > 1) return fail(`stage: ${wanted.join(', ')} are not in one step; several stages are marked together only when they run side by side`)
+  if (unknown.length > 0) return fail(`Refused: ${series(unknown.map(id => `"${id}"`))} ${unknown.length === 1 ? 'is not a stage' : 'are not stages'} of the loop "${loop.name}"; name one of its stages: ${ids.join(', ')}.`)
+  const stepOf = (id: string) => loop.steps.findIndex(s => s.stages.some(st => st.id === id))
+  const steps = [...new Set(wanted.map(stepOf))]
+  if (steps.length > 1) {
+    // the choices, one per step: the named stages of that step, side by side
+    const choices = steps.map(i => series([...new Set(wanted.filter(id => stepOf(id) === i))]))
+    return fail(`Refused: ${series([...new Set(wanted)])} are not in one step of ${loop.name}; name one stage, or the stages of one step (${choices.join(', or ')}).`)
+  }
   const stages = [...new Set(wanted)]
   await markStage(stages[0]!, stages.length > 1 ? stages : [])
   return ok(`Stage${stages.length > 1 ? 's' : ''}: ${stages.join(' ∥ ')}.`)
@@ -1656,11 +1663,12 @@ const LEVEL_WORDS: readonly LoopLevel[] = ['plugin', 'user', 'project']
 const FOLDER_OPS = ['loop.new', 'loop.move', 'loop.delete', 'loop.default']
 const NOT_SAVED = 'The draft is not saved: press Save in the pane or say "save".'
 const NO_LOOP = 'No loop is open.'
+const UNCHANGED = 'Nothing changed: the loop already has that.'
 /** What a tool that acts on the open loop says when none is: the loops there are, and to name one. */
 async function noLoop(): Promise<string> {
   const library = await refreshLibrary().catch(() => [] as LoopRef[])
   const names = library.map(r => `${r.name} (${r.level})`)
-  return `${NO_LOOP} The loops: ${names.length > 0 ? names.join(', ') : 'none'}. Name one with "name" (and "level" when the name lives at more than one), open one with loops, action open, or start one with loop.new.`
+  return `${NO_LOOP} The loops: ${names.length > 0 ? names.join(', ') : 'none'}. Name one with "name" (and "level" when the name lives at more than one), open one with loops, action open, or start a new loop.`
 }
 const FRESH_VIEW: ViewerState['view'] = { folded: false, tab: 'canvas' }
 
@@ -2030,13 +2038,13 @@ async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } 
   const name = str(raw.op)
   const takes = FOLDER_TAKES[name]!
   const extra = Object.keys(raw).filter(k => k !== 'op' && !takes.includes(k))
-  if (extra.length > 0) return { problem: `${name} takes ${series(takes)}; ${extra.map(k => `"${k}"`).join(', ')} ${extra.length === 1 ? 'is' : 'are'} not one of them` }
+  if (extra.length > 0) return { problem: `it takes ${series(takes)}; ${extra.map(k => `"${k}"`).join(', ')} ${extra.length === 1 ? 'is' : 'are'} not one of them` }
   if (raw.confirm !== undefined && raw.confirm !== true) return { problem: 'confirm is true or left out; send true only after the user agreed' }
   const state = await views.get()
 
   if (name === 'loop.new') {
     const loopName = typeof raw.name === 'string' ? raw.name.trim() : ''
-    if (!loopName) return { problem: "loop.new needs name; give the new loop's name" }
+    if (!loopName) return { problem: 'a new loop needs a name, in name' }
     if (raw.level !== 'user' && raw.level !== 'project') return { problem: 'level must be user or project; a new loop lives at one of them' }
     let from: { name: string; level: LoopLevel } | undefined
     if (raw.from !== undefined) {
@@ -2064,7 +2072,7 @@ async function folderOp(raw: Record<string, unknown>): Promise<{ text: string } 
 
   if (name === 'loop.move') {
     if (raw.level !== 'user' && raw.level !== 'project') return { problem: 'level must be user or project; name the level to move the open loop to' }
-    if (!state.open) return { problem: `loop.move moves the open loop. ${await noLoop()}` }
+    if (!state.open) return { problem: `a move acts on the open loop. ${await noLoop()}` }
     const { ref } = state.open
     const to = raw.level
     if (raw.confirm !== true) {
@@ -2149,7 +2157,7 @@ async function loopEdit(a: Args) {
   const opName = (v: unknown) => (v && typeof v === 'object' ? str((v as Record<string, unknown>).op) : '')
   const folders = ops.filter(v => FOLDER_OPS.includes(opName(v))).length
   if (folders > 0 && folders < ops.length) {
-    return fail('loop.new, loop.move, loop.delete and loop.default change loop folders and go in a batch of their own. Send them first, then the draft edits in a second loop_edit call. Nothing was written.')
+    return fail('Making, moving or deleting a loop, or making it the default, changes loop folders, so those ops go in a batch of their own. Send them first, then the draft edits in a second loop_edit call. Nothing was written.')
   }
   const named = await openNamed(a)
   if (named) return fail(`${named} Nothing was written.`)
@@ -2165,11 +2173,17 @@ async function loopEdit(a: Args) {
     return ok(lines.join('\n'))
   }
 
+  // every op is parsed before any applies, so one reply names every malformed op
   const parsed: Op[] = []
+  const malformed: { index: number; problem: string }[] = []
   for (let i = 0; i < ops.length; i++) {
     const p = parseOp(ops[i])
-    if ('problem' in p) return fail(refusal(`Refused op ${i} (${opName(ops[i]) || 'unnamed'}):`, [p.problem], 'Nothing was written.'))
-    parsed.push(p.op)
+    if ('problem' in p) malformed.push({ index: i, problem: p.problem })
+    else parsed.push(p.op)
+  }
+  if (malformed.length > 0) {
+    const head = `Refused ${series(malformed.map(m => `op ${m.index} (${opName(ops[m.index]) || 'unnamed'})`))}:`
+    return fail(refusal(head, malformed.map(m => m.problem), 'Nothing was written.'))
   }
   const state = await views.get()
   if (!state.open) return fail(`${await noLoop()} Nothing was written.`)
@@ -2180,6 +2194,8 @@ async function loopEdit(a: Args) {
   const d2Dir = (await loopFs.exists(joinPath(ref.dir, 'loop.d2'))) ? ref.dir : existing?.info.dir
   const d2 = d2Dir && parsed.some(op => op.op === 'import-d2') ? await loopFs.read(joinPath(d2Dir, 'loop.d2')).catch(() => undefined) : undefined
   const out = applyOps(existing?.loop ?? saved!, parsed, { ...(d2 !== undefined ? { d2 } : {}), opaque: state.open.opaque ?? [] })
+  // a batch that changes nothing is no refusal, and opens no draft
+  if (!out.ok && 'unchanged' in out) return ok(UNCHANGED)
   if (!out.ok) {
     const culprits = out.culprits ?? []
     const head =
@@ -2492,7 +2508,7 @@ const LOOP_TOOL_SPECS = [
   {
     name: 'loop_edit',
     description:
-      "Applies operations in order to the open loop's draft, or to the draft of the loop name and level give (opened first), and opens the draft when none exists. The first failing op stops the batch: nothing is written and the reply names the op or ops and the rule each broke. loop.new, loop.move, loop.delete and loop.default change folders and go in a batch of their own; loop.default and loop.delete act on the open loop when they name none. loop.move and loop.delete act only with confirm: true, sent in a turn after the user agreed; without it they do nothing and say what they would do. The reply lists what changed, one line per op, and the draft's change count; the viewer focuses the first changed element.",
+      "Applies operations in order to the open loop's draft, or to the draft of the loop name and level give (opened first), and opens the draft when none exists. Every op's shape is checked before any applies, and every malformed op is named; then the first failing op stops the batch: nothing is written and the reply names the op or ops and the rule each broke. A batch that changes nothing replies so and opens no draft. loop.new, loop.move, loop.delete and loop.default change folders and go in a batch of their own; loop.default and loop.delete act on the open loop when they name none. loop.move and loop.delete act only with confirm: true, sent in a turn after the user agreed; without it they do nothing and say what they would do. The reply lists what changed, one line per op, and the draft's change count; the viewer focuses the first changed element.",
     isDeferred: false,
     inputSchema: {
       type: 'object',
@@ -2632,13 +2648,32 @@ export const register: Register = (on, options) => {
     }
 
     const cwd = await io.cwd()
-    const repo = await git.repoRoot(io, cwd)
+    // every root a reply names is resolved the same way, once, so one reply never spells a folder two ways
+    // (macOS: git answers /private/var/... where HOME or DACAPO_HOME may say /var/...)
+    const real = async (path: string): Promise<string> => {
+      const tail: string[] = []
+      let at = path.replace(/\/+$/, '') || '/'
+      while (at.startsWith('/')) {
+        const stat = await $.fs.stat(at, { resolve: true }).catch(() => undefined)
+        if (stat?.realPath) return [stat.realPath.replace(/\/+$/, ''), ...tail].join('/') || '/'
+        if (at === '/') break
+        tail.unshift(at.slice(at.lastIndexOf('/') + 1))
+        at = at.slice(0, at.lastIndexOf('/')) || '/'
+      }
+      return path
+    }
+    const found = await git.repoRoot(io, cwd)
+    const repo = found ? await real(found) : null
     // where loops live: the plugin's, the user's (DACAPO_HOME or ~/.claude/dacapo) and this repository's, kept out of git;
     // the user's conf sits beside them under DACAPO_HOME, else in ~/.claude
-    const env = { home: (await io.home().catch(() => undefined)) ?? '', dacapoHome: (await $.env.get('DACAPO_HOME').catch(() => undefined)) || null }
+    const home = (await io.home().catch(() => undefined)) ?? ''
+    const dacapoHome = (await $.env.get('DACAPO_HOME').catch(() => undefined)) || null
+    const env = { home: home ? await real(home) : '', dacapoHome: dacapoHome ? await real(dacapoHome) : null }
+    const pluginRoot = await real($.plugin.root)
+    shippedConf = `${pluginRoot.replace(/\/+$/, '')}/dacapo.conf`
     userConf = env.home || env.dacapoHome ? userConfPath(env) : null
     await readConf(repo ?? cwd)
-    loopRoots = roots({ ...env, pluginRoot: $.plugin.root, repoRoot: repo })
+    loopRoots = roots({ ...env, pluginRoot, repoRoot: repo })
     loopDrafts = draftsRoot(env)
     loopFs = {
       read: path => io.read(path),
