@@ -634,7 +634,7 @@ describe('the interviews contract', () => {
 
   test('an interviews node needs a model and takes no categories and no collectors', async () => {
     const l = await talk()
-    expectProblem(broken(l, x => (x.nodes.functionality!.models = [])), 'nodes.functionality.models', 'a interviews node needs at least one model')
+    expectProblem(broken(l, x => (x.nodes.functionality!.models = [])), 'nodes.functionality.models', 'an interviews node needs at least one model')
     expectProblem(broken(l, x => (x.nodes.design!.categories = ['ux'])), 'nodes.design.categories', 'categories are for scores nodes only')
     expectProblem(broken(l, x => (x.nodes.design!.collectors = 1)), 'nodes.design.collectors', 'collectors are for scores nodes only')
     expectProblem(broken(l, x => (x.nodes.orchestrator!.contract = 'interviews')), 'nodes.orchestrator.contract', 'entry and exit have contract none')
