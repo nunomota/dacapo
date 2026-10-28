@@ -31,11 +31,11 @@ Clarify, research, plan and merge are stages with no nodes: the orchestrator wor
 
 ## Outcomes
 
-An interviewing node writes its report in the format its role defines. The mod checks that the file exists and is not empty and that the node's last line is `dacapo: reported` or `dacapo: reported with open questions`; `/dacapo-back` ends an interview early.
-
 A worker's report ends with `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`. `done` is a claim: the mod marks the work landed only when `sync` sees its pull request merged. A worker whose last line says done while its pull request is still open is marked failed, with its branch and pull request kept, so the orchestrator can resume it.
 
 Each judge writes a JSON report. The mod checks that every rubric id is scored exactly once with `strong`, `acceptable` or `unacceptable` and that the overview is not empty, then derives the verdict: `fix` if any item is unacceptable, `pass-with-recommendations` if any is acceptable, `pass` otherwise. An invalid report is reported as such and never counts as a pass. When two judges run side by side, a `fix` from QA stops the reviewer running beside it, which runs again after the fixes.
+
+An interviewing node writes its report in the format its role defines. The mod checks that the file exists and is not empty and that the node's last line is `dacapo: reported` or `dacapo: reported with open questions`; `/dacapo-back` ends an interview early.
 
 ## The pane
 

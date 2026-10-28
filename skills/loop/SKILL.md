@@ -154,7 +154,7 @@ Cannot see:
 - The orchestrator's conversation.
 - The workers' work.
 
-Its report is a file at the path the host names, in the node's own format, ending with exactly one of:
+Its report is a file at the path the host names, in the format the node's own role defines (the host dictates no sections), and its final message ends with the outcome line the host fixes, exactly one of:
 - **reported**: the conversation is complete.
 - **reported with open questions**: the report says what is still open.
 
