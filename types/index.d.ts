@@ -89,6 +89,11 @@ export type Run = {
   prsAt?: number
   /** The final pull request from the run branch into the base branch, once finish opened it. */
   final?: { number: number; url: string; title: string; openedAt: number; attempt: number }
+  /**
+   * The interviewing node that holds the floor, set when the Agent call of a `consult` started it: what the person
+   * types goes to it until it reports or `/dacapo-back` returns the floor. `n` is the consult's count for the node.
+   */
+  floor?: { node: string; agentId: string; n: number; since: number }
 }
 
 /** A prompt the run queued for the orchestrator; `deliveredAt` is set when its turn starts, else the ticker resends it. */
@@ -188,9 +193,11 @@ export type WorkerRow = {
   node?: string
   /**
    * What the host holds the row to: `lands` for a worker that lands through a pull request (absent means `lands`),
-   * `none` for a node asked with `ask`, whose answer is its Agent result and which has no branch of its own.
+   * `none` for a node asked with `ask`, whose answer is its Agent result and which has no branch of its own,
+   * `interviews` for a node started with `consult`, which talks to the person and writes a report; its `outcome`
+   * is `done` when it reported, `limited` when it reported with open questions.
    */
-  contract?: 'lands' | 'none'
+  contract?: 'lands' | 'none' | 'interviews'
 }
 
 /**

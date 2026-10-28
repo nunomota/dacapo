@@ -1,8 +1,0 @@
-{
-  "name": "handover-spike",
-  "version": "0.0.1",
-  "description": "Throwaway spike: tries three ways to hand the chat to a subagent and back (the agent view, routing in the mod, teams).",
-  "types": "./types/index.d.ts",
-  "author": { "name": "Nuno Mota" },
-  "license": "MIT"
-}
