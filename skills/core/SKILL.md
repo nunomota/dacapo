@@ -9,7 +9,7 @@ This file says how this plugin runs a loop: its tools, subagents, worktrees, pul
 
 Call `mcp__dacapo__config` once, first. It returns the configuration in force and the loop: its steps and stages, every node with its contract, models, skills and categories, its transitions and handovers, and your role as its entry node under `Your role`. Read your role there and follow it: in the shipped loops it has you load `dacapo:loop`, the phases, boundaries and decision rules you follow. Never read a `dacapo.conf` or a loop file yourself: the tool is the configuration.
 
-The loop's boundaries are enforced here. While a run is active the tools refuse Edit, Write, history-changing git commands and `gh pr` commands from you. Workers write only inside their worktree. A judge that uses the product can read and search only its `.context` folder and write only its report; its shell is bound by its prompt alone. The collectors it starts are bound the same way and write only under `.context/evidence`; a judge may start only the collector its loop hands slices to, and a collector none at all. A judge that reads the change reads anything and writes only its report. A node you ask writes only under `.context`. You never edit files, touch git, or open and merge pull requests: the `mcp__dacapo__*` tools and the subagents do. Each tool reply says what to call next. A timeline pane shows every worker, judge, pull request and user prompt of the run, and a bar of the loop's stages; the band above the prompt shows where the run stands. `/dacapo-pane` reopens the pane.
+The loop's boundaries are enforced here. While a run is active the tools refuse Edit, Write, history-changing git commands and `gh pr` commands from you. Workers write only inside their worktree. A judge that uses the product can read and search only its `.context` folder and write only its report; its shell is bound by its prompt alone. The collectors it starts are bound the same way and write only under `.context/evidence`; a judge may start only the collector its loop hands slices to, and a collector none at all. A judge that reads the change reads anything and writes only its report. A node you ask writes only under `.context`, and an interviewing node writes only its report. You never edit files, touch git, or open and merge pull requests: the `mcp__dacapo__*` tools and the subagents do. Each tool reply says what to call next. A timeline pane shows every worker, judge, pull request and user prompt of the run, and a bar of the loop's stages; the band above the prompt shows where the run stands. `/dacapo-pane` reopens the pane, and `/dacapo-back` takes the floor back from an interviewing node.
 
 ## The loop on these tools
 
@@ -22,6 +22,7 @@ Every node of the loop other than its entry and exit is an agent type `dacapo:<n
 - Stopping an agent, or dropping its task: `cancel`.
 - Each `scores` node (the judges), in step order: `judge`, then its Agent call. Two judges whose stages share a step run side by side.
 - A node with contract `none`, on call or in a stage: `ask`, whenever its help is worth it.
+- The `interviews` node: `consult`, then its Agent call; it holds the floor until it reports.
 - Integrating into the base line: `finish`.
 - The state of everything as text: `status`.
 
@@ -117,6 +118,10 @@ The tool refuses a judge while an agent of an earlier step still runs, while a f
 ### ask
 
 Call `mcp__dacapo__ask` with `node` (a node with contract `none`, on call or in a stage), `prompt` (the whole question or task: the node sees nothing else of the run) and optionally `model` (one of its models). The reply gives one `Agent` call: `subagent_type: "dacapo:<node>"`, prompt `dacapo ask <node> <n>`. Make it exactly as listed. It runs in the foreground in the run worktree (the repository before `start`), so the Agent result is the answer; read it and go on. The timeline shows it as a row.
+
+### consult
+
+Call `mcp__dacapo__consult` with `node` (a node with contract `interviews`, on call or in a stage), optionally `scope` (a note on what the interview is for) and optionally `model` (one of its models). It refuses with no run or no loop, for a node whose contract is not `interviews` (it names the interviewing nodes), and for a model the node does not list. The host writes a brief under `.context/consult-brief.md` in the run worktree (the run's one line, your scope note, where to write the report) and copies every report of the run so far to `.context/reports/`. The reply gives one `Agent` call: `subagent_type: "dacapo:<node>"`, prompt `dacapo consult <node> <n>`. Make it exactly as listed, then end your turn. The node holds the floor until it reports: what the user types goes to it, its replies come back to the user, and you are out of the exchange. It writes its report to `.workspaces/.dacapo/<run id>/interview-<node>-<n>.md`, in the format its own role defines, and ends with `dacapo: reported` or `dacapo: reported with open questions`. The `[dacapo]` wake-up carries `<node> reported` or `<node> reported with open questions`, the report path and its first ten lines, or says `failed: no report at <path>`. `/dacapo-back` gives the floor back early: the outcome is `reported with open questions` when a report exists, else `failed`. The timeline shows the interview as a row.
 
 ### cancel
 

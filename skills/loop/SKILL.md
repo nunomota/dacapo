@@ -1,6 +1,6 @@
 ---
 name: loop
-description: The dacapo loop as a specification for any orchestrator that runs agents and lands their work its own way. It covers four roles (orchestrator, workers, QA, reviewer) and their boundaries, the variants a host may run (core-fast, core, core-deep), what a host must guarantee, and the inputs written before any code exists. It also gives the worker, QA and reviewer report contracts, the decision rules of each phase (clarify, research, plan, implement, qa, review, merge), and what keeps rounds repeatable: the conventions workers match, the hazards research must find, the evidence briefs ask for, and the decision record a run leaves behind.
+description: The dacapo loop as a specification for any orchestrator that runs agents and lands their work its own way. It covers four roles (orchestrator, workers, QA, reviewer), the interviewing node a loop may add, and their boundaries, the variants a host may run (core-fast, core, core-deep), what a host must guarantee, and the inputs written before any code exists. It also gives the worker, QA and reviewer report contracts, the decision rules of each phase (clarify, research, plan, implement, qa, review, merge), and what keeps rounds repeatable: the conventions workers match, the hazards research must find, the evidence briefs ask for, and the decision record a run leaves behind.
 ---
 
 # loop
@@ -19,6 +19,8 @@ If a person invoked this skill directly rather than a host loading it, tell them
 
 **Reviewer.** The reviewer produces one scored report on the run's change, as an engineer who will maintain the codebase.
 
+**Interviewing node.** An interviewing node, present only when the loop has one, produces one report from a conversation with the user, in the format its own role defines.
+
 ## Variants
 
 The loop ships in three variants, `core-fast`, `core` and `core-deep`, that differ only in which judges run: none, QA, or QA then the reviewer. A host names the variant when a run opens, and it is never changed once work is dispatched. The rest of this file reads with QA and the reviewer present when the variant has them.
@@ -28,7 +30,7 @@ The loop ships in three variants, `core-fast`, `core` and `core-deep`, that diff
 ### Orchestrator
 
 Responsible for:
-- Clarifying the request with the user, the only role in conversation with the user.
+- Clarifying the request with the user, and handing the floor to an interviewing node when the loop has one.
 - Researching the stack, its versions, its build and test commands, and the references each task must match.
 - Splitting the work into independent tasks with explicit contracts.
 - Writing every input before code exists: briefs, landing titles, build and test commands, rubric, harness, and when the variant has a reviewer the engineering rubric.
@@ -135,6 +137,25 @@ Never:
 Cannot see:
 - The workers' reports, QA's report and the orchestrator's conversation.
 
+**Interviewing node.** Present only when the loop has one.
+
+Responsible for:
+- Reading its brief and the earlier reports of the run.
+- Interviewing the user one question at a time.
+- Confirming with the user that the conversation is complete.
+- Writing its report in the format its own role defines.
+
+Never:
+- Edit the codebase.
+- Start agents.
+- Decide what the run does next.
+
+Cannot see:
+- The orchestrator's conversation.
+- The workers' work.
+
+Its report is a file at the path the host names, in the node's own format, ending with `reported` or `reported with open questions`; the host fixes the exact line and checks only that the file exists and is not empty.
+
 ## What a host must guarantee
 
 - **Isolation.** Each worker works in a sandbox it cannot leave; the host refuses its writes outside it.
@@ -146,6 +167,7 @@ Cannot see:
 - **Resume and stop.** The work of a worker that did not land stays in place, so its task can be resumed from where it stopped. The orchestrator can stop a worker, which discards what it has not landed.
 - **A guard on the orchestrator.** While a run is active the host stops the orchestrator from editing files, integrating work or rewriting history.
 - **Standing worker instructions.** The host hands every worker its standing instructions with the brief. They say to build and test before landing, fix what you introduced, leave clean reviewable units and stay within the task. They say to find and match the existing pattern for what you add, and to report the decisions you made alone and the reusable patterns you introduced. They also say to land before reporting, name what you left out and end with the report below, and to retry, not fail, a step refused only because a shared resource was busy (a port, a display, a device another task holds). A host that does not leaves the orchestrator to write them into every brief.
+- **The floor.** The host hands the user's words to an interviewing node and its replies to the user, and returns the floor to the orchestrator when the node ends or when the user takes it back.
 - **Model tiers.** Two at least: the strong tier for complex, cross-cutting or design-heavy work, and the fast tier for contained, well-specified work.
 
 ## Phase 1: clarify
@@ -259,7 +281,7 @@ Only when the variant has a reviewer, after QA passes.
 - A worker matches what exists before inventing; what it decided alone is reported, never silent.
 - The orchestrator never widens a run beyond the parts the change touches; what it deferred is reported.
 - The variant is chosen before dispatch and never changed mid-run.
-- The orchestrator is the only role that talks to the user.
+- The orchestrator talks to the user, and so does an interviewing node while it holds the floor; the orchestrator owns every decision.
 - The run merges only on `pass` from every judge of its variant, or after the user's merge decision (phase 5 step 5); when the variant has no QA, once the work has landed.
 - Once work is dispatched, the orchestrator asks the user only when the loop is stuck (phase 5 step 5) or a human is needed (phase 4 step 4).
 - A command that can hang runs under a time limit; a resource parallel tasks cannot share is used by one task at a time, never by a per-task test.
