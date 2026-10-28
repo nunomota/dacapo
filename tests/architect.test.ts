@@ -866,10 +866,17 @@ describe('the interviews contract', () => {
     expect(JSON.stringify(loop)).toBe(before)
   })
 
-  test('node.set keeps the set-again hint for categories on a node that does not score', async () => {
+  test('node.set on a node that does not score gets the same leave-it-out hint, whatever its contract', async () => {
     const loop = await core()
     expect(refused(loop, [{ op: 'node.set', id: 'worker', categories: ['ux'] }]).problems).toEqual([
-      'node worker does not score, so it takes no categories; set its contract to lands again to drop them, or set it to scores',
+      'node worker does not score, so it takes no categories; leave categories out: a lands node does not score, or give it the scores contract',
+    ])
+    const talker = ok(loop, [add({})]).loop
+    expect(refused(talker, [{ op: 'node.set', id: 'functionality', categories: ['ux'] }]).problems).toEqual([
+      'node functionality does not score, so it takes no categories; leave categories out: an interviews node does not score, or give it the scores contract',
+    ])
+    expect(refused(talker, [{ op: 'node.set', id: 'functionality', collectors: 1 }]).problems).toEqual([
+      'node functionality does not score, so it takes no collectors; leave collectors out: an interviews node does not score, or give it the scores contract',
     ])
   })
 })

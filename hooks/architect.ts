@@ -839,7 +839,7 @@ function explain(loop: Loop, p: Problem): string {
     const n = loop.nodes[id]
     if (key === 'categories' && n?.contract === 'scores') return `node ${id} scores but has no categories; give it the rubric categories it accepts`
     if (n && (key === 'categories' || key === 'collectors') && /for scores nodes only/.test(p.message)) {
-      return `node ${id} does not score, so it takes no ${key}; set its contract to ${n.contract} again to drop them, or set it to scores`
+      return `node ${id} does not score, so it takes no ${key}; leave ${key} out: ${n.contract === 'interviews' ? 'an' : 'a'} ${n.contract} node does not score, or give it the scores contract`
     }
     if (n && key === 'models' && /needs at least one model/.test(p.message)) {
       const does = n.contract === 'lands' ? 'lands work' : n.contract === 'interviews' ? 'talks to the user' : 'scores'
@@ -997,11 +997,11 @@ export function applyOps(
   if (problems.length > 0) {
     const by = [...new Set(problems.map(p => broughtIn(seen, p)))].sort((a, b) => a - b)
     const [i] = by
-    if (by.length === 1 && i !== undefined && i >= 0) return { ok: false, index: i, op: ops[i]!.op, problems: problems.map(p => hintFor(p, ops[i])) }
+    if (by.length === 1 && i !== undefined && i >= 0) return { ok: false, index: i, op: ops[i]!.op, problems: problems }
     const culprits = by.includes(-1) ? [] : by.map(index => ({ index, op: ops[index]!.op }))
     // the problems in the order of the ops that brought them in, as the refusal names those ops
     const ordered = problems.map((p, k) => ({ p, k, at: broughtIn(seen, p) })).sort((a, b) => a.at - b.at || a.k - b.k)
-    return { ok: false, index: ops.length, op: 'batch', problems: ordered.map(o => hintFor(o.p, ops[o.at])), culprits }
+    return { ok: false, index: ops.length, op: 'batch', problems: ordered.map(o => o.p), culprits }
   }
   d.loop.transitions = stripDefaults(d.loop)
   const before = copyLoop(loop)
@@ -1012,15 +1012,6 @@ export function applyOps(
   const stale = staleNotes(d.loop, old)
   const described = stale.some(n => /\bthe description\b/.test(n))
   return { ok: true, loop: d.loop, changes, notes: [...stale, ...shapeNotes(before, d.loop, ops, described)], opaque }
-}
-
-/** A node.add has no contract to set again: its hint says to leave the field out. */
-function hintFor(problem: string, op: Op | undefined): string {
-  if (op?.op !== 'node.add') return problem
-  return problem.replace(
-    /^(node \S+ does not score, so it takes no (\w+)); set its contract to (\w+) again to drop them, or set it to scores$/,
-    (_, head: string, key: string, c: string) => `${head}; leave ${key} out: ${c === 'interviews' ? 'an' : 'a'} ${c} node does not score, or give it the scores contract`,
-  )
 }
 
 /** The op that brought in a problem: the last after which it appeared and stayed; -1 when the loop had it before the first. */
