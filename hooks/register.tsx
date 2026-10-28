@@ -1185,7 +1185,7 @@ async function judge(a: Args) {
  */
 async function ask(a: Args) {
   const run = await currentRun()
-  if (!run) return fail('ask: no active run')
+  if (!run) return fail(`ask: no active run; call ${tool('start')} first`)
   const loop = await loopOf(run)
   if (!loop || !run.loop) return fail(`ask: the run has no loop yet; call ${tool('start')} first`)
   const askable = Object.values(loop.nodes).filter(n => n.contract === 'none' && n.type !== 'entry' && n.type !== 'exit')
@@ -1239,7 +1239,7 @@ async function ask(a: Args) {
  */
 async function consult(a: Args) {
   const run = await currentRun()
-  if (!run) return fail('consult: no active run')
+  if (!run) return fail(`consult: no active run; call ${tool('start')} first`)
   const loop = await loopOf(run)
   if (!loop || !run.loop) return fail(`consult: the run has no loop yet; call ${tool('start')} first`)
   const talkers = Object.values(loop.nodes).filter(n => n.contract === 'interviews')
@@ -3096,7 +3096,7 @@ export const register: Register = (on, options) => {
     const held = (await currentRun())?.floor
     if (held && !text.trimStart().startsWith('/')) {
       // the floor: the interviewing node gets what the person types; the orchestrator is not in the exchange
-      const sent = await $.session.send({ to: { agentId: held.agentId }, text })
+      const sent = await $.session.send({ to: { agentId: held.agentId }, text: `The user says:\n${text}` })
       const shown = await $.ui.view({ agentId: held.agentId }).catch((error: unknown) => ({ deny: String(error) }))
       if (shown.deny) await logFloor(held.agentId, `view: ${shown.deny}`)
       if (!sent.isDelivered) return { drop: `Not delivered to ${held.node}: ${sent.reason ?? 'no reason given'}. /dacapo-back returns the floor.` }

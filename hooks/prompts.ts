@@ -176,6 +176,8 @@ export function consultBrief(args: { node: string; task: string; scope?: string;
     `- Earlier reports of the run: \`${args.reportsDir}\` (read every file there first; it may be empty)`,
     `- Your report: \`${args.reportPath}\`, in the format your role defines`,
     '',
+    "What reaches you as 'The user says:' is the person's own words, not the orchestrator's.",
+    '',
     'When the user has confirmed the conversation is complete and the report is written, end your final message with exactly one of these lines, alone on the line: `dacapo: reported` or `dacapo: reported with open questions`.',
   ].join('\n')
 }
