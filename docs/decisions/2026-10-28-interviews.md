@@ -62,6 +62,8 @@ Why: the contract should be proven by a real loop of a person's own before the p
 
 Supersedes: nothing.
 
+Status: superseded on 2026-10-28. The `program` loop was designed with the architect at user level and then shipped with the plugin the same day, so the plugin now ships a loop that uses the contract.
+
 ### D8 Commits and the loop spec
 
 Commits follow `dacapo:rules-commits`. The loop spec in `skills/loop` stays host-agnostic prose.

@@ -17,7 +17,7 @@ To read a whole role, call `loops` with `action: 'focus'` and `target: 'node:<id
 
 ## The levels
 
-- Plugin: shipped with dacapo, read-only. `core`, `core-fast` and `core-deep` live here.
+- Plugin: shipped with dacapo, read-only. `core`, `core-fast`, `core-deep` and `program` live here.
 - User: `~/.claude/dacapo/loops/`, or `$DACAPO_HOME/loops/`. Every repository sees it.
 - Project: `<repo>/.claude/dacapo/loops/`, kept out of git. Only this repository sees it.
 
