@@ -343,7 +343,7 @@ export function validateLoop(loop: Loop): Problem[] {
       if (n.contract !== 'none') add(at('contract'), `the ${n.type} node has contract ${n.contract}; entry and exit have contract none`)
       if (n.models.length > 0) add(at('models'), `the ${n.type} node lists models; entry and exit have no models`)
     }
-    if ((n.contract === 'lands' || n.contract === 'scores' || n.contract === 'interviews') && n.models.length === 0) add(at('models'), `a ${n.contract} node needs at least one model`)
+    if ((n.contract === 'lands' || n.contract === 'scores' || n.contract === 'interviews') && n.models.length === 0) add(at('models'), `${n.contract === 'interviews' ? 'an' : 'a'} ${n.contract} node needs at least one model`)
     if (n.contract === 'scores' && !(n.categories && n.categories.length > 0)) add(at('categories'), 'a scores node needs categories: the rubric categories it accepts')
     if (n.contract !== 'scores' && n.categories !== undefined) add(at('categories'), 'categories are for scores nodes only')
     if (n.contract !== 'scores' && n.collectors !== undefined) add(at('collectors'), 'collectors are for scores nodes only')
