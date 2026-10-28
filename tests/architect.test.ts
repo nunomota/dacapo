@@ -599,7 +599,7 @@ describe('refusals', () => {
       'node judge scores but has no model; give it at least one',
     ])
     expect(await problems([{ op: 'node.add', id: 'scout', type: 'agent', contract: 'none', summary: 'answers', onCall: true, categories: ['core'] }])).toEqual([
-      'node scout does not score, so it takes no categories; leave categories out: a none node does not score, or give it the scores contract',
+      'node scout does not score, so it takes no categories; leave them out or give it the scores contract',
     ])
     expect(await problems([{ op: 'node.set', id: 'worker', models: ['GPT'] }])).toEqual(['node worker: "GPT" is not a model name like opus or claude-sonnet-5; set its models'])
     expect(await problems([{ op: 'handover.remove', from: 'qa', to: 'qa-collector' }])).toEqual([
@@ -858,10 +858,10 @@ describe('the interviews contract', () => {
     const before = JSON.stringify(loop)
     expect(refused(loop, [add({ models: [] })]).problems).toEqual(['node functionality talks to the user but has no model; give it at least one'])
     expect(refused(loop, [add({ categories: ['ux'] })]).problems).toEqual([
-      'node functionality does not score, so it takes no categories; leave categories out: an interviews node does not score, or give it the scores contract',
+      'node functionality does not score, so it takes no categories; leave them out or give it the scores contract',
     ])
     expect(refused(loop, [add({ collectors: 1 })]).problems).toEqual([
-      'node functionality does not score, so it takes no collectors; leave collectors out: an interviews node does not score, or give it the scores contract',
+      'node functionality does not score, so it takes no collectors; leave them out or give it the scores contract',
     ])
     expect(JSON.stringify(loop)).toBe(before)
   })
@@ -869,14 +869,14 @@ describe('the interviews contract', () => {
   test('node.set on a node that does not score gets the same leave-it-out hint, whatever its contract', async () => {
     const loop = await core()
     expect(refused(loop, [{ op: 'node.set', id: 'worker', categories: ['ux'] }]).problems).toEqual([
-      'node worker does not score, so it takes no categories; leave categories out: a lands node does not score, or give it the scores contract',
+      'node worker does not score, so it takes no categories; leave them out or give it the scores contract',
     ])
     const talker = ok(loop, [add({})]).loop
     expect(refused(talker, [{ op: 'node.set', id: 'functionality', categories: ['ux'] }]).problems).toEqual([
-      'node functionality does not score, so it takes no categories; leave categories out: an interviews node does not score, or give it the scores contract',
+      'node functionality does not score, so it takes no categories; leave them out or give it the scores contract',
     ])
     expect(refused(talker, [{ op: 'node.set', id: 'functionality', collectors: 1 }]).problems).toEqual([
-      'node functionality does not score, so it takes no collectors; leave collectors out: an interviews node does not score, or give it the scores contract',
+      'node functionality does not score, so it takes no collectors; leave them out or give it the scores contract',
     ])
   })
 })

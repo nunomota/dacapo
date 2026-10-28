@@ -839,7 +839,7 @@ function explain(loop: Loop, p: Problem): string {
     const n = loop.nodes[id]
     if (key === 'categories' && n?.contract === 'scores') return `node ${id} scores but has no categories; give it the rubric categories it accepts`
     if (n && (key === 'categories' || key === 'collectors') && /for scores nodes only/.test(p.message)) {
-      return `node ${id} does not score, so it takes no ${key}; leave ${key} out: ${n.contract === 'interviews' ? 'an' : 'a'} ${n.contract} node does not score, or give it the scores contract`
+      return `node ${id} does not score, so it takes no ${key}; leave them out or give it the scores contract`
     }
     if (n && key === 'models' && /needs at least one model/.test(p.message)) {
       const does = n.contract === 'lands' ? 'lands work' : n.contract === 'interviews' ? 'talks to the user' : 'scores'
