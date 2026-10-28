@@ -154,7 +154,11 @@ Cannot see:
 - The orchestrator's conversation.
 - The workers' work.
 
-Its report is a file at the path the host names, in the node's own format, ending with `reported` or `reported with open questions`; the host fixes the exact line and checks only that the file exists and is not empty.
+Its report is a file at the path the host names, in the node's own format, ending with exactly one of:
+- **reported**: the conversation is complete.
+- **reported with open questions**: the report says what is still open.
+
+The host fixes the exact form of the last line and checks only that the file exists and is not empty.
 
 ## What a host must guarantee
 
