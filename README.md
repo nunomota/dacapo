@@ -86,7 +86,7 @@ A loop is a folder of plain files. Nothing about it lives only inside the plugin
 | File | What it holds |
 | --- | --- |
 | `loop.json` | The graph: steps of stages, the nodes each stage runs, the transitions between stages and the handovers between nodes. |
-| `nodes/<id>.md` | One agent: a frontmatter (type, summary, contract, models, skills, denied tools) and its role as the body. A contract is one of four: `lands (builds and lands work)`, `scores (judges a rubric)`, `collects (gathers evidence)`, `none (answers a prompt)`. |
+| `nodes/<id>.md` | One agent: a frontmatter (type, summary, contract, models, skills, denied tools) and its role as the body. A contract is one of five: `lands (builds and lands work)`, `scores (judges a rubric)`, `collects (gathers evidence)`, `none (answers a prompt)`, `interviews (talks to the user and writes a report)`. |
 | `loop.d2` | The diagram, as valid [D2](https://d2lang.com) that other D2 tools render: a container per step labelled `step N`, each shape's summary as its tooltip. dacapo reads it back too, so a hand edit can be folded in. |
 | `LOOP.md` | The loop as prose, generated on every save, for a reader without the plugin: a paragraph on what the file and its words mean, then each node's models and skills, and the stages the orchestrator works alone. |
 

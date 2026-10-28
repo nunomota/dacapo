@@ -31,6 +31,8 @@ Clarify, research, plan and merge are stages with no nodes: the orchestrator wor
 
 ## Outcomes
 
+An interviewing node writes its report in the format its role defines. The mod checks that the file exists and is not empty and that the node's last line is `dacapo: reported` or `dacapo: reported with open questions`; `/dacapo-back` ends an interview early.
+
 A worker's report ends with `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`. `done` is a claim: the mod marks the work landed only when `sync` sees its pull request merged. A worker whose last line says done while its pull request is still open is marked failed, with its branch and pull request kept, so the orchestrator can resume it.
 
 Each judge writes a JSON report. The mod checks that every rubric id is scored exactly once with `strong`, `acceptable` or `unacceptable` and that the overview is not empty, then derives the verdict: `fix` if any item is unacceptable, `pass-with-recommendations` if any is acceptable, `pass` otherwise. An invalid report is reported as such and never counts as a pass. When two judges run side by side, a `fix` from QA stops the reviewer running beside it, which runs again after the fixes.
@@ -41,14 +43,14 @@ The header reads like fastfetch: the task, elapsed time, branch, the loop (its n
 
 One color code throughout: teal in progress, green done, yellow done with limitations or recommendations, orange failed. Each stage has a color of its own, the same in the bar, the band above the prompt and the loop viewer; a stage of your own takes one from the same palette by its position.
 
-You can type while workers run. Your prompts become events in the timeline and are folded into the next round. `/dacapo-pane` reopens the pane; `/dacapo-config` prints the configuration in force and the conf's loop, the one a run walks without `--loop`.
+You can type while workers run. Your prompts become events in the timeline and are folded into the next round. `/dacapo-pane` reopens the pane; `/dacapo-back` takes the floor back from an interviewing node; `/dacapo-config` prints the configuration in force and the conf's loop, the one a run walks without `--loop`.
 
 ## Loops
 
 A loop is a folder named after it, holding four kinds of file:
 
 - `loop.json`, the graph: `name`, `description`, the `entry` and `exit` node ids, `steps` (each a list of stages, each stage with an `id`, a `summary` and the `nodes` it runs), `onCall` (nodes outside any stage, each with its helpers), `transitions` (stage to stage, with a `label` and optional `back`, `when` and `then`) and `handovers` (node to node, with a `label` and a `spec`). A forward transition left out goes to the next step.
-- `nodes/<id>.md`, one per node: frontmatter lines for `type` (`entry`, `agent`, `swarm` or `exit`), `summary`, `contract` (`lands (builds and lands work)`, `scores (judges a rubric)`, `collects (gathers evidence)` or `none (answers a prompt)`: the one gloss of each that the focus panel, `config`, `LOOP.md` and the library use), `models`, `skills`, `tools: { deny: [...] }`, and for a `scores` node `categories` and an optional `collectors`. The body is the role, the agent's system prompt; the mod appends the landing steps or the report format its contract needs.
+- `nodes/<id>.md`, one per node: frontmatter lines for `type` (`entry`, `agent`, `swarm` or `exit`), `summary`, `contract` (`lands (builds and lands work)`, `scores (judges a rubric)`, `collects (gathers evidence)` or `none (answers a prompt)` or `interviews (talks to the user and writes a report)`: the one gloss of each that the focus panel, `config`, `LOOP.md` and the library use), `models`, `skills`, `tools: { deny: [...] }`, and for a `scores` node `categories` and an optional `collectors`. The body is the role, the agent's system prompt; the mod appends the landing steps or the report format its contract needs.
 - `loop.d2`, the diagram: valid D2 that other D2 tools render. dacapo also writes and reads it itself, so no d2 binary is needed. It carries structure, labels and summaries only: the shapes are drawn by their ids, each step is a container labelled `step N`, and a shape's summary is its `tooltip`, never a child shape (an older file's `summary:` attribute still reads). A top-level block the subset does not know is kept as it is and written back after the generated part. A hand edit is detected by comparing the diagram with the files, not by time. Opening a loop whose diagram differs says `loop.d2 was edited by hand since the last save; say “import the diagram” to fold it in (the import-d2 op)`.
 - `LOOP.md`, the loop as prose for people and other orchestrators, generated from the others on every save. It opens, after the title and description, with a paragraph for a reader without the plugin: what the file is, what a loop, the orchestrator, a swarm, a `(back)` transition and the host are. It lists each node's models, skills and contract with its gloss (`Collectors` only for a judge whose node sets them), marks the stages the orchestrator works alone, and names the entry and the exit by their node ids in the transitions (`merge → done`).
 
@@ -75,6 +77,7 @@ The orchestrator calls these; the `core` skill says when.
 | `sync` | Confirms which pull requests merged, prunes their branches, fast-forwards the run worktree. |
 | `judge` | Prepares a `scores` node, QA or a reviewer, on a fresh worktree of the run branch with its rubric, and the harness for a judge that uses the product. Judges whose stages share a step run side by side. |
 | `ask` | Prepares a node with contract `none`, on call or in a stage, for one question or task, and returns the Agent call that asks it. |
+| `consult` | Prepares a node with contract `interviews` for one interview: writes its brief, copies the run's reports to it, and returns the Agent call. The node holds the floor until it reports. |
 | `finish` | Opens the final pull request; the mod merges it when green. An aborted run's branch is deleted on origin. |
 | `status`, `cancel` | The timeline as text, with the loop and its current stages; stopping a worker, judge or asked node. |
 
