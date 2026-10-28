@@ -109,7 +109,7 @@ function handoverTry(loop: Loop, h: Handover): string[] {
   return [`change what ${h.from} hands to ${h.to}`, 'remove this handover', ...(back ? [] : [`add a handover from ${h.to} to ${h.from}`])]
 }
 
-/** The phrases under a node, by what it is: the entry, a judge, a collector, a worker, a node on call. */
+/** The phrases under a node, by what it is: the entry, a judge, a collector, a worker, an interviewer, a node on call. */
 function nodeTry(loop: Loop, n: LoopNode): readonly string[] {
   const id = n.id
   if (id === loop.entry || n.type === 'entry') return [`add a scout the ${id} can ask anything, any time`, `rewrite the ${id}'s role to clarify in one message`]
@@ -127,6 +127,12 @@ function nodeTry(loop: Loop, n: LoopNode): readonly string[] {
       const into = stage ? [`move ${id} into ${stage}`] : []
       if (place.stage || place.helperOf) return [`move ${id} on call`, ...into]
       return [...into, `give ${id} a helper ${freshId(loop, 'reader')} that summarises folders`]
+    }
+    case 'interviews': {
+      const place = placeOf(loop, id)
+      const stage = loop.steps.flatMap(s => s.stages).find(st => st.id !== place.stage)?.id
+      const move = place.onCall || place.helperOf ? (stage ? [`move ${id} into ${stage}`] : []) : [`move ${id} on call`]
+      return [`let ${id} talk first`, `give ${id} the scope …`, ...move]
     }
   }
 }
@@ -206,6 +212,8 @@ function contractWords(n: LoopNode): string {
       return contractText('collects')
     case 'none':
       return contractText('none')
+    case 'interviews':
+      return contractText('interviews')
   }
 }
 

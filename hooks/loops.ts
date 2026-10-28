@@ -32,7 +32,7 @@ const MODEL = /^[a-z][a-z0-9.-]*$/
 /** A skill name as the Skill tool takes it, as hooks/conf.ts takes it. */
 const SKILL = /^\/?([a-z0-9][a-z0-9_-]*:)?[a-z0-9][a-z0-9_-]*$/
 const NODE_TYPES: readonly NodeType[] = ['entry', 'agent', 'swarm', 'exit']
-const CONTRACTS: readonly Contract[] = ['lands', 'scores', 'collects', 'none']
+const CONTRACTS: readonly Contract[] = ['lands', 'scores', 'collects', 'none', 'interviews']
 /** The frontmatter keys of a node file, in the order they are written. */
 export const NODE_KEYS = ['type', 'summary', 'contract', 'models', 'skills', 'tools', 'categories', 'collectors'] as const
 /** The words a transition uses for the entry and the exit node. */
@@ -55,6 +55,7 @@ export const CONTRACT_GLOSS: Record<Contract, string> = {
   scores: 'judges a rubric',
   collects: 'gathers evidence',
   none: 'answers a prompt',
+  interviews: 'talks to the user and writes a report',
 }
 
 /** A contract with its gloss: `none (answers a prompt)`. */
@@ -342,7 +343,7 @@ export function validateLoop(loop: Loop): Problem[] {
       if (n.contract !== 'none') add(at('contract'), `the ${n.type} node has contract ${n.contract}; entry and exit have contract none`)
       if (n.models.length > 0) add(at('models'), `the ${n.type} node lists models; entry and exit have no models`)
     }
-    if ((n.contract === 'lands' || n.contract === 'scores') && n.models.length === 0) add(at('models'), `a ${n.contract} node needs at least one model`)
+    if ((n.contract === 'lands' || n.contract === 'scores' || n.contract === 'interviews') && n.models.length === 0) add(at('models'), `a ${n.contract} node needs at least one model`)
     if (n.contract === 'scores' && !(n.categories && n.categories.length > 0)) add(at('categories'), 'a scores node needs categories: the rubric categories it accepts')
     if (n.contract !== 'scores' && n.categories !== undefined) add(at('categories'), 'categories are for scores nodes only')
     if (n.contract !== 'scores' && n.collectors !== undefined) add(at('collectors'), 'collectors are for scores nodes only')
@@ -632,6 +633,7 @@ function contractWords(n: LoopNode): string {
   if (n.contract === 'lands') return `${head} It lands its own work and reports how it went.`
   if (n.contract === 'collects') return `${head} It gathers evidence for the judge that hands it a slice, and never scores.`
   if (n.contract === 'none') return head
+  if (n.contract === 'interviews') return `${head} It talks to the user itself, writes a report in the format its role defines and hands the floor back.`
   const categories = n.categories?.length ? ` in the categories ${n.categories.join(', ')}` : ''
   const collectors = n.collectors ? ` It may run up to ${n.collectors} collector${n.collectors === 1 ? '' : 's'} at once.` : ''
   return `${head} It scores every rubric item${categories}, and the host derives the verdict.${collectors}`

@@ -36,15 +36,15 @@ Why: an interview only works when the user talks to the node directly, and an ea
 
 Supersedes: the rule that only the orchestrator talks to the user.
 
-### D5 The handover mechanism is open
+### D5 The handover goes through the agent view and routing
 
-The handover mechanism is settled by a person-driven spike before the runtime is built. The candidates are the agent view (`$.ui.view({ agentId })`), routing in the mod (`prompt.submit` plus `$.session.send({ to: { agentId } })`), and teams. The spike mod is throwaway and is removed once the runtime lands.
+A person-driven spike settled the handover mechanism before the runtime was built. On the terminal, `$.ui.view({ agentId })` from a command handler switches the view and typing there reaches the agent, and `$.session.send({ to: { agentId } })` delivers to and resumes an idle agent. A mod cannot start a teammate, so teams are out. The `prompt.submit` hook must accept every typed origin. A background agent that ends its turn to wait receives a hand-back notice and is resumed by the next message. The desktop app is unverified. The spike mod was throwaway and is removed once the runtime lands.
 
 Why: the plugin API does not say which of the three carries the floor reliably, and only a trial on the real surface can.
 
 Supersedes: nothing.
 
-Status: open. The spike's finding, and the mechanism it picks, is filled in by a later commit of this run.
+Status: settled on the terminal; unverified in the desktop app.
 
 ### D6 Where an interviewing node runs
 
