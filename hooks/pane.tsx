@@ -21,6 +21,8 @@ export type Actions = {
   toggleTimelineFull: () => void
   openPane: () => void
   hideBand: () => void
+  /** Shows the main conversation again while an interview holds the floor; it does not end the interview. */
+  back?: () => void
 }
 
 export type Theme = { prices: Record<string, Price> }
@@ -128,6 +130,14 @@ export const statusWord: Record<WorkerRow['status'] | QaRow['status'], string> =
   stale: 'stale',
   timeout: 'timed out',
   cancelled: 'cancelled',
+}
+
+/** How an interview row's state is said: talking while it is live, then how it reported. */
+export function interviewWord(row: WorkerRow): string {
+  if (row.status === 'pending') return statusWord.pending
+  if (row.status === 'running' || row.status === 'stale') return row.status === 'stale' ? 'talking (stale)' : 'talking'
+  if (row.status === 'finished') return row.outcome === 'limited' ? 'reported with open questions' : row.outcome === 'failed' ? 'failed' : 'reported'
+  return row.status === 'failed' ? 'failed' : statusWord[row.status]
 }
 
 /** Which judge a row is: QA (the default) or the reviewer. */
@@ -958,7 +968,10 @@ function agentCard(els: Els, row: WorkerRow | QaRow, theme: Theme, now: number, 
   if (row.kind === 'worker') {
     const prs = prsOf(run, row.branch)
     const latest = prs[0]
-    const lead = [span, row.model, ...(row.outcome === 'limited' ? ['with limitations'] : []), ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')
+    const lead =
+      row.contract === 'interviews'
+        ? ['interview', interviewWord(row), span, row.model].join(' · ')
+        : [span, row.model, ...(row.outcome === 'limited' ? ['with limitations'] : []), ...(row.restarts ? [`restarted ${row.restarts}x`] : [])].join(' · ')
     const subline = latest ? (
       <Box flexDirection="row" alignItems="center" overflow="hidden">
         <Box flexShrink={0}>
@@ -1103,9 +1116,18 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
   const stages = currentStages(run)
   const stageText = stages.join(' ∥ ')
   const kind = run.loop ? run.loop.name : level
-  const first = `dacapo${SEP}${kind}${SEP}${stageText}`
+  const talking = run.floor ? `${SEP}talking to ${run.floor.node}` : ''
+  const first = `dacapo${SEP}${kind}${SEP}${stageText}${talking}`
   const buttons = (
     <Box flexDirection="row" flexShrink={0}>
+      {run.floor && act.back ? (
+        <Button key="floor-back" plain onPress={() => act.back?.()}>
+          Back
+        </Button>
+      ) : (
+        ''
+      )}
+      {run.floor && act.back ? <Text dimColor>{'  '}</Text> : ''}
       <Button key="open-pane" plain onPress={() => act.openPane()}>
         timeline
       </Button>
@@ -1149,11 +1171,12 @@ export function drawBand(els: Els, snap: Snapshot, act: Actions, columns: number
         ) : (
           <Text bold>{stageText}</Text>
         )}
-        <Text dimColor>{`${SEP}${cut(run.task || 'clarifying the task', Math.max(8, inner - 29 - kind.length - stageText.length))}`}</Text>
+        {run.floor ? <Text color={TEAL}>{talking}</Text> : ''}
+        <Text dimColor>{`${SEP}${cut(run.task || 'clarifying the task', Math.max(8, inner - 29 - kind.length - stageText.length - talking.length))}`}</Text>
       </Text>
       <Box flexDirection="row" justifyContent="space-between">
         <Text dimColor wrap="truncate-end">
-          {cut(second.join(SEP) || 'nothing running yet', Math.max(8, inner - 18))}
+          {cut([...second, ...(run.floor ? ['/dacapo-back ends it'] : [])].join(SEP) || 'nothing running yet', Math.max(8, inner - (run.floor ? 26 : 18)))}
         </Text>
         {buttons}
       </Box>
