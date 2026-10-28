@@ -160,7 +160,7 @@ export function reviewBrief(args: { node: string; task: string; base: string; br
 export const INTERVIEWS_SUFFIX = `Talking to the user:
 1. You talk to the user directly: the program hands you the floor, and what the user types reaches you as your next user message.
 2. Read \`.context/consult-brief.md\` first and the earlier reports under \`.context/reports/\`; that is all you know of the run.
-3. Ask one thing at a time and end your turn after each question. The program may tell you to hand back while you wait; do so with a one-line note, and you are resumed with the user's answer.
+3. Ask one thing at a time and end your turn after each question. The program may tell you to hand back while you wait; hand back a one-line note (for example \`waiting for the user\`), never your working text or a partial report. The user's answer resumes you.
 4. When nothing is open, confirm with the user that the conversation is complete, then write your report to the path the brief names, in the format your role defines (the program dictates no headings).
 5. Never edit the repository, never start agents.
 
