@@ -447,3 +447,27 @@ describe('the loop viewer as text', () => {
     expect(text.endsWith('\n\nDrafts: /d')).toBe(true)
   })
 })
+
+describe('the loop viewer: an interviewing node', () => {
+  const role = (id: string) => `---\ntype: agent\nsummary: interviews the user\ncontract: interviews\nmodels: [sonnet]\nskills: []\ntools: { deny: [] }\n---\n\nYou interview the user about ${id}.\n`
+  const talk = (): Loop => {
+    const base = LOOPS.core
+    return {
+      ...base,
+      steps: base.steps.map((s, i) => (i === 0 ? { stages: [{ ...s.stages[0]!, nodes: ['functionality'] }] } : s)),
+      onCall: { design: [] },
+      nodes: { ...base.nodes, functionality: nodeFromFile('functionality', role('functionality')).node, design: nodeFromFile('design', role('design')).node },
+    }
+  }
+  const state = (id: string): ViewerState => ({ ...core({ focus: { kind: 'node', id } }), open: { ...core().open!, loop: talk() } })
+
+  test('the contract field shows the gloss, and the hints let it talk first, give it a scope, move it', () => {
+    const text = focusText(state('functionality'))
+    expect(text).toContain('Contract: interviews (talks to the user and writes a report)')
+    expect(text).toContain('Try saying: “let functionality talk first” · “give functionality the scope …” · “move functionality on call”')
+  })
+
+  test('an interviewer on call is offered a stage instead', () => {
+    expect(focusText(state('design'))).toContain('Try saying: “let design talk first” · “give design the scope …” · “move design into clarify”')
+  })
+})

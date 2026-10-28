@@ -645,7 +645,7 @@ describe('parsing', () => {
     expect(problem({ op: 'loop.describe' })).toBe('the loop needs a description: a sentence on what it is for')
     expect(problem({ op: 'stage.add', id: 'x', summary: 'y', after: 1.5 })).toBe('after is not a whole number; give after as a whole number')
     expect(problem({ op: 'node.add', id: 'x', type: 'robot', contract: 'none', summary: 'y' })).toBe('type is not agent or swarm; give type as agent or swarm')
-    expect(problem({ op: 'node.set', id: 'x', contract: 'judges' })).toBe('contract is not one of lands, scores, collects, none; give contract as one of lands, scores, collects, none')
+    expect(problem({ op: 'node.set', id: 'x', contract: 'judges' })).toBe('contract is not one of lands, scores, collects, none, interviews; give contract as one of lands, scores, collects, none, interviews')
     expect(problem({ op: 'node.move', id: 'x', onCall: false })).toBe('onCall is not true; give onCall as true')
     expect(problem({ op: 'node.set', id: 'x', tools: ['Edit'] })).toBe(
       'tools is not the tools to deny: deny with a list of tool names, like Edit; give tools as the tools to deny: deny with a list of tool names, like Edit',
@@ -827,5 +827,42 @@ describe('loops on disk', () => {
     expect(await setDefaultLoop(fs, '/new/.dacapo.conf', 'mine')).toBeNull()
     expect(files.get('/new/.dacapo.conf')).toBe('loop = mine\n')
     expect(await setDefaultLoop(fs, '/new/.dacapo.conf', 'Mine')).toBe('"Mine" is not a loop id; use lowercase letters, digits and inner hyphens, like mine')
+  })
+})
+
+describe('the interviews contract', () => {
+  const add = (o: Partial<Extract<Op, { op: 'node.add' }>> = {}): Op => ({ op: 'node.add', id: 'functionality', type: 'agent', contract: 'interviews', summary: 'interviews the user', stage: 'clarify', models: ['sonnet'], ...o })
+
+  test('node.add puts an interviewing node in a stage, and a second one may join it', async () => {
+    const out = ok(await core(), [add(), add({ id: 'design' })])
+    expect(out.loop.nodes.functionality).toMatchObject({ contract: 'interviews', models: ['sonnet'] })
+    expect(out.loop.steps[0]!.stages[0]!.nodes).toEqual(['functionality', 'design'])
+    expect(out.changes[0]).toBe('added agent functionality (interviews) in stage clarify')
+    expect(validateLoop(out.loop)).toEqual([])
+  })
+
+  test('the op parser takes interviews and names the five contracts when the contract is missing', () => {
+    expect(parseOp({ op: 'node.set', id: 'worker', contract: 'interviews' })).toEqual({ op: { op: 'node.set', id: 'worker', contract: 'interviews' } })
+    expect(JSON.stringify(parseOp({ op: 'node.add', id: 'x', type: 'agent', summary: 'x', onCall: true }))).toContain('a contract: lands, scores, collects, none or interviews')
+  })
+
+  test('node.set turns a node into an interviewer and drops what only a judge carries', async () => {
+    const out = ok(await coreDeep(), [{ op: 'node.set', id: 'reviewer', contract: 'interviews' }])
+    expect(out.loop.nodes.reviewer!.contract).toBe('interviews')
+    expect(out.loop.nodes.reviewer!.categories).toBeUndefined()
+    expect(out.changes).toEqual(['set reviewer contract to interviews'])
+  })
+
+  test('an interviewer with no model, with categories or with collectors is refused, and nothing changed', async () => {
+    const loop = await core()
+    const before = JSON.stringify(loop)
+    expect(refused(loop, [add({ models: [] })]).problems).toEqual(['node functionality talks to the user but has no model; give it at least one'])
+    expect(refused(loop, [add({ categories: ['ux'] })]).problems).toEqual([
+      'node functionality does not score, so it takes no categories; set its contract to interviews again to drop them, or set it to scores',
+    ])
+    expect(refused(loop, [add({ collectors: 1 })]).problems).toEqual([
+      'node functionality does not score, so it takes no collectors; set its contract to interviews again to drop them, or set it to scores',
+    ])
+    expect(JSON.stringify(loop)).toBe(before)
   })
 })

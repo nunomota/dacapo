@@ -46,7 +46,7 @@ const ENTRY = 'entry'
 const EXIT = 'exit'
 /** The role a node added by the architect starts with, as hooks/loopd2.ts stubs one. */
 const STUB_ROLE = 'Role to be written.'
-const CONTRACTS: readonly Contract[] = ['lands', 'scores', 'collects', 'none']
+const CONTRACTS: readonly Contract[] = ['lands', 'scores', 'collects', 'none', 'interviews']
 
 /** Copied from hooks/loops.ts, where it is not exported. */
 const join = (...parts: string[]) => parts.map((p, i) => (i === 0 ? p.replace(/\/+$/, '') : p.replace(/^\/+|\/+$/g, ''))).join('/')
@@ -240,7 +240,7 @@ function needs(name: Op['op'], key: string): string {
     id: 'an id',
     summary: 'a summary of two to four words',
     type: 'a type: agent or swarm',
-    contract: 'a contract: lands, scores, collects or none',
+    contract: 'a contract: lands, scores, collects, none or interviews',
     text: 'its whole role text, in text',
     spec: 'a spec: what the handover carries',
     description: 'a description: a sentence on what it is for',
@@ -842,7 +842,8 @@ function explain(loop: Loop, p: Problem): string {
       return `node ${id} does not score, so it takes no ${key}; set its contract to ${n.contract} again to drop them, or set it to scores`
     }
     if (n && key === 'models' && /needs at least one model/.test(p.message)) {
-      return `node ${id} ${n.contract === 'lands' ? 'lands work' : 'scores'} but has no model; give it at least one`
+      const does = n.contract === 'lands' ? 'lands work' : n.contract === 'interviews' ? 'talks to the user' : 'scores'
+      return `node ${id} ${does} but has no model; give it at least one`
     }
     if (key === 'contract' && n?.contract === 'collects') {
       // the judge to name is one the loop still has: never the node a batch just removed
