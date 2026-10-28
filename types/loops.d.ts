@@ -9,9 +9,10 @@ export type NodeType = 'entry' | 'agent' | 'swarm' | 'exit'
 
 /**
  * What the host holds a node to: `lands` lands its own work and reports how it went, `scores` scores a rubric,
- * `collects` gathers evidence for a `scores` node and never scores, `none` asks nothing of the host.
+ * `collects` gathers evidence for a `scores` node and never scores, `none` asks nothing of the host, `interviews` talks to
+ * the user and writes a report.
  */
-export type Contract = 'lands' | 'scores' | 'collects' | 'none'
+export type Contract = 'lands' | 'scores' | 'collects' | 'none' | 'interviews'
 
 /** One node: the frontmatter of nodes/<id>.md plus its body. */
 export type LoopNode = {
