@@ -152,3 +152,32 @@ export function reviewBrief(args: { node: string; task: string; base: string; br
     '',
   ].join('\n')
 }
+
+/**
+ * What the host adds to the role of every `interviews` node: it holds the floor, asks one thing at a time, confirms the
+ * conversation is complete, writes its report in the format its role defines, and ends on a line that says how it went.
+ */
+export const INTERVIEWS_SUFFIX = `Talking to the user:
+1. You talk to the user directly: the program hands you the floor, and what the user types reaches you as your next user message.
+2. Read \`.context/consult-brief.md\` first and the earlier reports under \`.context/reports/\`; that is all you know of the run.
+3. Ask one thing at a time and end your turn after each question. The program may tell you to hand back while you wait; hand back a one-line note (for example \`waiting for the user\`), never your working text or a partial report. The user's answer resumes you.
+4. When nothing is open, confirm with the user that the conversation is complete, then write your report to the path the brief names, in the format your role defines (the program dictates no headings).
+5. Never edit the repository, never start agents.
+
+Your final message ends with exactly one of these two lines, alone on the line: \`dacapo: reported\` (the report is written and nothing is left open) or \`dacapo: reported with open questions\` (the report is written and names what is still open).`
+
+/** The brief of one interview: the run's task, the orchestrator's scope note, where earlier reports sit, where the report goes and how to end. */
+export function consultBrief(args: { node: string; task: string; scope?: string; reportPath: string; reportsDir: string; n: number }): string {
+  return [
+    `# Interview ${args.n}: ${args.node}`,
+    '',
+    `- Task of the run: ${args.task.trim()}`,
+    `- Scope from the orchestrator: ${args.scope?.trim() || 'none given'}`,
+    `- Earlier reports of the run: \`${args.reportsDir}\` (read every file there first; it may be empty)`,
+    `- Your report: \`${args.reportPath}\`, in the format your role defines`,
+    '',
+    "What reaches you as 'The user says:' is the person's own words, not the orchestrator's.",
+    '',
+    'When the user has confirmed the conversation is complete and the report is written, end your final message with exactly one of these lines, alone on the line: `dacapo: reported` or `dacapo: reported with open questions`.',
+  ].join('\n')
+}

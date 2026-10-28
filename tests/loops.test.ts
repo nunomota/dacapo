@@ -25,6 +25,7 @@ import {
 } from '../hooks/loops'
 import { d2Differs, toD2 } from '../hooks/loopd2'
 import { SHIPPED_LOOP_FILES } from '../loops/shipped'
+import { FIXTURE_LOOP_FILES } from './fixtures/talk'
 
 /** An in-memory file system: files by absolute path, folders implied by them, an optional clock for stat. */
 function memFs(initial: Record<string, string> = {}, mtimes?: Record<string, number>) {
@@ -601,5 +602,74 @@ describe('the shipped loops', () => {
       expect(worker).not.toContain('gh pr merge')
       expect(worker).not.toContain('dacapo: done')
     }
+  })
+})
+
+describe('the interviews contract', () => {
+  /** The fixture loop talk placed under `/fixtures/loops`. */
+  function fixtureFs() {
+    return memFs(Object.fromEntries(Object.entries(FIXTURE_LOOP_FILES).map(([k, v]) => [`/fixtures/loops/${k}`, v])))
+  }
+  const talk = async () => (await readLoop(fixtureFs().fs, '/fixtures/loops/talk')).loop
+  const broken = (base: Loop, change: (l: Loop) => void) => {
+    const l = clone(base)
+    change(l)
+    return validateLoop(l)
+  }
+
+  test('the fixture loop talk reads and validates, and writes back to identical text', async () => {
+    const read = await readLoop(fixtureFs().fs, '/fixtures/loops/talk')
+    expect(read.problems).toEqual([])
+    expect(validateLoop(read.loop)).toEqual([])
+    expect(read.loop.nodes.functionality).toMatchObject({ contract: 'interviews', models: ['sonnet'], summary: 'interviews the user' })
+    expect(read.loop.nodes.design).toMatchObject({ contract: 'interviews', models: ['sonnet'] })
+    expect(read.loop.steps[0]!.stages[0]).toMatchObject({ id: 'clarify', nodes: ['functionality'] })
+    expect(read.loop.onCall).toEqual({ design: [] })
+    const out = memFs()
+    await writeLoop(out.fs, '/out/talk', read.loop, { 'loop.d2': toD2(read.loop) })
+    const keys = Object.keys(FIXTURE_LOOP_FILES).filter(k => k.startsWith('talk/')).sort()
+    expect([...out.files.keys()].map(k => k.slice('/out/'.length)).sort()).toEqual(keys)
+    for (const k of keys) expect(out.files.get(`/out/${k}`), k).toBe(FIXTURE_LOOP_FILES[k])
+  })
+
+  test('an interviews node needs a model and takes no categories and no collectors', async () => {
+    const l = await talk()
+    expectProblem(broken(l, x => (x.nodes.functionality!.models = [])), 'nodes.functionality.models', 'an interviews node needs at least one model')
+    expectProblem(broken(l, x => (x.nodes.design!.categories = ['ux'])), 'nodes.design.categories', 'categories are for scores nodes only')
+    expectProblem(broken(l, x => (x.nodes.design!.collectors = 1)), 'nodes.design.collectors', 'collectors are for scores nodes only')
+    expectProblem(broken(l, x => (x.nodes.orchestrator!.contract = 'interviews')), 'nodes.orchestrator.contract', 'entry and exit have contract none')
+  })
+
+  test('several interviews nodes share a stage', async () => {
+    const l = await talk()
+    expect(
+      broken(l, x => {
+        x.onCall = {}
+        x.steps[0]!.stages[0]!.nodes.push('design')
+      }),
+    ).toEqual([])
+  })
+
+  test('a node file with contract interviews reads back as written', () => {
+    const { node: n, problems } = nodeFromFile('ux', '---\ntype: agent\nsummary: interviews the user\ncontract: interviews\nmodels: [sonnet]\nskills: []\ntools: { deny: [] }\n---\n\nYou ask.\n')
+    expect(problems).toEqual([])
+    expect(n.contract).toBe('interviews')
+    expect(nodeFromFile('ux', nodeToFile(n)).node).toEqual(n)
+    expect(nodeFromFile('ux', '---\ntype: agent\nsummary: x\ncontract: chats\n---\n').problems[0]!.message).toBe('"contract" must be one of lands, scores, collects, none, interviews, not chats')
+  })
+
+  test('LOOP.md says what an interviewing node does, in a stage and on call, and lists no categories', async () => {
+    const spec = toSpec(await talk())
+    expect(spec).toContain(
+      'Interviews the user. One agent. It works in the clarify stage. Contract: interviews (talks to the user and writes a report). It talks to the user itself, writes a report in the format its role defines and hands the floor back.',
+    )
+    expect(spec).toContain(
+      'Interviews the user. One agent. On call: usable at any point of the run. Contract: interviews (talks to the user and writes a report). It talks to the user itself, writes a report in the format its role defines and hands the floor back.',
+    )
+    const section = spec.slice(spec.indexOf('### functionality'), spec.indexOf('### worker'))
+    expect(section).toContain('- Models: sonnet')
+    expect(section).not.toContain('Categories')
+    expect(section).toContain('# Functionality spec')
+    expect(spec).toBe(FIXTURE_LOOP_FILES['talk/LOOP.md'])
   })
 })

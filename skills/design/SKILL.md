@@ -109,6 +109,8 @@ The shapes below are the common ones. Read the open loop first for the ids, and 
 
 **"A scout the orchestrator can ask anything, any time."** `node.add { id: 'scout', type: 'agent', contract: 'none', summary: 'answers any question', onCall: true, models: [...] }`, then the role. A `none` node needs no categories. Add `handover.set` both ways with the orchestrator when the user wants the ask and the answer specified.
 
+**"An expert that interviews me about functionality."** `node.add { id: 'functionality', type: 'agent', contract: 'interviews', summary: 'interviews the user', stage: 'clarify', models: [...] }`, then a role that says what it asks about and defines its report: a `# Functionality spec` section with Goal, Users, Flows and Open questions, written after the user confirms the summary. An `interviews` node needs models and takes no categories or collectors.
+
 **"A helper for the scout."** `node.add` with `helperOf: 'scout'`.
 
 **"New loop docs-only at project level from core."** `loop.new { name: 'docs-only', level: 'project', from: { name: 'core', level: 'plugin' } }`, then the edits that make it docs-only, each in the same batch or the next. The new loop is a copy; the original stays as it was.
@@ -135,6 +137,7 @@ A role is the system prompt of that node's agent. Write it in the second person:
 - Follow with `Ground rules:` and a short list: what it may touch, what it never does, how it handles the brief and its limits.
 - Short sentences. Rules the agent can check, not wishes.
 - Never the report format or the landing steps. The host appends those for the node's contract: the report and its last line for `scores` and `collects` nodes, the worktree, the pull request and the last line for `lands` nodes. A role that repeats them drifts from the host. Leave them out.
+- An `interviews` role is the exception: the host dictates no report headings, so the role defines its own report format (its headings and what each holds) and a confirmation step: before writing the report, the agent sums up what it heard and asks the user to confirm.
 - `node.role` replaces the whole body. When you change a role, start from the current text and keep what was not asked to change.
 
 ## Writing a summary
@@ -145,16 +148,17 @@ A summary is written as two to four words, lower case, shown on the canvas. One 
 
 Transition and handover labels are shorter still: a transition label is a few words, with an optional `when` (the condition) and `then` (the consequence); a handover label is one or two words (`brief`, `scored report`) and carries a `spec`.
 
-## The four contracts
+## The five contracts
 
-A node declares one. The runtime implements these four and no other. Never invent a fifth.
+A node declares one. The runtime implements these five and no other. Never invent a sixth.
 
-Each has one gloss, the one the focus panel, `config`, `LOOP.md` and the library use: `lands (builds and lands work)`, `scores (judges a rubric)`, `collects (gathers evidence)`, `none (answers a prompt)`. Use the same words to the user.
+Each has one gloss, the one the focus panel, `config`, `LOOP.md` and the library use: `lands (builds and lands work)`, `scores (judges a rubric)`, `collects (gathers evidence)`, `none (answers a prompt)`, `interviews (talks to the user and writes a report)`. Use the same words to the user.
 
 - `lands`: builds and lands work through a pull request, and reports `done`, `done with limitations` or `failed`. Pick it for an agent that changes the code. One per stage.
 - `scores`: judges a rubric and reports `strong`, `acceptable` or `unacceptable` per item. Pick it for an agent that decides whether the work is good enough. It needs categories.
 - `collects`: gathers evidence for a `scores` node, never scores. Pick it for helpers that let a judge work in parallel. It hangs off a `scores` node, as a helper.
 - `none`: answers a prompt. Pick it for anything that advises, researches or explains and neither lands nor judges.
+- `interviews`: talks to the user itself, writes a report in the format its role defines, and hands the floor back. Pick it for an expert the user should talk to directly, for example one that interviews the user about functionality and writes a spec section. It needs models. Several may share a stage.
 
 ## What the operations enforce
 
@@ -166,10 +170,10 @@ When a request would break a rule, still call `loop_edit` with the ops it asks f
 - Every node is in a stage, on call, or a helper.
 - Every stage is reachable.
 - Transitions run between known stages.
-- `lands` and `scores` nodes have models.
-- `scores` nodes have categories.
+- `lands`, `scores` and `interviews` nodes have models.
+- `scores` nodes have categories; no other node takes categories or collectors.
 - `collects` nodes hang off a `scores` node.
-- One `lands` node per stage.
+- One `lands` node per stage; several `interviews` nodes may share one.
 - Summaries are one to five words.
 
 When a batch is refused, nothing was written. Fix the op and send the batch again; do not split it into pieces to dodge the rule.
@@ -195,7 +199,7 @@ Tell the user, once the loop is saved: `/dacapo:core --loop <name> <task>` runs 
 
 - Writes loop files. Not `loop.json`, not a node file, not `loop.d2`, not `LOOP.md`, and not by shell.
 - Saves without being told.
-- Invents contracts beyond the four.
+- Invents contracts beyond the five.
 - Widens a change beyond what was asked. A request to rename a node renames the node. A request to add a stage adds the stage. Say what else you noticed and let the user decide.
 - Runs `loop.delete`, `loop.move`, `stage.remove` or `node.remove` in the turn the request arrived in, or sets `confirm: true` before the user's yes. It says what will happen, ends its turn with a question, and runs the op only after the user's yes.
 - Mixes folder ops (`loop.new`, `loop.move`, `loop.delete`, `loop.default`) with draft ops in one `loop_edit` batch.

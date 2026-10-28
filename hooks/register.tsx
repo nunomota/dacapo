@@ -12,8 +12,8 @@ import type { Io } from './io'
 import { ID, contractText, discardDraft, draftKey, draftsRoot, endName, fnv1a, graphFromJson, listLoops, nodeOrder, openDraft, readDraft, readLoop, roots, transitionWords, validateLoop, withDefaultTransitions, writeDraft, type LoopFs, type Roots } from './loops'
 import { d2Differs, fromD2, toD2 } from './loopd2'
 import { layout, renderTerminal, transitionId } from './looplayout'
-import { PHASES, currentStages, drawBand, drawPane, elapsed, hhmm, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
-import { COLLECTS_SUFFIX, LANDS_SUFFIX, SCORES_SUFFIX, qaBrief, reviewBrief, workerBrief } from './prompts'
+import { PHASES, currentStages, drawBand, drawPane, elapsed, hhmm, interviewWord, isAgentRow, levelOf, prText, prsOf, roleOf, roundName, scoreLine, spend, spendText, statusWord, type Actions, type Els, type Snapshot } from './pane'
+import { COLLECTS_SUFFIX, INTERVIEWS_SUFFIX, LANDS_SUFFIX, SCORES_SUFFIX, consultBrief, qaBrief, reviewBrief, workerBrief } from './prompts'
 import { validateReport, validateRubric, type RubricItem } from './report'
 import { LOOPS_PANE, drawViewer, focusText, libraryText, type ViewerActions } from './viewer'
 
@@ -230,16 +230,21 @@ const CONTRACT_WORDS: Record<LoopNode['contract'], string> = {
   scores: 'scores a rubric and writes a report the run collects',
   collects: 'gathers evidence on a slice of a rubric for its judge and never scores',
   none: 'answers when the orchestrator asks it',
+  interviews: 'talks to the user and writes a report of its own',
 }
+
+/** What an interviewing node may not do unless its file lists its own deny: change the repository or start agents; it writes its report through the guard. */
+const INTERVIEWS_DENY = ['Edit', 'NotebookEdit', 'Agent', 'EnterWorktree', 'ExitWorktree']
 
 /** The agent type of a node: its role and the contract's suffix as the system prompt, its skills, its denied tools. */
 function agentSpec(loops: readonly string[], node: LoopNode): AgentSpec {
-  const suffix = node.contract === 'lands' ? LANDS_SUFFIX : node.contract === 'scores' ? SCORES_SUFFIX(node.categories ?? []) : node.contract === 'collects' ? COLLECTS_SUFFIX : ''
+  const suffix =
+    node.contract === 'lands' ? LANDS_SUFFIX : node.contract === 'scores' ? SCORES_SUFFIX(node.categories ?? []) : node.contract === 'collects' ? COLLECTS_SUFFIX : node.contract === 'interviews' ? INTERVIEWS_SUFFIX : ''
   return {
     name: node.id,
     description: `dacapo ${node.id} of the loop${loops.length === 1 ? '' : 's'} ${loops.join(', ')}: ${node.summary}; ${CONTRACT_WORDS[node.contract]}. Spawned through the dacapo tools only.`,
     prompt: [node.role.trim(), suffix].filter(Boolean).join('\n\n'),
-    disallowedTools: [...node.tools.deny],
+    disallowedTools: node.contract === 'interviews' && node.tools.deny.length === 0 ? [...INTERVIEWS_DENY] : [...node.tools.deny],
     skills: [...node.skills],
     ...(node.contract === 'scores' || node.contract === 'collects' ? { omitClaudeMd: true as const } : {}),
   }
@@ -476,14 +481,35 @@ const isTerminal = (row: WorkerRow | QaRow) => !isLive(row) && row.status !== 'p
 const pendingWorker = (iteration: number, taskId: string) => `pending-worker-${iteration}-${taskId}`
 const pendingJudge = (node: string, iteration: number, round: number) => `pending-judge-${node}-${iteration}-${round}`
 const pendingAsk = (node: string, n: number) => `pending-ask-${node}-${n}`
+const pendingConsult = (node: string, n: number) => `pending-consult-${node}-${n}`
 /** The first line of every prompt the Agent hook hands an agent of the run; the spawn hook reads the worktree off it. */
 const WORKTREE_LINE = /^\[dacapo worktree: (.+)\]$/m
-/** The prompts the tools' replies list for the Agent calls: `dacapo worker <id>`, `dacapo judge <node> <round>-<n>`, `dacapo ask <node> <n>`. */
-const CALL_LINE = /^\s*dacapo (?:worker (\S+)|judge (\S+) (\d+)-(\d+)|ask (\S+) (\d+))\s*$/
+/** The prompts the tools' replies list for the Agent calls: `dacapo worker <id>`, `dacapo judge <node> <round>-<n>`, `dacapo ask <node> <n>`, `dacapo consult <node> <n>`. */
+const CALL_LINE = /^\s*dacapo (?:worker (\S+)|judge (\S+) (\d+)-(\d+)|ask (\S+) (\d+)|consult (\S+) (\d+))\s*$/
 /** A worker row of a node asked with `ask`: no branch, no pull request, its answer is its Agent result. */
 const isAsk = (r: Row): boolean => r.kind === 'worker' && r.contract === 'none'
 /** A worker row that lands through a pull request: every worker but an asked node. */
-const isLanding = (r: Row): r is WorkerRow => r.kind === 'worker' && r.contract !== 'none'
+const isLanding = (r: Row): r is WorkerRow => r.kind === 'worker' && r.contract !== 'none' && r.contract !== 'interviews'
+/** A worker row of an interviewing node started with `consult`: it talks to the person and writes a report; no branch, no pull request. */
+const isInterview = (r: Row): r is WorkerRow => r.kind === 'worker' && r.contract === 'interviews'
+/** The last line of an interviewing node's final answer: `dacapo: reported` or `dacapo: reported with open questions`. */
+const REPORTED_LINE = /^\s*dacapo:\s*(reported with open questions|reported)\s*\.?\s*$/i
+/** A notification of the floor agent: a task notification (or an agent message) that names its agent id. */
+const isHandBack = (origin: string, text: string, agentId: string) =>
+  (origin === 'task-notification' || /^\s*<(agent-message|task-notification)\b/.test(text)) && text.includes(agentId)
+/** Interviews that reported, by agent id and node: their last hand-back is held back too, as the wake-up carries the report. */
+const reportedFloors = new Map<string, string>()
+/** The floor a notification may belong to: the one held, else an interview that just reported and whose agent the text names. */
+async function heldFloor(text: string): Promise<{ node: string; agentId: string } | undefined> {
+  const held = (await io.getRun())?.floor
+  if (held) return held
+  for (const [agentId, node] of reportedFloors) if (text.includes(agentId)) return { agentId, node }
+  return undefined
+}
+/** Where an interviewing node writes its report: `<runDir>/interview-<node>-<n>.md`. */
+const interviewPath = (runDir: string, node: string, n: number | string) => `${runDir}/interview-${node}-${n}.md`
+/** The files of the run folder that are reports an interview may read: judge reports and earlier interviews, not briefs, rubrics or questions. */
+const isReportFile = (name: string) => /\.(md|json)$/.test(name) && !/^(round-|ask-|consult-)/.test(name) && !/-(brief\.md|rubric\.json)$/.test(name)
 /** The last line of a worker's answer: `dacapo: done`, `dacapo: done with limitations` or `dacapo: failed`. */
 const STATUS_LINE = /^\s*dacapo:\s*(done with limitations|done|failed)\s*\.?\s*$/im
 /** The last line of a collector's answer to QA: `dacapo: collected`, `dacapo: collected with gaps` or `dacapo: failed`. */
@@ -696,6 +722,7 @@ function statusText(snap: Snapshot): string {
   if (run.gh && !run.gh.ok) lines.push(`gh: ${run.gh.problem} (${run.gh.detail})`)
   if (run.pushProblem) lines.push(`Push problem: ${run.pushProblem}`)
   if (run.final) lines.push(`Final PR #${run.final.number} (${run.final.url}): ${run.prs.find(p => p.number === run.final!.number)?.state ?? 'not yet seen'}`)
+  if (run.floor) lines.push(`floor: ${run.floor.node} (/dacapo-back returns it)`)
   for (const w of run.wakes.filter(w => !w.deliveredAt)) {
     lines.push(`Wake-up not yet delivered (sent ${elapsed(w.sentAt, ui.tick)} ago, try ${w.tries}/${WAKE_TRIES}): ${w.text.split('\n')[0]}`)
   }
@@ -709,7 +736,10 @@ function statusText(snap: Snapshot): string {
       const t = hhmm(row.at)
       if (row.kind === 'user') lines.push(`  ${t} user: ${row.text.replace(/\s+/g, ' ').slice(0, 120)}`)
       else if (row.kind === 'orchestrator') lines.push(`  ${t} orchestrator: ${row.text.replace(/\s+/g, ' ').slice(0, 120)}`)
-      else if (isAsk(row)) {
+      else if (isInterview(row)) {
+        const span = elapsed(row.at, row.endedAt ?? ui.tick)
+        lines.push(`  ${t} interview ${row.node} [${row.id}] ${interviewWord(row)} (${span}${row.model ? `, ${row.model}` : ''})${row.note ? `: ${row.note.slice(0, 200)}` : ''}`)
+      } else if (isAsk(row)) {
         const span = elapsed(row.at, row.endedAt ?? ui.tick)
         lines.push(`  ${t} ask ${row.node} [${row.id}] ${statusWord[row.status]} (${span}${row.model ? `, ${row.model}` : ''})${row.note ? `: ${row.note.slice(0, 200)}` : ''}`)
       } else if (row.kind === 'worker') {
@@ -1155,7 +1185,7 @@ async function judge(a: Args) {
  */
 async function ask(a: Args) {
   const run = await currentRun()
-  if (!run) return fail('ask: no active run')
+  if (!run) return fail(`ask: no active run; call ${tool('start')} first`)
   const loop = await loopOf(run)
   if (!loop || !run.loop) return fail(`ask: the run has no loop yet; call ${tool('start')} first`)
   const askable = Object.values(loop.nodes).filter(n => n.contract === 'none' && n.type !== 'entry' && n.type !== 'exit')
@@ -1200,6 +1230,96 @@ async function ask(a: Args) {
       'It runs in the foreground: the Agent result is its answer.',
     ].join('\n'),
   )
+}
+
+/**
+ * Prepares an interviewing node to talk to the person: writes its brief, copies the run's reports so far into the
+ * run worktree's `.context/reports/`, and returns the Agent call that starts it. The call runs in the background and
+ * hands it the floor: what the person types goes to it until it reports or `/dacapo-back` returns the floor.
+ */
+async function consult(a: Args) {
+  const run = await currentRun()
+  if (!run) return fail(`consult: no active run; call ${tool('start')} first`)
+  const loop = await loopOf(run)
+  if (!loop || !run.loop) return fail(`consult: the run has no loop yet; call ${tool('start')} first`)
+  const talkers = Object.values(loop.nodes).filter(n => n.contract === 'interviews')
+  const nodeId = str(a.node).trim()
+  const node = loop.nodes[nodeId]
+  if (!node || node.contract !== 'interviews') {
+    return fail(`consult: "${nodeId}" is not a node of the loop "${run.loop.name}" that talks to the user (contract interviews); those nodes: ${talkers.map(n => n.id).join(', ') || 'none'}`)
+  }
+  const model = str(a.model).trim() || node.models[0] || ''
+  if (str(a.model).trim() && !node.models.includes(model)) return fail(`consult: "model" must be one of ${node.models.join(', ')} (the models of the node "${node.id}")`)
+  if (run.floor) return fail(`consult: "${run.floor.node}" holds the floor; wait for its report, or ask the user to type /dacapo-back`)
+  const rows = await io.getRows()
+  const busy = rows.find(r => isInterview(r) && (r.status === 'pending' || isLive(r)))
+  if (busy && busy.kind === 'worker') return fail(`consult: the interview of "${busy.node}" [${busy.id}] is ${statusWord[busy.status]}; one interview runs at a time`)
+  const n = rows.filter(r => isInterview(r) && r.node === node.id).length + 1
+  const cwd = run.worktree || run.root
+  const reportPath = interviewPath(run.runDir, node.id, n)
+  const reportsDir = `${cwd}/.context/reports`
+  const reports = (await io.list(run.runDir)).filter(isReportFile).sort()
+  for (const name of reports) await io.write(`${reportsDir}/${name}`, await io.read(`${run.runDir}/${name}`).catch(() => ''))
+  const scope = str(a.scope).trim()
+  const brief = consultBrief({ node: node.id, task: run.task, ...(scope ? { scope } : {}), reportPath, reportsDir: '.context/reports/', n })
+  const listed = reports.length ? `\n\nThe reports there now: ${reports.join(', ')}.` : '\n\nThere are no reports there yet.'
+  await io.write(`${run.runDir}/consult-${node.id}-${n}.md`, brief + listed)
+  await io.write(`${cwd}/.context/consult-brief.md`, brief + listed)
+  const now = await io.now()
+  const row: WorkerRow = {
+    kind: 'worker',
+    id: pendingConsult(node.id, n),
+    iteration: run.iteration,
+    at: now,
+    lastActivityAt: now,
+    taskId: `${node.id}-${n}`,
+    title: `Interview: ${node.id}`,
+    branch: '',
+    worktree: cwd,
+    model,
+    commit: '',
+    mergeMethod: 'squash',
+    status: 'pending',
+    stats: freshStats(),
+    node: node.id,
+    contract: 'interviews',
+  }
+  await io.setRows(list => [...list, row])
+  return ok(
+    [
+      `"${node.id}" is ready to talk to the user (interview ${n}); its brief is ${cwd}/.context/consult-brief.md, ${reports.length} report${reports.length === 1 ? '' : 's'} copied to ${reportsDir}, and it writes ${reportPath}.`,
+      'Start it: call the Agent tool with exactly these arguments (the run fills in the prompt, the model and the working directory):',
+      `- Agent({ subagent_type: "${agentType(node.id)}", description: "Interview: ${node.id}", prompt: "dacapo consult ${node.id} ${n}" })`,
+      `Then end your turn. "${node.id}" holds the floor until it reports: the user's next prompt goes to it, not to you. A prompt wakes you with its report.`,
+    ].join('\n'),
+  )
+}
+
+/**
+ * Ends an interview: reads its report, sets the row's status and outcome, clears the floor and wakes the orchestrator
+ * with the report's path and first lines. `said` is the node's ending line, or `back` when /dacapo-back returned the floor.
+ */
+async function closeInterview(row: WorkerRow, said: 'reported' | 'reported with open questions' | 'back'): Promise<string> {
+  const run = await io.getRun()
+  if (!run) return ''
+  const path = interviewPath(run.runDir, row.node ?? 'node', row.taskId.split('-').pop() ?? '1')
+  const text = (await io.exists(path)) ? await io.read(path).catch(() => '') : ''
+  const has = text.trim().length > 0
+  const outcome: WorkerRow['outcome'] = !has ? 'failed' : said === 'reported' ? 'done' : 'limited'
+  const word = outcome === 'failed' ? 'failed' : outcome === 'done' ? 'reported' : 'reported with open questions'
+  const note = outcome === 'failed' ? `no report at ${path}${said === 'back' ? ' (the floor was returned with /dacapo-back)' : ''}` : `${word}: ${path}${said === 'back' ? ' (the floor was returned with /dacapo-back)' : ''}`
+  const now = await io.now()
+  await patchWorker(row.id, r => ({ ...r, status: outcome === 'failed' ? 'failed' : 'finished', endedAt: now, outcome, note }))
+  await io.setRun(cur => (cur && cur.floor?.agentId === row.id ? { ...cur, floor: undefined } : cur))
+  const head = text.split('\n').slice(0, 10).join('\n').trimEnd()
+  await wake(`interview-${row.id}`, outcome === 'failed' ? `${row.node} failed: no report at ${path}` : `${row.node} ${word}: ${path}\n${head}`)
+  return word
+}
+
+/** Records on the floor row what the floor could not do (a view the engine denied): logged in its activity, never raised. */
+async function logFloor(agentId: string, text: string) {
+  const now = await io.now()
+  await patchWorker(agentId, r => ({ ...r, stats: { ...r.stats, activity: [...r.stats.activity, { at: now, kind: 'text' as const, text: `dacapo ${text}`.slice(0, 200) }].slice(-40) } }))
 }
 
 async function cancel(a: Args) {
@@ -1584,6 +1704,11 @@ async function tick() {
   for (const row of live) {
     const idle = now - row.lastActivityAt
     const who = isAsk(row) ? `"${row.node}", asked` : row.kind === 'worker' ? `Worker ${row.taskId}` : roundName(row)
+    if (isInterview(row)) {
+      // a person may be slow: an interview never times out, and goes stale without waking anyone
+      if (idle >= STALE_MS && row.status === 'running') await patchRow(row.id, r => ({ ...r, status: 'stale' }))
+      continue
+    }
     if (idle >= TIMEOUT_MS) {
       await patchRow(row.id, r => ({ ...r, status: 'timeout', endedAt: now, note: `no activity for ${elapsed(row.lastActivityAt, now)}; stopped` }))
       void io.stop(row.id).catch(() => undefined)
@@ -1638,6 +1763,8 @@ const actions: Actions = {
   toggleTimelineFull: () => void io.setUi(ui => ({ ...ui, isTimelineFull: !ui.isTimelineFull })),
   openPane: () => void io.openPane(true),
   hideBand: () => void io.setUi(ui => ({ ...ui, isBandHidden: true })),
+  // Back shows the main conversation again; the interview goes on, and /dacapo-back ends it
+  back: () => void io.view().catch(() => undefined),
 }
 
 /** Foreground Agent calls waiting for their agent's id, by prompt: the spawn hook hands it over as the agent starts. */
@@ -2460,6 +2587,21 @@ const TOOL_SPECS = [
     },
   },
   {
+    name: 'consult',
+    description:
+      'Prepares a node of the loop with contract interviews to talk to the user: writes its brief, copies the reports of the run so far to the run worktree, and returns the Agent call that starts it. The node holds the floor until it reports; a prompt wakes you with its report.',
+    isDeferred: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        node: { type: 'string', description: 'The interviewing node to start (config lists the nodes and where they work).' },
+        scope: { type: 'string', description: 'Optional: what the interview should settle, in a sentence or two.' },
+        model: { type: 'string', description: "One of the node's models; default its first." },
+      },
+      required: ['node'],
+    },
+  },
+  {
     name: 'sync',
     description:
       'After the workers ended: lists their pull requests through gh, marks the ones that merged, prunes their worktrees and branches, and fast-forwards the run branch worktree to origin. Reports a worker that finished without landing.',
@@ -2632,6 +2774,7 @@ export const register: Register = (on, options) => {
       read: path => $.fs.read(path),
       write: (path, text) => $.fs.write(path, text),
       exists: path => $.fs.exists(path),
+      list: async dir => (await $.fs.list(dir).catch(() => [])).map(entry => entry.name),
       now: () => $.clock.now(),
       cwd: () => $.session.cwd(),
       home: () => $.env.get('HOME'),
@@ -2639,6 +2782,7 @@ export const register: Register = (on, options) => {
       submit: text => $.prompt.submit({ text }),
       openPane: focus => $.ui.open(focus ? { id: PANE, title: 'Da capo', focus: true } : { id: PANE, title: 'Da capo' }),
       toast: text => $.ui.toast(text, { timeoutMs: 8_000 }),
+      view: agentId => $.ui.view(agentId ? { agentId } : {}),
       getRun: () => read($, runAtom),
       setRun: fn => update($, runAtom, fn),
       getRows: () => read($, rowsAtom),
@@ -2730,6 +2874,7 @@ export const register: Register = (on, options) => {
       $.command.register({ name: 'dacapo-config', description: "Shows the dacapo configuration in force, the files it was read from, and the conf's loop: the one a run walks without --loop." }),
       ...LOOP_TOOL_SPECS.map(spec => $.tool.register(spec)),
       $.command.register({ name: 'dacapo-loops', description: 'Opens the dacapo loop viewer: the library of loops, or the loop last open.' }),
+      $.command.register({ name: 'dacapo-back', description: 'Ends the interview that holds the floor and hands the conversation back to the orchestrator.' }),
     ])
 
     // the loop open in the viewer last time in this scope, draft included, comes back without taking focus: a resumed or
@@ -2786,13 +2931,27 @@ export const register: Register = (on, options) => {
     const run = await currentRun()
     if (!run) return { deny: `dacapo: no active run; call ${tool('start')} first` }
     const rows = await io.getRows()
-    const wanted = call[1] ? pendingWorker(run.iteration, call[1]) : call[2] ? pendingJudge(call[2], Number(call[3]), Number(call[4])) : pendingAsk(call[5]!, Number(call[6]))
+    const wanted = call[1]
+      ? pendingWorker(run.iteration, call[1])
+      : call[2]
+        ? pendingJudge(call[2], Number(call[3]), Number(call[4]))
+        : call[5]
+          ? pendingAsk(call[5], Number(call[6]))
+          : pendingConsult(call[7]!, Number(call[8]))
     const row = rows.find((r): r is WorkerRow | QaRow => isAgentRow(r) && r.id === wanted)
     if (!row) {
       const expected = rows
         .filter((r): r is WorkerRow | QaRow => isAgentRow(r) && r.status === 'pending')
-        .map(r => (r.kind === 'qa' ? `judge ${judgeNode(r)} ${r.iteration}-${r.round}` : isAsk(r) ? `ask ${r.node} ${r.taskId.split('-').pop()}` : `worker ${r.taskId}`))
-      const by = call[1] ? 'dispatch' : call[2] ? 'judge' : 'ask'
+        .map(r =>
+          r.kind === 'qa'
+            ? `judge ${judgeNode(r)} ${r.iteration}-${r.round}`
+            : isAsk(r)
+              ? `ask ${r.node} ${r.taskId.split('-').pop()}`
+              : isInterview(r)
+                ? `consult ${r.node} ${r.taskId.split('-').pop()}`
+                : `worker ${r.taskId}`,
+        )
+      const by = call[1] ? 'dispatch' : call[2] ? 'judge' : call[5] ? 'ask' : 'consult'
       return { deny: `dacapo: nothing pending for "${call[0]!.trim()}"${expected.length ? `; pending: ${expected.join(', ')}` : ''}. Call ${tool(by)} first.` }
     }
     let prompt: string
@@ -2808,6 +2967,10 @@ export const register: Register = (on, options) => {
       prompt = `[dacapo worktree: ${row.worktree}]\n\n${asked}`
       subagent = agentType(row.node!)
       background = false
+    } else if (isInterview(row)) {
+      // an interviewing node runs in the background and holds the floor: the person's prompts reach it, not the orchestrator
+      prompt = `[dacapo worktree: ${row.worktree}]\n\nRead .context/consult-brief.md and begin.`
+      subagent = agentType(row.node!)
     } else {
       const brief = await io.read(`${row.worktree}/.context/brief.md`)
       prompt = `[dacapo worktree: ${row.worktree}]\n\n${brief}\n\nStart now. Your working directory is the worktree above; every path you touch is under it.`
@@ -2848,6 +3011,10 @@ export const register: Register = (on, options) => {
       )
     } else if (agentId) {
       await io.setRows(list => list.map(r => (isAgentRow(r) && r.id === row.id ? { ...r, id: agentId, status: 'running', at: now, lastActivityAt: now } : r)))
+      if (isInterview(row)) {
+        const n = Number(row.taskId.split('-').pop())
+        await io.setRun(cur => (cur ? { ...cur, floor: { node: row.node!, agentId, n, since: now } } : cur))
+      }
     } else {
       const note = refused || 'the Agent tool answered without an agent id'
       await patchRow(row.id, r => ({ ...r, note: `not started: ${note.slice(0, 300)}` }))
@@ -2887,6 +3054,21 @@ export const register: Register = (on, options) => {
     return { text: 'Timeline opened.' }
   })
 
+  on('command.run', { command: 'dacapo-back' }, async $ => {
+    const run = await currentRun()
+    if (!run?.floor) return { text: 'No interview holds the floor: what you type goes to the orchestrator.' }
+    const floor = run.floor
+    const shown = await $.ui.view({})
+    if (shown.deny) io.toast(`dacapo: the main view did not come back: ${shown.deny}`)
+    const row = (await io.getRows()).find((r): r is WorkerRow => isInterview(r) && r.id === floor.agentId)
+    if (!row) {
+      await io.setRun(cur => (cur ? { ...cur, floor: undefined } : cur))
+      return { text: `The floor is back with the orchestrator (${floor.node} had no row in this run).` }
+    }
+    const word = await closeInterview(row, 'back')
+    return { text: `The floor is back with the orchestrator; ${floor.node} ${word === 'failed' ? 'left no report' : `ended, ${word}`}.` }
+  })
+
   on('command.run', { command: 'dacapo-loops' }, async () => {
     await refreshLibrary()
     await views.open(true)
@@ -2902,9 +3084,24 @@ export const register: Register = (on, options) => {
       await markDelivered(text)
       return next(e)
     }
+    // the floor agent's hand-back between questions never reaches the orchestrator: the agent view shows it
+    const floor0 = await heldFloor(text)
+    if (floor0 && isHandBack(e.origin.kind, text, floor0.agentId)) {
+      reportedFloors.delete(floor0.agentId)
+      return { drop: `→ ${floor0.node} is waiting for the user` }
+    }
     // only what the person typed is a row: not a subagent's hand-back, a notification or another session's message
     const isTyped = ['composer', 'bridge', 'sdk', 'channel'].includes(e.origin.kind) && !/^\s*<agent-message\b/.test(text)
     if (!isTyped) return next(e)
+    const held = (await currentRun())?.floor
+    if (held && !text.trimStart().startsWith('/')) {
+      // the floor: the interviewing node gets what the person types; the orchestrator is not in the exchange
+      const sent = await $.session.send({ to: { agentId: held.agentId }, text: `The user says:\n${text}` })
+      const shown = await $.ui.view({ agentId: held.agentId }).catch((error: unknown) => ({ deny: String(error) }))
+      if (shown.deny) await logFloor(held.agentId, `view: ${shown.deny}`)
+      if (!sent.isDelivered) return { drop: `Not delivered to ${held.node}: ${sent.reason ?? 'no reason given'}. /dacapo-back returns the floor.` }
+      return { drop: `→ ${held.node}` }
+    }
     if (/^\s*\/dacapo:design(\s|$)/.test(text)) {
       // the architect's entry: the library is fresh and the pane open before the turn; the skill lists the loops itself
       await refreshLibrary().catch(() => undefined)
@@ -2943,6 +3140,19 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // a hand-back delivered into a running turn comes as a row: while the floor is held its text is cut to one line
+  // (the engine keeps its own rows, so a hook may rewrite their text but not refuse them)
+  on('session.append', async ($, e, next) => {
+    if (e.agentId) return next(e)
+    const text0 = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('\n')
+    const floor = await heldFloor(text0)
+    if (!floor || (e.door !== 'delivery' && e.origin.kind !== 'task-notification')) return next(e)
+    if (!isHandBack('task-notification', text0, floor.agentId)) return next(e)
+    reportedFloors.delete(floor.agentId)
+    const stub = `${floor.node} holds the floor and is waiting for the user; its words stay in its own view.`
+    return next({ ...e, message: { ...e.message, content: e.message.content.map(b => (b.type === 'text' ? { ...b, text: stub } : b)) } })
+  }).catch(($, e, next) => next(e))
+
   // ----- the tools -----
 
   on('tool.call', { tool: 'mcp__dacapo__start' }, ($, e) => start(e as unknown as Args)).catch(crashed)
@@ -2951,6 +3161,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'mcp__dacapo__sync' }, () => sync()).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__judge' }, ($, e) => judge(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__ask' }, ($, e) => ask(e as unknown as Args)).catch(crashed)
+  on('tool.call', { tool: 'mcp__dacapo__consult' }, ($, e) => consult(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__cancel' }, ($, e) => cancel(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__finish' }, ($, e) => finish(e as unknown as Args)).catch(crashed)
   on('tool.call', { tool: 'mcp__dacapo__config' }, async () => ok(await configText(true))).catch(crashed)
@@ -2994,6 +3205,16 @@ export const register: Register = (on, options) => {
       const target = str(a.file_path) || str(a.notebook_path)
       if ((e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') && target && !isUnder(target, `${row.worktree}/.context`, row.worktree)) {
         return { deny: `dacapo ${row.node}: you answer, you do not change the run; write only under ${row.worktree}/.context` }
+      }
+      return next(e)
+    }
+    if (isInterview(row)) {
+      // an interviewing node writes its report and nothing else; it reads what its role allows
+      const target = str(a.file_path) || str(a.notebook_path)
+      const run = await io.getRun()
+      const report = run ? interviewPath(run.runDir, row.node ?? 'node', row.taskId.split('-').pop() ?? '1') : ''
+      if ((e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') && normalize(target, row.worktree) !== report) {
+        return { deny: `dacapo ${row.node}: you talk to the user and never change the repository; the only file you write is ${report}` }
       }
       return next(e)
     }
@@ -3112,6 +3333,14 @@ export const register: Register = (on, options) => {
         const outcome: Collector['outcome'] = failed || said === 'failed' ? 'failed' : said === 'collected with gaps' ? 'gaps' : 'collected'
         const note = failed ? `${e.reason}${e.reason === 'refusal' ? `: ${e.refusal.explanation ?? ''}` : ''}` : e.answer.replace(/\s+/g, ' ').trim().slice(0, 200)
         await patchQa(row.id, r => ({ ...r, collectors: (r.collectors ?? []).map(c => (c.id === ended ? { ...c, endedAt: now, outcome, note } : c)) }))
+      } else if (row && isInterview(row)) {
+        // an interviewing node ends a turn after each question; only its ending line closes the interview
+        const last = e.answer.trim().split('\n').pop() ?? ''
+        const said = REPORTED_LINE.exec(last)?.[1]?.toLowerCase() as 'reported' | 'reported with open questions' | undefined
+        if (said && !isTerminal(row)) {
+          reportedFloors.set(row.id, row.node ?? 'node')
+          await closeInterview(row, said)
+        }
       } else if (row && !isTerminal(row)) {
         const now = await io.now()
         const failed = e.reason !== 'answer' || e.isAborted

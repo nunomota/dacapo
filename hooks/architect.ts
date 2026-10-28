@@ -46,7 +46,7 @@ const ENTRY = 'entry'
 const EXIT = 'exit'
 /** The role a node added by the architect starts with, as hooks/loopd2.ts stubs one. */
 const STUB_ROLE = 'Role to be written.'
-const CONTRACTS: readonly Contract[] = ['lands', 'scores', 'collects', 'none']
+const CONTRACTS: readonly Contract[] = ['lands', 'scores', 'collects', 'none', 'interviews']
 
 /** Copied from hooks/loops.ts, where it is not exported. */
 const join = (...parts: string[]) => parts.map((p, i) => (i === 0 ? p.replace(/\/+$/, '') : p.replace(/^\/+|\/+$/g, ''))).join('/')
@@ -240,7 +240,7 @@ function needs(name: Op['op'], key: string): string {
     id: 'an id',
     summary: 'a summary of two to four words',
     type: 'a type: agent or swarm',
-    contract: 'a contract: lands, scores, collects or none',
+    contract: 'a contract: lands, scores, collects, none or interviews',
     text: 'its whole role text, in text',
     spec: 'a spec: what the handover carries',
     description: 'a description: a sentence on what it is for',
@@ -839,10 +839,11 @@ function explain(loop: Loop, p: Problem): string {
     const n = loop.nodes[id]
     if (key === 'categories' && n?.contract === 'scores') return `node ${id} scores but has no categories; give it the rubric categories it accepts`
     if (n && (key === 'categories' || key === 'collectors') && /for scores nodes only/.test(p.message)) {
-      return `node ${id} does not score, so it takes no ${key}; set its contract to ${n.contract} again to drop them, or set it to scores`
+      return `node ${id} does not score, so it takes no ${key}; leave them out or give it the scores contract`
     }
     if (n && key === 'models' && /needs at least one model/.test(p.message)) {
-      return `node ${id} ${n.contract === 'lands' ? 'lands work' : 'scores'} but has no model; give it at least one`
+      const does = n.contract === 'lands' ? 'lands work' : n.contract === 'interviews' ? 'talks to the user' : 'scores'
+      return `node ${id} ${does} but has no model; give it at least one`
     }
     if (key === 'contract' && n?.contract === 'collects') {
       // the judge to name is one the loop still has: never the node a batch just removed
@@ -996,7 +997,7 @@ export function applyOps(
   if (problems.length > 0) {
     const by = [...new Set(problems.map(p => broughtIn(seen, p)))].sort((a, b) => a - b)
     const [i] = by
-    if (by.length === 1 && i !== undefined && i >= 0) return { ok: false, index: i, op: ops[i]!.op, problems }
+    if (by.length === 1 && i !== undefined && i >= 0) return { ok: false, index: i, op: ops[i]!.op, problems: problems }
     const culprits = by.includes(-1) ? [] : by.map(index => ({ index, op: ops[index]!.op }))
     // the problems in the order of the ops that brought them in, as the refusal names those ops
     const ordered = problems.map((p, k) => ({ p, k, at: broughtIn(seen, p) })).sort((a, b) => a.at - b.at || a.k - b.k)
