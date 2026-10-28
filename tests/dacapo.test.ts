@@ -1040,7 +1040,11 @@ function repoHarness(on: On, files: Map<string, string>, env: Record<string, str
   const clock = mock.clock(on, { now: Date.UTC(2026, 9, 10, 12, 0, 0) })
   mock.env(on, { HOME: '/home/u', ...env })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('prompt.submit', (_, e) => ({ text: e.text }))
+  const prompts: string[] = []
+  on('prompt.submit', (_, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
   on('session.cwd', () => ({ value: '/repo' }))
   on('tool.register', (_, e) => {
     tools.push(e.name)
@@ -1105,7 +1109,19 @@ function repoHarness(on: On, files: Map<string, string>, env: Record<string, str
   // the engine offers the model every agent type a test lists in `listed`
   const listed: string[] = []
   on('agent.offer', (_, e) => ({ isOffered: listed.includes(e.agent) }))
-  return { registered, tools, agentCalls, opened, clock, agentReply, listed, remote, commands }
+  // the floor: what the run sends an agent and which view it asks for
+  const sends: Array<{ agentId: string; text: string }> = []
+  const views: Array<string | null> = []
+  on('session.send', (_, e) => {
+    const to = e.to as unknown
+    sends.push({ agentId: typeof to === 'string' ? to : String((to as { agentId?: string }).agentId), text: e.text })
+    return { isDelivered: true }
+  })
+  on('ui.view', (_, e) => {
+    views.push((e as { agentId?: string }).agentId ?? null)
+    return { value: { deny: 'not answering the person' } }
+  })
+  return { registered, tools, agentCalls, opened, clock, agentReply, listed, remote, commands, prompts, sends, views }
 }
 
 const resultOf = (r: unknown): string => String((r as { result?: unknown }).result ?? '')
@@ -1840,5 +1856,143 @@ describe('the loop viewer and the architect', () => {
     expect(config).toMatch(/^base-branch = develop  \(\/private\/var\/dh\/dacapo\.conf\)$/m)
     expect(config).not.toMatch(/(^|[\s(])\/var\//m)
     expect(config).not.toContain('/hooks/..')
+  })
+})
+
+/** A user loop `core-talk` made from core, with an interviewing node `functionality` on call and a node `scout` with contract none. */
+function talkLoop(files: Map<string, string>, root = '/home/u/.claude/dacapo/loops/core-talk') {
+  const core = JSON.parse(SHIPPED_LOOP_FILES['core/loop.json']!) as Record<string, unknown>
+  files.set(`${root}/loop.json`, JSON.stringify({ ...core, name: 'core-talk', onCall: { functionality: [], scout: [] } }))
+  for (const [rel, text] of Object.entries(SHIPPED_LOOP_FILES)) if (rel.startsWith('core/nodes/')) files.set(`${root}/${rel.slice('core/'.length)}`, text)
+  files.set(`${root}/nodes/functionality.md`, nodeFile('type: agent\nsummary: interviews the user\ncontract: interviews\nmodels: [sonnet]\nskills: []', 'You interview the user about what the product must do and write "# Functionality spec".'))
+  files.set(`${root}/nodes/scout.md`, nodeFile('type: agent\nsummary: reads the docs\ncontract: none\nmodels: [sonnet]\nskills: []', 'You read documentation.'))
+}
+
+describe('interviews: consult, the floor and /dacapo-back', () => {
+  async function open($: Parameters<Parameters<typeof test>[1]>[0], on: On, isOpened = true) {
+    const files = new Map<string, string>()
+    talkLoop(files)
+    const h = repoHarness(on, files)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    if (isOpened) await $.prompt.submit({ text: '/dacapo:core --loop core-talk add a page', wait: false, origin: { kind: 'composer' } })
+    return { files, ...h }
+  }
+  /** The run folder: the run id is the harness clock's start. */
+  const runDir = (_files: Map<string, string>) => '/repo/.workspaces/.dacapo/20261010T120000-run'
+
+  test('consult is refused before start and on a node that does not interview; the agent type denies edits', async ($, on) => {
+    const { registered } = await open($, on, false)
+    const spec = registered.find(r => r.name === 'functionality')!
+    expect(spec.disallowedTools).toEqual(['Edit', 'NotebookEdit', 'Agent', 'EnterWorktree', 'ExitWorktree'])
+    expect(spec.description).toMatch(/talks to the user and writes a report of its own/)
+    const early = await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'functionality' } as never)
+    expect(isRefused(early)).toBe(true)
+    expect(resultOf(early)).toBe('consult: no active run')
+    await $.prompt.submit({ text: '/dacapo:core --loop core-talk add a page', wait: false, origin: { kind: 'composer' } })
+    await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
+    const wrong = await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'scout' } as never)
+    expect(resultOf(wrong)).toMatch(/^consult: "scout" is not a node .* that talks to the user .*those nodes: functionality$/)
+    const model = await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'functionality', model: 'opus' } as never)
+    expect(resultOf(model)).toMatch(/"model" must be one of sonnet/)
+  })
+
+  test('consult writes the brief, copies the reports, and its Agent call hands over the floor; typing goes to the node', async ($, on) => {
+    const { files, agentCalls, sends, views } = await open($, on)
+    await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
+    const dir = runDir(files)
+    files.set(`${dir}/qa-1-1.json`, '{"items":[]}')
+    files.set(`${dir}/qa-1-1-brief.md`, 'brief')
+    const consulted = await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'functionality', scope: 'the flows' } as never)
+    expect(resultOf(consulted)).toMatch(/Agent\(\{ subagent_type: "dacapo:functionality", description: "Interview: functionality", prompt: "dacapo consult functionality 1" \}\)/)
+    expect(resultOf(consulted)).toMatch(/end your turn/)
+    const brief = files.get('/repo/.workspaces/add-a-page/.context/consult-brief.md')!
+    expect(brief).toMatch(/Scope from the orchestrator: the flows/)
+    expect(brief).toContain(`${dir}/interview-functionality-1.md`)
+    expect(files.get('/repo/.workspaces/add-a-page/.context/reports/qa-1-1.json')).toBe('{"items":[]}')
+    expect(files.has('/repo/.workspaces/add-a-page/.context/reports/qa-1-1-brief.md')).toBe(false)
+    expect(files.get(`${dir}/consult-functionality-1.md`)).toBeDefined()
+
+    await $.tool.call({ tool: 'Agent', prompt: 'dacapo consult functionality 1', description: 'Interview: functionality', subagent_type: 'dacapo:functionality' })
+    const call = agentCalls[0]!
+    expect(call.run_in_background).toBe(true)
+    expect(call.model).toBe('sonnet')
+    expect(String(call.prompt)).toBe('[dacapo worktree: /repo/.workspaces/add-a-page]\n\nRead .context/consult-brief.md and begin.')
+    const status = resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))
+    expect(status).toMatch(/interview functionality \[agent-1\] talking \([^)]*sonnet\)/)
+    expect(status).toMatch(/\nfloor: functionality \(\/dacapo-back returns it\)/)
+
+    // the person's words go to the node and are dropped from the main conversation; a deny of the view is not raised
+    const typed = await $.prompt.submit({ text: 'Shoppers and admins.', wait: false, origin: { kind: 'composer' } })
+    expect((typed as { drop?: string }).drop).toBe('→ functionality')
+    expect(sends).toEqual([{ agentId: 'agent-1', text: 'Shoppers and admins.' }])
+    expect(views).toEqual(['agent-1'])
+    // a command passes through to the main conversation
+    const command = await $.prompt.submit({ text: '/dacapo-pane', wait: false, origin: { kind: 'composer' } })
+    expect((command as { drop?: string }).drop).toBeUndefined()
+    expect(sends).toHaveLength(1)
+    // the orchestrator is simply not in the exchange: its own tools still work
+    expect(isRefused(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))).toBe(false)
+  })
+
+  test('the floor agent\'s hand-back is dropped while the floor is held and passes once it is cleared', async ($, on) => {
+    const { files } = await open($, on)
+    await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
+    await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'functionality' } as never)
+    await $.tool.call({ tool: 'Agent', prompt: 'dacapo consult functionality 1', description: 'Interview: functionality', subagent_type: 'dacapo:functionality' })
+    const note = '<task-notification><task-id>agent-1</task-id><result>Who are the users?</result></task-notification>'
+    const held = await $.prompt.submit({ text: note, wait: false, origin: { kind: 'task-notification' } })
+    expect((held as { drop?: string }).drop).toBe('→ functionality is waiting for the user')
+    // a turn that ends on a question closes nothing
+    await $.turn.complete({ answer: 'Who are the users?', durationMs: 1, isAborted: false, turnId: 'i1', agentId: 'agent-1', reason: 'answer' })
+    expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))).toMatch(/floor: functionality/)
+    const back = await $.command.run({ command: 'dacapo-back' } as never)
+    expect((back as { text: string }).text).toMatch(/floor is back with the orchestrator; functionality left no report/)
+    const passed = await $.prompt.submit({ text: note, wait: false, origin: { kind: 'task-notification' } })
+    expect((passed as { drop?: string }).drop).toBeUndefined()
+    expect(files.size).toBeGreaterThan(0)
+  })
+
+  test('the node reporting with its report file collects, clears the floor and wakes; without the file it fails', async ($, on) => {
+    const { files, prompts } = await open($, on)
+    await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
+    await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'functionality' } as never)
+    await $.tool.call({ tool: 'Agent', prompt: 'dacapo consult functionality 1', description: 'Interview: functionality', subagent_type: 'dacapo:functionality' })
+    const dir = runDir(files)
+    const report = `${dir}/interview-functionality-1.md`
+    // the node writes its report and nothing else
+    expect(isRefused(await $.tool.call({ tool: 'Write', file_path: '/repo/.workspaces/add-a-page/a.ts', content: 'x', agentId: 'agent-1' } as never))).toBe(false)
+    files.set(report, '# Functionality spec\n\n## Goal\nA page.\n')
+    await $.turn.complete({ answer: 'Written.\n\ndacapo: reported with open questions', durationMs: 1, isAborted: false, turnId: 'i2', agentId: 'agent-1', reason: 'answer' })
+    const status = resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))
+    expect(status).toMatch(/interview functionality \[agent-1\] reported with open questions/)
+    expect(status).not.toMatch(/floor:/)
+    expect(prompts.some(p => p.startsWith(`[dacapo] functionality reported with open questions: ${report}\n# Functionality spec`))).toBe(true)
+    // its last hand-back is held back too: the wake-up carries the report
+    const last = await $.prompt.submit({ text: '<task-notification><task-id>agent-1</task-id></task-notification>', wait: false, origin: { kind: 'task-notification' } })
+    expect((last as { drop?: string }).drop).toBeDefined()
+
+    // a second interview that claims a report it never wrote fails
+    await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'functionality' } as never)
+    await $.tool.call({ tool: 'Agent', prompt: 'dacapo consult functionality 2', description: 'Interview: functionality', subagent_type: 'dacapo:functionality' })
+    await $.turn.complete({ answer: 'Done.\ndacapo: reported', durationMs: 1, isAborted: false, turnId: 'i3', agentId: 'agent-2', reason: 'answer' })
+    expect(resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))).toMatch(/interview functionality \[agent-2\] failed/)
+    expect(prompts.some(p => p === `[dacapo] functionality failed: no report at ${dir}/interview-functionality-2.md`)).toBe(true)
+  })
+
+  test('/dacapo-back without a floor says so; with one it returns the view and wakes with the report', async ($, on) => {
+    const { files, prompts, views } = await open($, on)
+    expect((await $.command.run({ command: 'dacapo-back' } as never) as { text: string }).text).toMatch(/^No interview holds the floor/)
+    await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
+    await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'functionality' } as never)
+    await $.tool.call({ tool: 'Agent', prompt: 'dacapo consult functionality 1', description: 'Interview: functionality', subagent_type: 'dacapo:functionality' })
+    files.set(`${runDir(files)}/interview-functionality-1.md`, '# Functionality spec\n')
+    const back = await $.command.run({ command: 'dacapo-back' } as never)
+    expect((back as { text: string }).text).toMatch(/ended, reported with open questions/)
+    expect(views).toContain(null)
+    // the wake-up is queued for the orchestrator (a command's own prompt is submitted once the command ends)
+    const status = resultOf(await $.tool.call({ tool: 'mcp__dacapo__status' } as never))
+    expect(status).toMatch(/Wake-up not yet delivered [^\n]*: \[dacapo\] functionality reported with open questions: \/repo\/\.workspaces\/\.dacapo\/[^/]+\/interview-functionality-1\.md/)
+    expect(status).not.toMatch(/floor:/)
+    expect(prompts).toHaveLength(1)
   })
 })
