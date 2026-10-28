@@ -1887,7 +1887,7 @@ describe('interviews: consult, the floor and /dacapo-back', () => {
     expect(spec.description).toMatch(/talks to the user and writes a report of its own/)
     const early = await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'functionality' } as never)
     expect(isRefused(early)).toBe(true)
-    expect(resultOf(early)).toBe('consult: no active run')
+    expect(resultOf(early)).toBe('consult: no active run; call mcp__dacapo__start first')
     await $.prompt.submit({ text: '/dacapo:core --loop core-talk add a page', wait: false, origin: { kind: 'composer' } })
     await $.tool.call({ tool: 'mcp__dacapo__start', task: 'Add a page', overview: 'A page.' } as never)
     const wrong = await $.tool.call({ tool: 'mcp__dacapo__consult', node: 'scout' } as never)
@@ -1924,7 +1924,7 @@ describe('interviews: consult, the floor and /dacapo-back', () => {
     // the person's words go to the node and are dropped from the main conversation; a deny of the view is not raised
     const typed = await $.prompt.submit({ text: 'Shoppers and admins.', wait: false, origin: { kind: 'composer' } })
     expect((typed as { drop?: string }).drop).toBe('→ functionality')
-    expect(sends).toEqual([{ agentId: 'agent-1', text: 'Shoppers and admins.' }])
+    expect(sends).toEqual([{ agentId: 'agent-1', text: 'The user says:\nShoppers and admins.' }])
     expect(views).toEqual(['agent-1'])
     // a command passes through to the main conversation
     const command = await $.prompt.submit({ text: '/dacapo-pane', wait: false, origin: { kind: 'composer' } })
