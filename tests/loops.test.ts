@@ -403,6 +403,7 @@ describe('roots and listing', () => {
       'plugin:core:project',
       'plugin:core-deep:-',
       'plugin:core-fast:-',
+      'plugin:program:-',
     ])
     expect(refs[0]).toMatchObject({ dir: '/repo/.claude/dacapo/loops/core', description: 'The team core.', counts: { stages: 6, steps: 6, nodes: 5, edges: 15 } })
     expect(refs[1]!.counts).toEqual({ stages: 4, steps: 3, nodes: 3, edges: 5 })
@@ -413,7 +414,7 @@ describe('roots and listing', () => {
     const withDrafts = await listLoops(fs, r, { root: dr, repoRoot: '/repo' })
     expect(withDrafts.filter(x => x.draft).map(x => `${x.level}:${x.name}`)).toEqual(['project:zeta', 'plugin:core-fast'])
     expect(withDrafts.find(x => x.name === 'core-fast')!.draft!.dir).toBe('/dh/drafts/plugin--core-fast')
-    expect((await listLoops(fs, { ...r, project: null })).map(x => x.name)).toEqual(['core', 'core', 'core-deep', 'core-fast'])
+    expect((await listLoops(fs, { ...r, project: null })).map(x => x.name)).toEqual(['core', 'core', 'core-deep', 'core-fast', 'program'])
     // the loop that wins a name says what it hides
     expect(refs.find(x => x.level === 'project' && x.name === 'core')!.hides).toEqual(['user', 'plugin'])
     expect(refs.find(x => x.level === 'plugin' && x.name === 'core-fast')!.hides).toBeUndefined()
@@ -432,10 +433,11 @@ describe('roots and listing', () => {
       'plugin:core:saved:user:-',
       'plugin:core-deep:saved:-:-',
       'plugin:core-fast:saved:-:-',
+      'plugin:program:saved:-:-',
     ])
     expect(listed[1]).toMatchObject({ dir: '/dh/loops/core', draft: { dir: '/dh/drafts/user--core' } })
     // a run resolves saved loops only
-    expect((await listLoops(fs, r)).map(x => `${x.level}:${x.name}:${x.shadowedBy ?? '-'}`)).toEqual(['plugin:core:-', 'plugin:core-deep:-', 'plugin:core-fast:-'])
+    expect((await listLoops(fs, r)).map(x => `${x.level}:${x.name}:${x.shadowedBy ?? '-'}`)).toEqual(['plugin:core:-', 'plugin:core-deep:-', 'plugin:core-fast:-', 'plugin:program:-'])
   })
 })
 

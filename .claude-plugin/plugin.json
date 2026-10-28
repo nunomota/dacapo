@@ -1,7 +1,7 @@
 {
   "name": "dacapo",
-  "version": "0.23.0",
-  "description": "Da capo: an orchestrated implementation loop that runs the piece again until it is right. Parallel worker subagents in git worktrees that land their work through GitHub pull requests, judges that score the result against a rubric, a final pull request into the base branch, and a live timeline pane. The loop is plain files at three levels (plugin, user, project): core-fast lands the work with no judges, core adds an end-user QA subagent, core-deep adds an engineering reviewer of the run's change. A fifth contract lets a node interview the user and write a report. A read-only viewer draws each loop, an architect edits drafts of it in conversation, and a host-agnostic loop skill plus each loop's generated LOOP.md let other orchestrators follow it.",
+  "version": "0.24.0",
+  "description": "Da capo: an orchestrated implementation loop that runs the piece again until it is right. Parallel worker subagents in git worktrees that land their work through GitHub pull requests, judges that score the result against a rubric, a final pull request into the base branch, and a live timeline pane. The loop is plain files at three levels (plugin, user, project): core-fast lands the work with no judges, core adds an end-user QA subagent, core-deep adds an engineering reviewer of the run's change. A fifth contract lets a node interview the user and write a report; the shipped program loop uses it to spec a product with three experts, cut it into epics and hand each to a loop of its own. A read-only viewer draws each loop, an architect edits drafts of it in conversation, and a host-agnostic loop skill plus each loop's generated LOOP.md let other orchestrators follow it.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Nuno Mota"

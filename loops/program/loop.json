@@ -1,0 +1,223 @@
+{
+  "name": "program",
+  "description": "Specs a product or feature with experts who interview the user, splits the spec into epics with a mocked horizontal foundation before vertical work, then picks a dacapo loop and a base branch per epic. Writes no code: it ends in a spec, an epic plan and a runbook of runs.",
+  "entry": "orchestrator",
+  "exit": "done",
+  "steps": [
+    {
+      "stages": [
+        {
+          "id": "functionality",
+          "summary": "what it must do",
+          "nodes": [
+            "functionality"
+          ]
+        }
+      ]
+    },
+    {
+      "stages": [
+        {
+          "id": "architecture",
+          "summary": "how to build it",
+          "nodes": [
+            "architecture"
+          ]
+        }
+      ]
+    },
+    {
+      "stages": [
+        {
+          "id": "ui-ux",
+          "summary": "how it looks",
+          "nodes": [
+            "ui-ux"
+          ]
+        }
+      ]
+    },
+    {
+      "stages": [
+        {
+          "id": "epics",
+          "summary": "foundation, then verticals",
+          "nodes": [
+            "engineering-manager"
+          ]
+        }
+      ]
+    },
+    {
+      "stages": [
+        {
+          "id": "dispatch",
+          "summary": "a loop per epic",
+          "nodes": [
+            "loop-picker"
+          ]
+        }
+      ]
+    }
+  ],
+  "onCall": {},
+  "transitions": [
+    {
+      "from": "entry",
+      "to": [
+        "functionality"
+      ],
+      "label": "handed over"
+    },
+    {
+      "from": "epics",
+      "to": [
+        "functionality"
+      ],
+      "back": true,
+      "label": "spec gap",
+      "when": "the epic plan names gaps that block a cut",
+      "then": "the run re-enters at the stage whose expert owns the first gap and walks the spec stages forward from there, consulting only the experts whose sections change"
+    },
+    {
+      "from": "epics",
+      "to": [
+        "dispatch"
+      ],
+      "label": "plan shown",
+      "when": "the epic plan was shown and the user had a moment to object"
+    },
+    {
+      "from": "dispatch",
+      "to": [
+        "exit"
+      ],
+      "label": "runbook handed",
+      "when": "the runbook was handed to the user with every run, its loop, base branch and command"
+    },
+    {
+      "from": "functionality",
+      "to": [
+        "architecture"
+      ],
+      "label": "functionality settled",
+      "when": "the functionality expert reported and its open questions were put to the user"
+    },
+    {
+      "from": "architecture",
+      "to": [
+        "ui-ux"
+      ],
+      "label": "has an interface",
+      "when": "the systems design expert reported and the functionality spec names a surface a person uses"
+    },
+    {
+      "from": "architecture",
+      "to": [
+        "epics"
+      ],
+      "label": "no interface",
+      "when": "the systems design expert reported and the spec names no surface a person uses; the user confirmed the spec as one document"
+    },
+    {
+      "from": "ui-ux",
+      "to": [
+        "epics"
+      ],
+      "label": "spec confirmed",
+      "when": "the UI/UX expert reported and the user confirmed the spec as one document"
+    },
+    {
+      "from": "architecture",
+      "to": [
+        "functionality"
+      ],
+      "back": true,
+      "label": "refine functionality",
+      "when": "the user or the systems design expert wants to change what the product must do",
+      "then": "the functionality expert is consulted again on the change, and the architecture stage resumes with the new section"
+    },
+    {
+      "from": "ui-ux",
+      "to": [
+        "architecture"
+      ],
+      "back": true,
+      "label": "rethink architecture",
+      "when": "the user or the UI/UX expert wants to change how the product is built",
+      "then": "the systems design expert is consulted again on the change, and the ui-ux stage resumes with the new section"
+    },
+    {
+      "from": "ui-ux",
+      "to": [
+        "functionality"
+      ],
+      "back": true,
+      "label": "refine functionality",
+      "when": "the user or the UI/UX expert wants to change what the product must do",
+      "then": "the functionality expert is consulted again, then the systems design expert where its section changes, and the ui-ux stage resumes"
+    }
+  ],
+  "handovers": [
+    {
+      "from": "orchestrator",
+      "to": "functionality",
+      "label": "scope",
+      "spec": "the change in one line and what is still open about what it must do"
+    },
+    {
+      "from": "functionality",
+      "to": "orchestrator",
+      "label": "spec section",
+      "spec": "the functionality spec: goal, users, must do, must not do, flows, out of scope, open questions"
+    },
+    {
+      "from": "orchestrator",
+      "to": "architecture",
+      "label": "scope",
+      "spec": "the change in one line, that the functionality spec is settled, and what is still open about how to build it"
+    },
+    {
+      "from": "architecture",
+      "to": "orchestrator",
+      "label": "spec section",
+      "spec": "the systems design spec: components, technologies, contracts, data, constraints, open questions"
+    },
+    {
+      "from": "orchestrator",
+      "to": "ui-ux",
+      "label": "scope",
+      "spec": "the change in one line, the surfaces the functionality spec names, and what is still open about the interface"
+    },
+    {
+      "from": "ui-ux",
+      "to": "orchestrator",
+      "label": "spec section",
+      "spec": "the UI/UX spec: surfaces, screen flows, references, constraints, open questions"
+    },
+    {
+      "from": "orchestrator",
+      "to": "engineering-manager",
+      "label": "spec",
+      "spec": "every spec section, the repository's base branch, and whether Linear tools are available"
+    },
+    {
+      "from": "engineering-manager",
+      "to": "orchestrator",
+      "label": "epic plan",
+      "spec": "components touched, contracts spelled out, foundation epics, vertical epics, order, Linear identifiers, gaps"
+    },
+    {
+      "from": "orchestrator",
+      "to": "loop-picker",
+      "label": "epics",
+      "spec": "the epic plan, the repository's base branch and the names of the loops in the library"
+    },
+    {
+      "from": "loop-picker",
+      "to": "orchestrator",
+      "label": "runbook",
+      "spec": "a base branch per epic, the foundation runs in order and the vertical runs to start together, each with its loop, reason and command"
+    }
+  ]
+}

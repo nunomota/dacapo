@@ -22,8 +22,8 @@ export type ConfKey = keyof Conf
 export const CONF_KEYS: readonly ConfKey[] = ['loop', 'workers', 'qa', 'review', 'commits-skill', 'prs-skill', 'base-branch', 'qa-collectors']
 /** Keys a conf file may still carry from before loops; each is named as removed, never applied. */
 const REMOVED_KEYS = ['level', 'judges']
-/** The loops the plugin ships, shallowest first: what a removed key is told to choose from when no loops are known. */
-export const SHIPPED_LOOPS: readonly string[] = ['core-fast', 'core', 'core-deep']
+/** The loops the plugin ships, the depth variants shallowest first and then program: what a removed key is told to choose from when no loops are known. */
+export const SHIPPED_LOOPS: readonly string[] = ['core-fast', 'core', 'core-deep', 'program']
 /**
  * The loops to choose from, as every refusal that offers them ends: the removed conf key, the removed flag and an
  * unknown `--loop` alike. The names come in the order the mod lists them: the shipped ones first, then the rest by name.

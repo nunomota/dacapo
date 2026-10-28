@@ -1,0 +1,84 @@
+direction: down
+
+classes: {
+  entry: {}
+  agent: {}
+  swarm: { style.multiple: true }
+  exit: {}
+  stage: {}
+  transition: { style.stroke-dash: 4 }
+  back: { style.stroke-dash: 4 }
+  handover: {}
+}
+
+orchestrator: { class: entry; tooltip: talks to you }
+
+step1: {
+  label: step 1
+  functionality: {
+    class: stage
+    tooltip: what it must do
+    functionality: { class: agent; tooltip: grills on functionality }
+  }
+}
+
+step2: {
+  label: step 2
+  architecture: {
+    class: stage
+    tooltip: how to build it
+    architecture: { class: agent; tooltip: grills on systems design }
+  }
+}
+
+step3: {
+  label: step 3
+  ui-ux: {
+    class: stage
+    tooltip: how it looks
+    ui-ux: { class: agent; tooltip: grills on the interface }
+  }
+}
+
+step4: {
+  label: step 4
+  epics: {
+    class: stage
+    tooltip: foundation, then verticals
+    engineering-manager: { class: agent; tooltip: splits into epics }
+  }
+}
+
+step5: {
+  label: step 5
+  dispatch: {
+    class: stage
+    tooltip: a loop per epic
+    loop-picker: { class: agent; tooltip: picks a loop per epic }
+  }
+}
+
+done: { class: exit; tooltip: the run ends }
+
+orchestrator -> step1: handed over { class: transition }
+step4 -> step1: spec gap { class: back }
+step4 -> step5: plan shown { class: transition }
+step5 -> done: runbook handed { class: transition }
+step1 -> step2: functionality settled { class: transition }
+step2 -> step3: has an interface { class: transition }
+step2 -> step4: no interface { class: transition }
+step3 -> step4: spec confirmed { class: transition }
+step2 -> step1: refine functionality { class: back }
+step3 -> step2: rethink architecture { class: back }
+step3 -> step1: refine functionality { class: back }
+
+orchestrator -> step1.functionality.functionality: scope { class: handover }
+step1.functionality.functionality -> orchestrator: spec section { class: handover }
+orchestrator -> step2.architecture.architecture: scope { class: handover }
+step2.architecture.architecture -> orchestrator: spec section { class: handover }
+orchestrator -> step3.ui-ux.ui-ux: scope { class: handover }
+step3.ui-ux.ui-ux -> orchestrator: spec section { class: handover }
+orchestrator -> step4.epics.engineering-manager: spec { class: handover }
+step4.epics.engineering-manager -> orchestrator: epic plan { class: handover }
+orchestrator -> step5.dispatch.loop-picker: epics { class: handover }
+step5.dispatch.loop-picker -> orchestrator: runbook { class: handover }
